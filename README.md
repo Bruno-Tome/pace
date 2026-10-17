@@ -89,7 +89,8 @@ Fable week's rate. Prompts from before pace knew the model count everywhere, so 
 
 **Too fast** is the only warning that flashes red, and only while you are prompting. A quota over pace with no
 prompt in the last 15 minutes reads idle: its status still says *Over pace*, but nothing flashes, because nothing
-you are doing is making it worse.
+you are doing is making it worse. Before a prompt's cost is known, a quota over pace you are prompting reads
+`▲ over pace · no cost yet`, also without flashing: nothing yet says the rate runs it out.
 
 ## Pacing across parallel sessions
 

@@ -457,3 +457,35 @@ test('a spent quota is gassed out, in the snapshot and on the band', { plugins: 
   const ui = await $.ui.mount({ plugin: 'pace', surface: 'terminal', component: 'AbovePrompt', props: BAND as any })
   expect(textOf((await ui.drawn({ in: 'pace-band' }) as any).children[0])).toContain('Gassed out')
 })
+
+test('once the 5-hour window resets with no new reading, the band and the status line show the new window at 0%', async ($, on) => {
+  const { status, clock } = world(on)
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  await $.prompt.submit({ text: 'p' } as any)
+  // The 5-hour window, at 60%, resets in 2h; five minutes past it no reading of the new window has arrived
+  await clock.advance(2 * H + 5 * 60_000)
+  await $.prompt.submit({ text: 'q' } as any)
+  const ui = await $.ui.mount({ plugin: 'pace', surface: 'terminal', component: 'AbovePrompt', props: BAND as any })
+  const drawn = textOf(await ui.drawn({ in: 'pace-band' }))
+  expect(drawn).not.toContain('60%')
+  expect(drawn).not.toContain('Window ended')
+  expect(drawn).toContain('0%')
+  expect(status[status.length - 1]).toMatch(/^5h 0%/)
+})
+
+test('a week over pace with no per-prompt cost yet says so calmly, not too fast', async ($, on) => {
+  // The Fable week at 80% with 3 of its 7 days left: over pace, and its first reading is too new to cost a prompt
+  const usage = { limits: [USAGE.limits[0], { ...USAGE.limits[1], percent: 80 }] }
+  const { status, clock } = world(on, {}, usage)
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  for (let i = 0; i < 3; i++) {
+    if (i) await clock.advance(60_000)
+    await $.prompt.submit({ text: `p${i}` } as any)
+  }
+  const ui = await $.ui.mount({ plugin: 'pace', surface: 'terminal', component: 'AbovePrompt', props: BAND as any })
+  const week = textOf((await ui.drawn({ in: 'pace-band' }) as any).children[1])
+  expect(week).toContain('over pace · no cost yet')
+  expect(week).not.toContain('too fast')
+  expect(week).not.toContain('→ —')
+  expect(status[status.length - 1]).toContain('Fable wk 80% over pace')
+})

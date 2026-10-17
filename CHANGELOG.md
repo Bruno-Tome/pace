@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A quota over pace with no per-prompt cost yet reads `▲ over pace · no cost yet` in the band, `over pace` in the
+  status line and the pane, instead of a red, flashing `→ — at reset too fast`. Red and flashing wait for a cost
+  that shows the rate runs the quota out. Its rate level is still `fast`, so alerts and auto mode's holds are unchanged.
+- A window whose reset has passed shows the new window from that moment, at 0% and counting toward its next
+  reset, until a reading of it arrives. Before, the band said `Window ended` and the status line kept the old
+  window's percent (`5h 65%`). `$.pace.snapshot()` reports the new window's percent and reset the same way.
 - Auto mode, on pace mode and warm mode are scoped to the session that turned them on, stored under its id, so
   `claude --resume` picks a run back up. Before, they lived in prefs every session shared: an auto run started in
   one session drove any other that started or reloaded. Modes an older pace stored there are ignored. A session's

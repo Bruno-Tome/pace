@@ -67,6 +67,13 @@ export function latest(samples: readonly PaceSample[], key: string): { reading: 
   return null
 }
 
+/** A reading as it stands now: once its reset has passed, the window running now, started at 0% */
+export function asOf(r: PaceReading, window: number, now: number): PaceReading {
+  if (r.resetsAt == null || r.resetsAt > now) return r
+  const windows = Math.floor((now - r.resetsAt) / (window * 1000)) + 1
+  return { ...r, percent: 0, resetsAt: r.resetsAt + windows * window * 1000 }
+}
+
 // ----------------------------------------------------------------------
 // Pace
 // ----------------------------------------------------------------------

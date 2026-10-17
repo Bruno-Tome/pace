@@ -27,15 +27,16 @@ export type Snapshot = {
   auto?: PaceAuto | null
 }
 
-/** A quota as drawn: its names, its latest reading, what can be shown of it and its window's length (seconds) */
+/** A quota as drawn: its names, its latest reading as of now (see `asOf`), what can be shown of it and its window's length (seconds) */
 export type Row = { key: string; name: string; short: string; reading?: PaceReading; view: Q.View; window: number }
 
 export const isFable = (key: string) => /fable/i.test(key)
 
 export function rowsOf(samples: readonly PaceSample[], now: number): Row[] {
   return Q.quotaKeys(samples).map(key => {
-    const reading = Q.latest(samples, key)?.reading
     const window = Q.windowOf(key)
+    const last = Q.latest(samples, key)?.reading
+    const reading = last && Q.asOf(last, window, now)
     return { key, name: Q.quotaName(key, reading?.name), short: Q.shortName(key, reading?.name), reading, view: Q.viewOf(reading, window, now), window }
   })
 }

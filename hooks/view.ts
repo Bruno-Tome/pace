@@ -46,6 +46,14 @@ const LEVEL: Record<RateVerdict['level'], { mark: string; color: string; word: s
   fast: { mark: '▲▲', color: 'error', word: 'too fast' },
 }
 
+/** A quota over pace with no per-prompt cost yet: rated `fast`, but nothing says the rate runs it out, so it is drawn calm */
+const OVER_PACE = { mark: '▲', color: 'warning', word: 'over pace' }
+
+const uncosted = (v: RateVerdict) => v.level === 'fast' && v.pctAtReset == null && v.emptyIn == null
+
+/** How a rate is drawn: its level's mark, color and word, or over pace while a fast rate has no cost behind it */
+const levelLook = (v: RateVerdict) => (uncosted(v) ? OVER_PACE : LEVEL[v.level])
+
 const SUGGESTION_COLOR: Record<Suggestion['level'], string> = { urgent: 'error', warn: 'warning', info: 'suggestion' }
 
 const LAYER_COLOR: Record<Layer, string | undefined> = { actual: undefined, projection: 'warning', ideal: 'subtle', empty: undefined }
@@ -120,6 +128,7 @@ function rateSegs(v: RateVerdict, wide: boolean): Seg[] {
   const fast = v.level === 'fast'
   const out: Seg[] = [{ t: `${l.mark} `, color: l.color, pulse: fast }]
   if (v.level === 'idle') return [...out, { t: l.word, dim: true }]
+  if (uncosted(v)) return [{ t: `${OVER_PACE.mark} `, color: OVER_PACE.color }, { t: OVER_PACE.word, color: OVER_PACE.color }, { t: ' · no cost yet', dim: true }]
   out.push({ t: landingText(v, wide) ?? `→ —${wide ? ' at reset' : ''}`, bold: true })
   if (fast) out.push({ t: ' too fast', color: 'error', bold: true, pulse: true })
   else if (v.level === 'burst' || v.level === 'brisk') out.push({ t: ` ${l.word}`, color: 'warning' })
@@ -215,7 +224,7 @@ export function statusRow(s: Snapshot, now: number, cols: number): Line {
   return rated.flatMap(({ row, r }, i) => [...(i ? [SEP] : []), ...quotaLine(row, row.short.length, barWidth, false, true), { t: ' ' }, ...rateSegs(r, false)])
 }
 
-const levelWord = (v: RateVerdict) => (v.level === 'fast' || v.level === 'burst' || v.level === 'brisk' ? ` ${LEVEL[v.level].word}` : '')
+const levelWord = (v: RateVerdict) => (v.level === 'fast' || v.level === 'burst' || v.level === 'brisk' ? ` ${levelLook(v).word}` : '')
 
 /** The status-line entry: the band in a few words, each quota with its own score */
 export function lineText(s: Snapshot, now: number): string {
@@ -229,6 +238,7 @@ export function lineText(s: Snapshot, now: number): string {
     const u = Q.viewUsed(row.view)
     if (u == null) return `${row.short} —`
     const landing = r.level !== 'idle' ? landingText(r, false) : null
+    if (uncosted(r)) return `${row.short} ${pctOf(u)}%${levelWord(r)}`
     return `${row.short} ${pctOf(u)}%${landing ? ` ${landing}${levelWord(r)}` : ''}`
   }).join(' · ')
 }
@@ -343,7 +353,7 @@ function restLines(s: Snapshot, now: number, o: PaneLayout): Line[] {
   const rated = ratedOf(s, rows, now)
   const worst = worstOf(rated)?.row
   const labelW = Math.max(0, ...rated.map(q => q.row.short.length))
-  const l = LEVEL[v.level]
+  const l = levelLook(v)
   out.push([{ t: 'Prompting', bold: true }])
   out.push([{ t: `${v.perHour} prompts/h`, bold: true }, { t: `  · ${v.last15} in the last 15m, every session`, dim: true }])
   const spend = s.spend ?? []
@@ -356,7 +366,7 @@ function restLines(s: Snapshot, now: number, o: PaneLayout): Line[] {
     ])
   }
   for (const { row, r } of rated) {
-    const ql = LEVEL[r.level]
+    const ql = levelLook(r)
     const figures = [
       landingText(r, true) ?? 'lands —',
       r.costPerPrompt != null ? `~${r.costPerPrompt.toFixed(r.costPerPrompt < 1 ? 2 : 1)}% per prompt` : 'no per-prompt cost yet',

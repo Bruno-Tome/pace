@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { PaceSample } from '../types'
 import {
-  appendSample, mergeSamples, outlook, paceOf, paceSummary, parseClaudeJson, parseUsage, quotaKeys, quotaName,
+  appendSample, asOf, mergeSamples, outlook, paceOf, paceSummary, parseClaudeJson, parseUsage, quotaKeys, quotaName,
   shortName, statusLabel, trajectoryOf, viewOf, viewSummary, windowOf,
 } from '../hooks/quota.ts'
 
@@ -49,6 +49,16 @@ describe('pace', () => {
     expect(viewSummary(viewOf({ percent: 10 }, FIVE, NOW))).toBe('No reset time')
     expect(viewSummary(viewOf({ percent: 10, resetsAt: NOW + H }, FIVE, NOW, NOW - H))).toBe('Stale reading')
     expect(viewSummary(viewOf(undefined, FIVE, NOW))).toBe('No reading')
+  })
+
+  test('a reading past its reset stands for the next window, started at 0%', () => {
+    // 65% of a window that reset 5 minutes ago: the next one resets in 4h55m
+    expect(asOf({ percent: 65, resetsAt: NOW - 5 * MIN, name: 'x' }, FIVE, NOW)).toEqual({ percent: 0, resetsAt: NOW - 5 * MIN + FIVE * 1000, name: 'x' })
+    // Two windows on, it is still the one running now
+    expect(asOf({ percent: 65, resetsAt: NOW - FIVE * 1000 - MIN }, FIVE, NOW)).toEqual({ percent: 0, resetsAt: NOW - MIN + FIVE * 1000 })
+    const live = { percent: 65, resetsAt: NOW + H }
+    expect(asOf(live, FIVE, NOW)).toBe(live)
+    expect(asOf({ percent: 65 }, FIVE, NOW)).toEqual({ percent: 65 })
   })
 })
 

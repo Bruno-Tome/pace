@@ -14,7 +14,7 @@
 //   What is drawn is built in view.ts from model.ts; this module keeps the data and the hooks.
 
 import { atom, read, update } from 'claude-code'
-import type { Register } from 'claude-code'
+import type { ElementConstructor, EngineInterface as Engine, Register, RenderElement, RenderInput, TextProps } from 'claude-code'
 
 import type { Pace, PaceAuto, PaceCacheInfo, PaceCacheTtl, PaceSnapshot, PacePrefs, PaceReading, PaceSample, PaceSpend, PaceWarmMode } from '../types'
 import { alertsOf } from './alerts.ts'
@@ -46,10 +46,10 @@ const spendA = atom({ plugin: 'pace', key: 'spend' } as const, [] as PaceSpend[]
 // Drawing
 // ======================================================================
 
-const toText = (T: any, segs: readonly Seg[]): any[] =>
+const toText = (T: ElementConstructor<TextProps>, segs: readonly Seg[]): RenderElement[] =>
   segs.map(s => (s.dim ? <T dimColor bold={s.bold}>{s.t}</T> : <T color={s.color} bold={s.bold}>{s.t}</T>))
 
-async function snapshot($: any): Promise<Snapshot> {
+async function snapshot($: Engine): Promise<Snapshot> {
   return {
     samples: (await read($, samplesA)) ?? [],
     prompts: (await read($, promptsA)) ?? [],
@@ -63,8 +63,10 @@ async function snapshot($: any): Promise<Snapshot> {
   }
 }
 
-function drawBand($: any, e: any, s: Snapshot, now: number): any {
-  const { Box, Text, Client } = $.ui.resolve(e)
+function drawBand($: Engine, e: RenderInput<'AbovePrompt'>, s: Snapshot, now: number): RenderElement {
+  const els = $.ui.resolve(e)
+  const { Box, Text } = els
+  const Client = 'Client' in els ? els.Client : undefined
   const lines = bandLines(s, now, e.props.bodyColumns ?? 100)
   // Animated where the surface runs surface modules; drawn still elsewhere
   if (Client) return <Client key="pace-band" module="./band-client.tsx" props={{ lines }} />
@@ -87,7 +89,7 @@ function dockedLayout(s: Snapshot, now: number, cols: number, rows: number, pref
   return { ...paneLayout(cols, prefs), chartHeight: (row: Parameters<typeof chartHeight>[0]) => Math.max(chartHeight(row), h) }
 }
 
-function drawPane($: any, e: any, s: Snapshot, prefs: PacePrefs, now: number): any {
+function drawPane($: Engine, e: RenderInput<'Pane'>, s: Snapshot, prefs: PacePrefs, now: number): RenderElement {
   const { Box, Text } = $.ui.resolve(e)
   const cols = e.props.bodyColumns ?? 60
   const rows = e.props.scroll?.bodyRows
@@ -142,14 +144,14 @@ let lastUsd: number | null = null
 /** This session's own name in the shared spend: a reload counts on from the ledger under it, never twice */
 let spendId = ''
 
-const homeOf = async ($: any): Promise<string | undefined> => $.env.get('HOME')
+const homeOf = async ($: Engine): Promise<string | undefined> => $.env.get('HOME')
 
 /** What `$.pace.snapshot()` answers: kept here, since the noun has no `$` of its own to read the state through */
 let published: PaceSnapshot | undefined
 const EMPTY: Snapshot = { samples: [], prompts: [], cache: null }
 
 /** The status-line entry, the status-line row, the window's state and `$.pace`'s snapshot, each written only when it changed */
-async function refreshLine($: any): Promise<void> {
+async function refreshLine($: Engine): Promise<void> {
   const prefs = (await read($, prefsA)) ?? DEFAULT_PREFS
   const s = await snapshot($)
   const now = await $.clock.now()
@@ -164,7 +166,7 @@ async function refreshLine($: any): Promise<void> {
 }
 
 /** The row the status line prints: the band in ANSI under placement `status`, empty otherwise so the row disappears */
-async function refreshRow($: any, s: Snapshot, prefs: PacePrefs, now: number): Promise<void> {
+async function refreshRow($: Engine, s: Snapshot, prefs: PacePrefs, now: number): Promise<void> {
   const text = placement === 'status' && prefs.band ? toAnsi(statusRow(s, now, ROW_COLS)) : ''
   if (text === lastRow) return
   const home = await homeOf($)
@@ -174,7 +176,7 @@ async function refreshRow($: any, s: Snapshot, prefs: PacePrefs, now: number): P
 }
 
 /** What the window draws: the snapshot, its samples cut to the last week, and when it was taken */
-async function writeState($: any, s: Snapshot, now: number): Promise<void> {
+async function writeState($: Engine, s: Snapshot, now: number): Promise<void> {
   if (!feeding) return
   const text = JSON.stringify({ ...s, samples: s.samples.filter(x => x.at >= now - STATE_SPAN), at: now })
   if (text === lastState) return
@@ -187,7 +189,7 @@ async function writeState($: any, s: Snapshot, now: number): Promise<void> {
 const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
 
 /** Starts feeding the viewer and writes the script that runs it; undefined where that cannot be done (no node) */
-async function viewerScript($: any): Promise<string | undefined> {
+async function viewerScript($: Engine): Promise<string | undefined> {
   const home = await homeOf($)
   if (!home) return undefined
   feeding = true
@@ -214,7 +216,7 @@ async function viewerScript($: any): Promise<string | undefined> {
 }
 
 /** Opens the viewer in a terminal window of its own; false where that cannot be done (not macOS, no node) */
-async function openWindow($: any): Promise<boolean> {
+async function openWindow($: Engine): Promise<boolean> {
   const script = await viewerScript($)
   return !!script && (await $.process.run(['open', '-a', terminalApp, script])).exitCode === 0
 }
@@ -223,10 +225,10 @@ async function openWindow($: any): Promise<boolean> {
 let splitPane: string | undefined
 
 /** Whether Claude runs inside tmux, which can split its window */
-const inTmux = async ($: any) => !!(await $.env.get('TMUX'))
+const inTmux = async ($: Engine) => !!(await $.env.get('TMUX'))
 
 /** Opens the viewer in a tmux split beside Claude, or finds the one open; false outside tmux or where that fails */
-async function openSplit($: any): Promise<'opened' | 'open' | false> {
+async function openSplit($: Engine): Promise<'opened' | 'open' | false> {
   if (!(await inTmux($))) return false
   if (splitPane && (await $.process.run(['tmux', 'display-message', '-p', '-t', splitPane, '#{pane_id}'])).exitCode === 0) return 'open'
   const script = await viewerScript($)
@@ -239,7 +241,7 @@ async function openSplit($: any): Promise<'opened' | 'open' | false> {
 }
 
 /** A key pressed in the window: w steps warm mode, r refreshes the figures; each handled once */
-async function readKeys($: any): Promise<void> {
+async function readKeys($: Engine): Promise<void> {
   const home = await homeOf($)
   const path = `${home}/${KEYS_FILE}`
   if (!home || !(await $.fs.exists(path))) return
@@ -253,7 +255,7 @@ async function readKeys($: any): Promise<void> {
 }
 
 /** Every source read again: the session's limits, Claude Code's usage cache and the usage endpoint */
-async function refreshAll($: any): Promise<boolean> {
+async function refreshAll($: Engine): Promise<boolean> {
   try { await recordRateLimits($, (await $.session.usage()).rateLimits) } catch {}
   try { await sampleCache($) } catch {}
   let ok = false
@@ -262,7 +264,7 @@ async function refreshAll($: any): Promise<boolean> {
   return ok
 }
 
-async function persistSamples($: any): Promise<void> {
+async function persistSamples($: Engine): Promise<void> {
   const stored = await $.store.get('samples')
   let merged = Q.mergeSamples(Array.isArray(stored) ? (stored as PaceSample[]) : [], (await read($, samplesA)) ?? [])
   try {
@@ -274,7 +276,7 @@ async function persistSamples($: any): Promise<void> {
   await update($, samplesA, () => merged)
 }
 
-async function addSample($: any, s: PaceSample): Promise<void> {
+async function addSample($: Engine, s: PaceSample): Promise<void> {
   let changed = false
   await update($, samplesA, list => {
     const next = Q.appendSample(list ?? [], s)
@@ -286,7 +288,7 @@ async function addSample($: any, s: PaceSample): Promise<void> {
   await refreshLine($)
 }
 
-async function recordRateLimits($: any, list: readonly RateLimitLike[] | undefined): Promise<void> {
+async function recordRateLimits($: Engine, list: readonly RateLimitLike[] | undefined): Promise<void> {
   const quotas: Record<string, PaceReading> = {}
   for (const rl of list ?? []) {
     if (rl.kind !== 'five_hour' && rl.kind !== 'seven_day') continue
@@ -297,7 +299,7 @@ async function recordRateLimits($: any, list: readonly RateLimitLike[] | undefin
 }
 
 /** An account-wide reading: per-model quotas always; 5-hour / 7-day only when the session has none from the last 10 minutes */
-async function addFresh($: any, s: PaceSample): Promise<void> {
+async function addFresh($: Engine, s: PaceSample): Promise<void> {
   const samples = (await read($, samplesA)) ?? []
   const quotas: Record<string, PaceReading> = {}
   for (const [k, r] of Object.entries(s.quotas)) {
@@ -310,7 +312,7 @@ async function addFresh($: any, s: PaceSample): Promise<void> {
   if (Object.keys(quotas).length) await addSample($, { at: s.at, quotas })
 }
 
-async function sampleCache($: any): Promise<void> {
+async function sampleCache($: Engine): Promise<void> {
   const home = await homeOf($)
   if (!home) return
   const path = `${home}/.claude.json`
@@ -320,7 +322,7 @@ async function sampleCache($: any): Promise<void> {
 }
 
 /** Fresh figures from the endpoint `/usage` reads, sent with Claude Code's own login; the mod never sees the credential */
-async function sampleUsageApi($: any): Promise<boolean> {
+async function sampleUsageApi($: Engine): Promise<boolean> {
   const auth = await $.session.authorize()
   if (!auth?.handle || auth.kind !== 'bearer') return false
   const r = await $.http.fetch(USAGE_URL, { auth: auth.handle, headers: { 'anthropic-beta': 'oauth-2025-04-20' } })
@@ -333,7 +335,7 @@ async function sampleUsageApi($: any): Promise<boolean> {
 }
 
 /** What this session just spent, added to the shared spend: the store's copy merged in first, so no session's is lost */
-async function recordSpend($: any, usd: number): Promise<void> {
+async function recordSpend($: Engine, usd: number): Promise<void> {
   const now = await $.clock.now()
   const stored = await $.store.get('spend')
   const mine = addSpend((await read($, spendA)) ?? [], spendId, now, usd, now, await modelOf($))
@@ -342,7 +344,7 @@ async function recordSpend($: any, usd: number): Promise<void> {
   await update($, spendA, () => merged)
 }
 
-async function recordPrompt($: any): Promise<void> {
+async function recordPrompt($: Engine): Promise<void> {
   const now = await $.clock.now()
   await update($, promptsA, list => mergePrompts(list ?? [], [now], now))
   const stored = await $.store.get('prompts')
@@ -362,7 +364,7 @@ async function recordPrompt($: any): Promise<void> {
 const isRecord = (v: unknown): v is Record<string, number[]> => typeof v === 'object' && v != null && !Array.isArray(v)
 
 /** The last reply's context starts the cache's timer; none (after /clear or a compaction) clears it. `usd` is what the reply cost, which prices it */
-async function recordContext($: any, tokens: number | undefined, window: number, usd?: number): Promise<void> {
+async function recordContext($: Engine, tokens: number | undefined, window: number, usd?: number): Promise<void> {
   const now = await $.clock.now()
   const ttl = ttlOption === 'auto' ? ((await read($, ttlA)) ?? '1h') : ttlOption
   if (usd != null && tokens != null) {
@@ -376,7 +378,7 @@ async function recordContext($: any, tokens: number | undefined, window: number,
 }
 
 /** Every minute: move the clock the drawings read and take in what other sessions stored */
-async function tick($: any): Promise<void> {
+async function tick($: Engine): Promise<void> {
   const now = await $.clock.now()
   const stored = await $.store.get('samples')
   if (Array.isArray(stored)) await update($, samplesA, cur => Q.mergeSamples(stored as PaceSample[], cur ?? []))
@@ -391,7 +393,7 @@ async function tick($: any): Promise<void> {
 }
 
 /** Every 15 seconds while the cache is warm: move its timer, and let warm mode act before it lapses */
-async function cacheTick($: any): Promise<void> {
+async function cacheTick($: Engine): Promise<void> {
   const c = await read($, cacheA)
   const now = await $.clock.now()
   if (!c || (now - c.at) / 1000 > ttlSeconds(c.ttl) + 15) return
@@ -415,7 +417,7 @@ async function cacheTick($: any): Promise<void> {
   $.ui.toast('pace: pinged the cache to keep it warm')
 }
 
-async function load($: any): Promise<void> {
+async function load($: Engine): Promise<void> {
   // The shared prefs, and this session's own modes: never another session's
   const prefs = prefsFrom(await $.store.get('prefs'), await $.store.get(sessionKey(spendId)))
   await update($, prefsA, () => prefs)
@@ -431,14 +433,14 @@ async function load($: any): Promise<void> {
 }
 
 /** Other sessions' modes a month after they last changed them: a session ends without saying so */
-async function forgetOldSessions($: any): Promise<void> {
+async function forgetOldSessions($: Engine): Promise<void> {
   const now = await $.clock.now()
   for (const key of await $.store.keys()) {
     if (isSessionKey(key) && key !== sessionKey(spendId) && isStale(await $.store.get(key), now)) await $.store.delete(key)
   }
 }
 
-async function setPrefs($: any, fn: (p: PacePrefs) => PacePrefs): Promise<void> {
+async function setPrefs($: Engine, fn: (p: PacePrefs) => PacePrefs): Promise<void> {
   await update($, prefsA, p => fn(p ?? DEFAULT_PREFS))
   const prefs = (await read($, prefsA)) ?? DEFAULT_PREFS
   await $.store.set('prefs', sharedOf(prefs))
@@ -451,7 +453,7 @@ async function setPrefs($: any, fn: (p: PacePrefs) => PacePrefs): Promise<void> 
 // ======================================================================
 
 /** Says each warning once per window across every session: a toast, and a notification for a terminal in the background */
-async function announce($: any, snap: PaceSnapshot): Promise<void> {
+async function announce($: Engine, snap: PaceSnapshot): Promise<void> {
   const alerts = alertsOf(snap)
   if (!alerts.length) return
   const said = await $.store.get('alerted')
@@ -464,7 +466,7 @@ async function announce($: any, snap: PaceSnapshot): Promise<void> {
 }
 
 /** Something the person should hear though they may be away: a toast, and a notification */
-async function tell($: any, text: string): Promise<void> {
+async function tell($: Engine, text: string): Promise<void> {
   $.ui.toast(`pace: ${text}`)
   try { await $.ui.notify(text, { title: 'pace' }) } catch {}
 }
@@ -481,11 +483,11 @@ let cwd = ''
 /** The plan and the handoff file as the last turn left them; null before one was read */
 let progressMark: string | null = null
 
-async function autoOf($: any): Promise<PaceAuto | null> {
+async function autoOf($: Engine): Promise<PaceAuto | null> {
   return ((await read($, prefsA)) ?? DEFAULT_PREFS).auto ?? null
 }
 
-async function setAuto($: any, auto: PaceAuto | null): Promise<void> {
+async function setAuto($: Engine, auto: PaceAuto | null): Promise<void> {
   await setPrefs($, p => ({ ...p, auto }))
 }
 
@@ -493,14 +495,14 @@ async function setAuto($: any, auto: PaceAuto | null): Promise<void> {
 const running = (a: PaceAuto): PaceAuto => ({ plan: a.plan, turns: a.turns, max: a.max, ...(a.stalls ? { stalls: a.stalls } : {}) })
 
 /** The plan and the handoff file's text: a turn that changed neither made no progress */
-async function progressText($: any, plan: string): Promise<string> {
+async function progressText($: Engine, plan: string): Promise<string> {
   const at = (p: string) => (p.startsWith('/') ? p : `${cwd}/${p}`)
   const text = async (p: string) => ((await $.fs.exists(at(p))) ? String(await $.fs.read(at(p))) : '')
   return `${await text(plan)}\u0000${await text(HANDOFF_FILE)}`
 }
 
 /** Whether the turn just ended moved the plan or the handoff file; undefined when there is nothing to compare with */
-async function progressed($: any, plan: string): Promise<boolean | undefined> {
+async function progressed($: Engine, plan: string): Promise<boolean | undefined> {
   const now = await progressText($, plan).catch(() => null)
   const before = progressMark
   progressMark = now
@@ -508,11 +510,11 @@ async function progressed($: any, plan: string): Promise<boolean | undefined> {
 }
 
 /** A prompt for a turn of its own, sent once the hook that asked has returned: a command's hook holds the turn it would wait on */
-async function submitSoon($: any, text: string): Promise<void> {
+async function submitSoon($: Engine, text: string): Promise<void> {
   timers.push($.clock.after(0, () => { void $.prompt.submit({ text }).catch(() => {}) }))
 }
 
-async function startAuto($: any, plan: string, max: number): Promise<void> {
+async function startAuto($: Engine, plan: string, max: number): Promise<void> {
   await setPrefs($, p => ({ ...p, onPace: true, auto: { plan, turns: 1, max } }))
   progressMark = await progressText($, plan).catch(() => null)
   await tell($, `Auto mode on: works through ${plan} on its own and spends quota while you are away. /pace auto off stops it.`)
@@ -520,10 +522,10 @@ async function startAuto($: any, plan: string, max: number): Promise<void> {
 }
 
 /** The session's model, which auto mode paces by: only the quotas it draws on hold or steer it */
-const modelOf = async ($: any): Promise<string | undefined> => $.session.model().catch(() => undefined)
+const modelOf = async ($: Engine): Promise<string | undefined> => $.session.model().catch(() => undefined)
 
 /** Carries out what auto mode decided after a turn or a hold */
-async function act($: any, d: Decision): Promise<void> {
+async function act($: Engine, d: Decision): Promise<void> {
   const auto = await autoOf($)
   if (!auto) return
   // A turn ending decides afresh: whatever wait it ends is over
@@ -553,7 +555,7 @@ async function act($: any, d: Decision): Promise<void> {
   }
 }
 
-async function holdUntil($: any, until: number): Promise<void> {
+async function holdUntil($: Engine, until: number): Promise<void> {
   holdTimer?.cancel()
   const t = $.clock.after(Math.max(0, until - (await $.clock.now())), () => { void endHold($).catch(() => {}) })
   holdTimer = t
@@ -561,7 +563,7 @@ async function holdUntil($: any, until: number): Promise<void> {
 }
 
 /** A hold or a wait is over: fresh figures, then decide again, with no turn to judge */
-async function endHold($: any): Promise<void> {
+async function endHold($: Engine): Promise<void> {
   const auto = await autoOf($)
   if (!auto || (auto.heldUntil == null && auto.waitingUntil == null) || auto.paused) return
   await setAuto($, running(auto))
@@ -570,7 +572,7 @@ async function endHold($: any): Promise<void> {
 }
 
 /** After a turn of the main loop: auto mode's next move, else on pace mode's upkeep */
-async function afterTurn($: any, answer: string, aborted: boolean): Promise<void> {
+async function afterTurn($: Engine, answer: string, aborted: boolean): Promise<void> {
   const prefs = (await read($, prefsA)) ?? DEFAULT_PREFS
   await refreshLine($)
   const auto = prefs.auto
@@ -585,7 +587,7 @@ async function afterTurn($: any, answer: string, aborted: boolean): Promise<void
 }
 
 /** The onboarding pane: what auto mode does and what it costs, before it starts the first time */
-function drawOnboarding($: any, e: any): any {
+function drawOnboarding($: Engine, e: RenderInput<'Pane'>): RenderElement {
   const { Box, Text, Button } = $.ui.resolve(e)
   const plan = pendingPlan?.plan ?? 'the plan'
   const lines = [
@@ -618,7 +620,7 @@ function drawOnboarding($: any, e: any): any {
 }
 
 /** `/pace on | off | auto …`: on pace mode and auto mode; null for any other argument */
-async function modeCommand($: any, raw: string): Promise<string | null> {
+async function modeCommand($: Engine, raw: string): Promise<string | null> {
   const arg = raw.toLowerCase()
   if (arg === 'on' || arg === 'off') {
     await setPrefs($, p => ({ ...p, onPace: arg === 'on' }))
@@ -658,7 +660,7 @@ async function modeCommand($: any, raw: string): Promise<string | null> {
 // ======================================================================
 
 /** /pace answers in a toast: no transcript row, so the model never reads it and the context stays as it was */
-function say($: any, text: string): {} {
+function say($: Engine, text: string): {} {
   $.ui.toast(text)
   return {}
 }
@@ -761,7 +763,7 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
     const auto = ((await read($, prefsA)) ?? DEFAULT_PREFS).auto
     if (!auto || auto.paused) return next(e)
-    return { result: { questions: e.questions, answers: answerQuestions(e.questions) } as any }
+    return { result: { questions: e.questions, answers: answerQuestions(e.questions) } }
   })
 
   on('ui.render', { component: 'Pane', requestId: AUTO_PANE }, async ($, e) => drawOnboarding($, e))

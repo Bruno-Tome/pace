@@ -6,18 +6,22 @@ changelog updated, and the step ticked here. Steps marked **(needs you)** wait f
 
 ## 1. Bug fixes
 
-- [ ] **Stale reading after a reset.** Once a window's reset time passes and no new reading has arrived, the band
+- [x] **Stale reading after a reset.** Once a window's reset time passes and no new reading has arrived, the band
       and status line still show the old window's percent (`5h 65%` minutes after the reset). Show the new window
       as started (0%, or `—` until a reading) from the moment its reset passes.
-- [ ] **Too fast with nothing to say.** A quota over pace with no per-prompt cost yet reads `→ — at reset too
+- [x] **Too fast with nothing to say.** A quota over pace with no per-prompt cost yet reads `→ — at reset too
       fast`. Say something a person can act on, e.g. `over pace · cost after 3 prompts`, and keep the red flash
       only for a rate that is known to run the quota out, or decide with a test what `fast` without a cost means.
 
 ## 2. Code polish
 
-- [ ] **Type the hooks module.** Replace `$: any` in `register.tsx` with the engine's types. Splitting
+- [x] **Type the hooks module.** Replace `$: any` in `register.tsx` with the engine's types. Splitting
       `register.tsx` further is limited by two engine rules: a `$.state` atom must be read in the file that
       defines it, and `$` is followed across files only into `function` declarations.
+- [ ] **Say a burst is the recent rate.** `11% Under pace … ▲ out in 2h51m burst` reads as a contradiction: the
+      status is the window so far, the rate is the last 30 minutes. Draw it `▲ burst · out in 2h51m at this rate`.
+- [ ] **A lighter model in a burst.** When the rate would run a quota out before its reset, move the session to
+      a smaller model or a lower reasoning effort to bring it back on pace, and back once the rate is steady.
 - [ ] **One compact layout.** The status-line row and `lineText` drawn from `bandLines`, so the band, the row and
       the entry cannot disagree.
 - [ ] **File paths in one place.** One constants block for `pace-row.txt`, `pace-state.json`, `pace-keys.json`
