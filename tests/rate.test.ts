@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { bar, rateSince, rateVerdict, sparkline } from '../hooks/rate.ts'
+import type { PaceReading } from '../types'
+import { bar, rateSince, sparkline } from '../hooks/rate.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const MIN = 60_000
@@ -8,6 +9,9 @@ const H = 60 * MIN
 
 // The 5-hour window resets in 2h: it started 3h ago
 const reset = NOW + 2 * H
+/** The rate against a 5-hour window, priced from its start at 0% */
+const rateVerdict = (prompts: number[], r: PaceReading | undefined, now: number) =>
+  rateSince(prompts, r, r?.resetsAt != null ? { at: r.resetsAt - 5 * H - 1, percent: 0 } : null, now)
 const every = (gapMin: number, n: number) => Array.from({ length: n }, (_, i) => NOW - i * gapMin * MIN)
 
 describe('rateVerdict', () => {

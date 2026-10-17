@@ -1,8 +1,8 @@
-// Prompting rate against a quota (the 5-hour window, or a week from a reading inside the last day), plus the terminal drawing primitives (bar cells, sparkline).
+// The prompting rate against a quota (the 5-hour window, or a week from a reading inside the last day), and the
+// terminal drawing primitives (bar cells, sparkline).
 // Pure functions; never touches `$`. Times are ms timestamps.
 
 import type { PaceRateLevel, PaceReading } from '../types'
-import { FIVE_HOURS } from './quota.ts'
 
 const MIN = 60_000
 
@@ -31,13 +31,6 @@ export type RateVerdict = {
 
 const countSince = (prompts: readonly number[], from: number, now: number) =>
   prompts.reduce((n, t) => (t > from && t <= now ? n + 1 : n), 0)
-
-/** `prompts` are submission times from every local session; `five` is the latest 5-hour reading */
-export function rateVerdict(prompts: readonly number[], five: PaceReading | undefined, now: number): RateVerdict {
-  // The window opened at 0%: every prompt since then priced it
-  const since = five?.resetsAt != null ? { at: five.resetsAt - FIVE_HOURS * 1000 - 1, percent: 0 } : null
-  return rateSince(prompts, five, since, now)
-}
 
 /**
  * The prompting rate against one quota. `since` is a reading of that quota earlier in its window (its start at 0%
