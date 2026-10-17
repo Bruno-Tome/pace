@@ -472,3 +472,14 @@ function clip(line: Line, cols: number): Line {
   }
   return out
 }
+
+/** What a key pressed in the window does: focus a quota (a digit; again shows all), send to the session, or quit */
+export type KeyAction = { focus?: number | undefined; send?: 'warm' | 'refresh'; quit?: true }
+
+export function keyAction(key: string, focus: number | undefined): KeyAction {
+  if (key === 'q' || key === 'Q' || key === '\x03') return { quit: true }
+  if (/^[1-9]$/.test(key)) return { focus: focus === Number(key) ? undefined : Number(key) }
+  if (key === 'w') return { send: 'warm' }
+  if (key === 'r') return { send: 'refresh' }
+  return {}
+}

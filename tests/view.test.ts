@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { screen, type Feed } from '../hooks/view.ts'
+import { keyAction, screen, type Feed } from '../hooks/view.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const H = 3600_000
@@ -56,4 +56,15 @@ test('focusing a quota draws its chart alone, full-height, and the footer names 
 
 test('focus on a quota that is not there draws the whole window', () => {
   expect(plain(screen(STATE, NOW, 100, 40, { focus: 3 }))).toContain('5-hour window')
+})
+
+test('the window\'s keys: a digit focuses its quota and again shows all, w and r go to the session, q quits', () => {
+  expect(keyAction('2', undefined)).toEqual({ focus: 2 })
+  expect(keyAction('2', 2)).toEqual({ focus: undefined })
+  expect(keyAction('3', 2)).toEqual({ focus: 3 })
+  expect(keyAction('w', 1)).toEqual({ send: 'warm' })
+  expect(keyAction('r', undefined)).toEqual({ send: 'refresh' })
+  expect(keyAction('q', undefined)).toEqual({ quit: true })
+  expect(keyAction('\x03', undefined)).toEqual({ quit: true })
+  expect(keyAction('x', 1)).toEqual({})
 })

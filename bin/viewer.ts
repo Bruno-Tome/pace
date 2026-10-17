@@ -6,7 +6,7 @@
 
 import { readFileSync, watchFile, writeFileSync } from 'node:fs'
 
-import { screen, type Feed } from '../hooks/view.ts'
+import { keyAction, screen, type Feed } from '../hooks/view.ts'
 
 const path = process.argv[2]
 const keysPath = process.argv[3]
@@ -49,12 +49,13 @@ process.stdout.write('\x1b[?1049h\x1b[?25l')
 if (process.stdin.isTTY) {
   process.stdin.setRawMode(true)
   process.stdin.on('data', d => {
-    const k = d.toString()
-    if (k === 'q' || k === 'Q' || k === '\x03') quit()
-    else if (/^[1-9]$/.test(k)) {
-      focus = focus === Number(k) ? undefined : Number(k)
+    const a = keyAction(d.toString(), focus)
+    if (a.quit) quit()
+    if ('focus' in a) {
+      focus = a.focus
       draw()
-    } else if (k === 'w' || k === 'r') send(k === 'w' ? 'warm' : 'refresh')
+    }
+    if (a.send) send(a.send)
   })
 }
 process.on('SIGINT', quit)

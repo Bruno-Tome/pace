@@ -35,9 +35,9 @@ Every step keeps `claude plugin test .`, `claude plugin validate .` and `tsc -p 
        (`model`, `view`, `quota`, `rate`, `spend`, `cache`, `alerts`, `auto`).
 4. [ ] One compact layout: the status-line row and `lineText` drawn from `bandLines`.
 5. [ ] File paths in one constants block, shared with `bin/viewer.ts`.
-6. [ ] Test the viewer: move its key handling into a pure function in `view.ts`.
-7. [ ] Drop `rateVerdict`, a 5-hour-only wrapper the model no longer uses (its tests move to `rateSince`).
-8. [ ] Make sure a corrupt store value can't throw in `load`.
+6. [x] Test the viewer: its key handling is `keyAction` in `view.ts`.
+7. [x] Drop `rateVerdict`; its tests use `rateSince`.
+8. [x] A malformed stored reading is dropped, not thrown over.
 
 ## 4. Docs
 
