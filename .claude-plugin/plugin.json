@@ -1,0 +1,36 @@
+{
+  "name": "pace",
+  "version": "0.7.0",
+  "description": "Rate-limit pacing in the terminal: 5-hour and weekly bars paced in dollars an hour across all parallel sessions (burst vs too fast), a per-prompt cost from the first prompt, the prompt-cache timer with the next prompt's cost in tokens and dollars and suggestions, a warm-cache mode, and /pace: burn-up charts in a terminal window of their own (two columns when wide; keys w, r, 1–9)",
+  "types": "./types/index.d.ts",
+  "license": "MIT",
+  "userConfig": {
+    "placement": {
+      "type": "string",
+      "title": "Pace bar placement",
+      "description": "above: a band above the prompt. status: a row your status line prints from ~/.claude/pacebar-row.txt",
+      "options": [
+        "above",
+        "status"
+      ],
+      "default": "above"
+    },
+    "cacheTtl": {
+      "type": "string",
+      "title": "Prompt cache TTL",
+      "description": "auto: 1 hour until a model switch reports otherwise. Set 5m if your account caches for 5 minutes",
+      "options": [
+        "auto",
+        "1h",
+        "5m"
+      ],
+      "default": "auto"
+    },
+    "terminal": {
+      "type": "string",
+      "title": "Terminal app for /pace",
+      "description": "The macOS app /pace opens its window in (Terminal, iTerm, Ghostty\u2026)",
+      "default": "Terminal"
+    }
+  }
+}

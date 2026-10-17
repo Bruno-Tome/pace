@@ -1,0 +1,102 @@
+/** One quota's reading: percent used 0–100, when its window resets (ms), the model's name for a model's own week */
+export type PaceReading = { percent: number; resetsAt?: number; name?: string }
+/** The readings taken at one moment (ms), by quota key: `five_hour`, `seven_day`, `seven_day_<model>` */
+export type PaceSample = { at: number; quotas: Record<string, PaceReading> }
+
+/** Dollars one session (`id`, its own) spent in the minute from `t` (ms), or with `h` in the hour from it */
+export type PaceSpend = { t: number; id: string; usd: number; h?: true }
+
+/** How long the prompt cache stays warm after a reply */
+export type PaceCacheTtl = '5m' | '1h'
+/** The main thread's last reply: when it landed (ms), the context it left in tokens, the window, the cache's TTL */
+export type PaceCacheInfo = { at: number; tokens: number; window: number; ttl: PaceCacheTtl }
+
+/** Warm mode: off, compact the conversation, or ping the cache through a fork, before an idle cache lapses */
+export type PaceWarmMode = 'off' | 'compact' | 'ping'
+
+/** What is shown, the band above the prompt and the status-line entry, and warm mode */
+export type PacePrefs = { band: boolean; line: boolean; warm?: PaceWarmMode }
+
+/** A quota against the clock; `gassedOut` is spent until it resets */
+export type PaceStatus = 'early' | 'under' | 'onPace' | 'over' | 'gassedOut'
+
+/** The prompting rate against a quota: `burst` runs it out early if it keeps up; `fast` does and it is over pace */
+export type PaceRateLevel = 'idle' | 'ok' | 'brisk' | 'burst' | 'fast'
+
+/** One quota as `$.pace.snapshot()` reports it */
+export type PaceQuota = {
+  key: string
+  /** `5-hour window`, `Week · Fable` */
+  name: string
+  /** Percent used, 0–100; null without a reading */
+  percent: number | null
+  /** Null where the reading cannot be set against the clock (stale, no reset time) */
+  status: PaceStatus | null
+  resetsAt: number | null
+  /** When it runs out at its average rate, if before the reset */
+  runOutAt: number | null
+  rate: {
+    level: PaceRateLevel
+    promptsPerHour: number
+    /** Dollars an hour every local session spends, once the shared spend prices this quota */
+    usdPerHour: number | null
+    usdBudgetPerHour: number | null
+    /** Percent of the quota one prompt costs */
+    costPerPrompt: number | null
+    /** Seconds until it runs out at the current rate */
+    emptyIn: number | null
+  }
+}
+
+/** Everything pace knows at one moment: what the band, the pane and the window draw */
+export type PaceSnapshot = {
+  at: number
+  /** The 5-hour window first, then the weeks */
+  quotas: PaceQuota[]
+  /** The prompt cache, null before a reply and after /clear or a compaction */
+  cache: {
+    tokens: number
+    window: number
+    ttl: PaceCacheTtl
+    secondsLeft: number
+    /** The next prompt's context in input-token equivalents, warm and cold, and in dollars once priced */
+    nextWarm: number
+    nextCold: number
+    nextWarmUsd: number | null
+    nextColdUsd: number | null
+  } | null
+  spend: { usdPerHour: number; sessions: number; usdPerPrompt: number | null }
+  /** A quota is spent: prompts fail until it resets */
+  gassedOut: boolean
+  /** What would cut token usage now, most urgent first */
+  advice: { level: 'urgent' | 'warn' | 'info'; text: string }[]
+}
+
+/** `$.pace`: pace's data for other plugins, read-only */
+export type Pace = {
+  snapshot: () => Promise<PaceSnapshot>
+}
+
+declare module 'claude-code' {
+  interface EngineInterface {
+    pace: Pace
+  }
+  interface PluginState {
+    pace: {
+      samples: PaceSample[]
+      /** Prompt submission times (ms) from every local session, the last day */
+      prompts: number[]
+      prefs: PacePrefs
+      /** The last reply's context, null before one and after /clear or a compaction */
+      cache: PaceCacheInfo | null
+      /** The last replies' dollars per input-token equivalent, which price the next prompt */
+      prices: number[]
+      /** What every local session spent, shared through the store */
+      spend: PaceSpend[]
+      /** The cache TTL a model switch last reported */
+      ttl: PaceCacheTtl
+      /** The minute clock the drawings read, so elapsed time moves without a new sample */
+      now: number
+    }
+  }
+}

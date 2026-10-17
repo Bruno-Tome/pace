@@ -1,0 +1,126 @@
+// What the drawings show, from the samples, the prompts and the cache: each quota's pace, the prompting rate
+// against it, and what to do about token usage. Pure; times in ms.
+
+import type { PaceCacheInfo, PaceReading, PaceSample, PaceSpend, PaceWarmMode } from '../types'
+import { suggestions, type Suggestion } from './cache.ts'
+import * as Q from './quota.ts'
+import { budgetText, rateSince, type RateVerdict } from './rate.ts'
+import { quotaPerDollar, spendVerdict, usdPerHour, usdPerPrompt } from './spend.ts'
+
+const MIN = 60_000
+const DAY = 24 * 60 * MIN
+
+/** Everything a drawing reads: the band above the prompt, the pane and the window draw from the same */
+export type Snapshot = {
+  samples: readonly PaceSample[]
+  prompts: readonly number[]
+  cache: PaceCacheInfo | null
+  warm?: PaceWarmMode
+  /** Dollars per input-token equivalent, from the session's replies; absent before one was priced */
+  price?: number | null
+  /** What every local session spent */
+  spend?: readonly PaceSpend[]
+}
+
+/** A quota as drawn: its names, its latest reading, what can be shown of it and its window's length (seconds) */
+export type Row = { key: string; name: string; short: string; reading?: PaceReading; view: Q.View; window: number }
+
+export const isFable = (key: string) => /fable/i.test(key)
+
+export function rowsOf(samples: readonly PaceSample[], now: number): Row[] {
+  return Q.quotaKeys(samples).map(key => {
+    const reading = Q.latest(samples, key)?.reading
+    const window = Q.windowOf(key)
+    return { key, name: Q.quotaName(key, reading?.name), short: Q.shortName(key, reading?.name), reading, view: Q.viewOf(reading, window, now), window }
+  })
+}
+
+/** The band's two quotas: the 5-hour window and the weekly Fable one, the all-models week standing in when there is no Fable reading */
+export function bandRows(rows: readonly Row[]): Row[] {
+  const five = rows.find(r => r.key === 'five_hour')
+  const week = rows.find(r => isFable(r.key)) ?? rows.find(r => r.key === 'seven_day')
+  return [five, week].filter((r): r is Row => !!r)
+}
+
+const isOver = (row: Row) => {
+  const status = Q.viewStatus(row.view)
+  return status === 'over' || status === 'gassedOut'
+}
+
+/**
+ * Where a quota's per-prompt cost is measured from: its window's start at 0% when that is within the day of prompts
+ * kept, else its earliest reading of this window inside that day; none until that reading is half an hour old.
+ */
+function baselineOf(samples: readonly PaceSample[], row: Row, now: number): { at: number; percent: number } | null {
+  const r = row.reading?.resetsAt
+  if (r == null) return null
+  const start = r - row.window * 1000
+  if (start >= now - DAY) return { at: start - 1, percent: 0 }
+  const first = samples.find(s => s.at >= now - DAY && Math.abs((s.quotas[row.key]?.resetsAt ?? 0) - r) <= 90_000)
+  return first && first.at <= now - 30 * MIN ? { at: first.at, percent: first.quotas[row.key]!.percent } : null
+}
+
+/**
+ * The prompting rate against one quota: in dollars an hour across every session once the shared spend says what
+ * a dollar of it costs, else in prompts an hour against what it moved since a baseline reading. A rate that
+ * empties it before the reset is `fast` only when the quota is over pace or its average alone runs it out;
+ * otherwise it is a `burst`. With no per-prompt cost yet, a quota over pace is `fast` at any rate.
+ */
+export function rateOf(s: Snapshot, row: Row, now: number): RateVerdict {
+  const { samples, prompts } = s
+  if (row.view.kind !== 'pace') return rateSince(prompts, undefined, null, now)
+  const v = spentRate(s, row, now) ?? rateSince(prompts, row.reading, baselineOf(samples, row, now), now)
+  if (v.level === 'fast') return isOver(row) || row.view.pace.runOutAt != null ? v : { ...v, level: 'burst' }
+  if (v.level === 'idle' || v.costPerPrompt != null) return v
+  return isOver(row) ? { ...v, level: 'fast' } : v
+}
+
+/** The rate judged in dollars, where the shared spend prices both the quota and a prompt */
+function spentRate(s: Snapshot, row: Row, now: number): RateVerdict | null {
+  const spend = s.spend ?? []
+  const perDollar = row.reading ? quotaPerDollar(s.samples, row.key, spend, now) : null
+  const perPrompt = usdPerPrompt(spend, s.prompts, now)
+  if (!row.reading || perDollar == null || perPrompt == null) return null
+  return spendVerdict({ prompts: s.prompts, reading: row.reading, perDollar, usdPerPrompt: perPrompt, usdPerHour: usdPerHour(spend, now), now })
+}
+
+const SEVERITY: Record<RateVerdict['level'], number> = { idle: 0, ok: 1, brisk: 2, burst: 3, fast: 4 }
+
+export type Rated = { row: Row; r: RateVerdict }
+
+/** The band's quotas, each with the prompting rate against it */
+export function ratedOf(s: Snapshot, rows: readonly Row[], now: number): Rated[] {
+  return bandRows(rows).map(row => ({ row, r: rateOf(s, row, now) }))
+}
+
+/** The quota the rate hurts most: the one that runs out soonest among equals */
+export function worstOf<T extends { r: RateVerdict }>(list: readonly T[]): T | undefined {
+  if (!list.length) return undefined
+  return list.reduce((a, b) =>
+    SEVERITY[b.r.level] > SEVERITY[a.r.level] || (SEVERITY[b.r.level] === SEVERITY[a.r.level] && (b.r.emptyIn ?? Infinity) < (a.r.emptyIn ?? Infinity)) ? b : a)
+}
+
+/** The overall verdict, for the status line and the pane's headline */
+export function verdictOf(s: Snapshot, rows: readonly Row[], now: number): RateVerdict {
+  const rated = ratedOf(s, rows, now)
+  const first = rows[0]
+  const all = rated.length ? rated : first ? [{ row: first, r: rateOf(s, first, now) }] : []
+  return worstOf(all)?.r ?? rateSince(s.prompts, undefined, null, now)
+}
+
+/** What would cut token usage now: from the cache, the context's fill, the prompting rate and the weekly quotas */
+export function adviceOf(s: Snapshot, now: number): Suggestion[] {
+  const rows = rowsOf(s.samples, now)
+  const worst = worstOf(ratedOf(s, rows, now))
+  const over = bandRows(rows).find(r => Q.isWeekly(r.key) && isOver(r))
+  const priced = worst && worst.r.costPerPrompt != null
+  return suggestions({
+    cache: s.cache,
+    now,
+    warm: s.warm,
+    contextPercent: s.cache ? Math.round((s.cache.tokens / s.cache.window) * 100) : undefined,
+    fast: priced && worst.r.level === 'fast' ? { name: worst.row.name, emptyIn: worst.r.emptyIn, slowTo: budgetText(worst.r) } : undefined,
+    burst: priced && worst.r.level === 'burst' ? { name: worst.row.name, emptyIn: worst.r.emptyIn } : undefined,
+    weeklyOverPace: over ? Q.modelName(over.key, over.reading?.name) : undefined,
+  })
+}
