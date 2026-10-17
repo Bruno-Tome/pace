@@ -6,6 +6,8 @@
     "name": "Bruno Rosa"
   },
   "license": "MIT",
+  "homepage": "https://github.com/Bruno-Tome/pace",
+  "repository": "https://github.com/Bruno-Tome/pace",
   "keywords": [
     "rate-limit",
     "quota",

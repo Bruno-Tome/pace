@@ -23,7 +23,9 @@
 | Over pace（超速） | 用量快于时间进度 |
 | **Gassed out（油尽）** | 额度已用完：重置前提示都会失败 |
 
-针对某个额度的速率分为 **steady（平稳）**、**brisk（偏快，接近预算）**、**burst（爆发：照此持续会提前用完，但平均仍在配速内）** 和 **too fast（过快：会在重置前用完，且已经超速）**。
+每个额度都会显示**按当前速率会落在哪里**：照这样继续发送提示，到重置时会用到的百分比（`→ 71% at reset`），若会提前用完，则显示何时用完（`out in 38m`）。越接近重置，落点越接近已用量，因此直到最后一分钟都清晰可读。尚未得出单次提示成本的额度显示 `→ —`。某个模型自己的周额度只计入发给该模型的提示和花费：使用 Opus 不会推高 Fable 周额度的速率。针对某个额度的速率分为 **steady（平稳）**、**brisk（偏快，接近预算）**、**burst（爆发：照此持续会提前用完，但平均仍在配速内）** 和 **too fast（过快：会在重置前用完，且已经超速）**。
+
+只有 **too fast** 会闪红，而且只在你正在发送提示时出现。超速的额度若最近 15 分钟内没有提示，则显示为 idle（空闲）：状态仍是“超速”，但不会闪烁，因为你此刻并没有让它变得更糟。
 
 ## 多个并行会话共同配速
 
@@ -59,7 +61,7 @@ pace 在引擎上添加了 `$.pace`。在你的 `plugin.json` 的 `dependencies`
 
 ```ts
 const snap = await $.pace.snapshot()
-snap.quotas        // [{ key, name, percent, status, resetsAt, runOutAt, rate: { level, usdPerHour, … } }]
+snap.quotas        // [{ key, name, percent, status, resetsAt, runOutAt, rate: { level, percentAtReset, emptyIn, percentPerHour, usdPerHour, … } }]
 snap.cache         // { tokens, secondsLeft, nextWarm, nextCold, nextWarmUsd, … } 或 null
 snap.spend         // { usdPerHour, sessions, usdPerPrompt }
 snap.gassedOut     // 有额度已用完
@@ -72,7 +74,7 @@ snap.advice        // [{ level, text }]
 ## 安装
 
 ```
-/plugin install pace --marketplace <owner>/pace
+/plugin install pace --marketplace Bruno-Tome/pace
 ```
 
 `/pace` 窗口需要 macOS，以及 `PATH` 中能直接运行 TypeScript 的 Node（23.6 或更高）。

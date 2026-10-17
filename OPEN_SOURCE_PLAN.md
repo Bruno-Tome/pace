@@ -12,10 +12,12 @@ Every step keeps `claude plugin test .`, `claude plugin validate .` and `tsc -p 
 - [x] `LICENSE` (MIT). No weektoken code is kept, so no second licence.
 - [x] `.gitignore`: `.claude-plugin/types/`, `node_modules/`, `.DS_Store`.
 - [x] `.claude-plugin/marketplace.json`.
-- [x] `author` and `keywords` in `plugin.json`. Add `homepage` and `repository` once the GitHub repo exists.
-- [ ] Secrets scan before the first push. The plugin-authoring scan can't run on this machine (organization
-      policy), so either run it where it can, or review the staged files by hand before pushing.
-- [ ] Choose the GitHub owner, create the repo (public), push, and replace `<owner>` in both READMEs.
+- [x] `author`, `keywords`, `homepage` and `repository` in `plugin.json`.
+- [x] Secrets scan before the first push, by hand (the plugin-authoring scan can't run on this machine): every
+      tracked and untracked file and the full history, for keys, tokens, private keys, home paths and emails.
+      None found. The credential is only ever a handle from `$.session.authorize()`. Commits carry the author's
+      personal email, which goes public with the history.
+- [x] Public repo at [Bruno-Tome/pace](https://github.com/Bruno-Tome/pace), the owner in both READMEs' install line.
 
 ## 2. Positioning
 
