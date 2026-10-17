@@ -391,6 +391,33 @@ test('prompting one model never makes another model\'s week too fast', async ($,
   expect(week).not.toContain('too fast')
 })
 
+test('/pace line off clears the status-line entry and keeps it off through ticks, replies and prompts', async ($, on) => {
+  const { clock, status } = world(on)
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  await $.prompt.submit({ text: 'p0' } as any)
+  expect(status[status.length - 1]).toContain('5h ')
+  await $.command.run({ command: 'pace', args: 'line off' } as any)
+  expect(status[status.length - 1]).toBeUndefined()
+  await clock.advance(60_000)
+  await reply($, 100_000)
+  await $.prompt.submit({ text: 'p1' } as any)
+  await clock.advance(60_000)
+  expect(status[status.length - 1]).toBeUndefined()
+  await $.command.run({ command: 'pace', args: 'line on' } as any)
+  expect(status[status.length - 1]).toContain('5h ')
+})
+
+test('a module loaded with the status-line entry off clears one a previous load left, and keeps it off', async ($, on) => {
+  const { stored, status } = world(on)
+  stored.prefs = { band: true, line: false, warm: 'off' }
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  await $.prompt.submit({ text: 'p0' } as any)
+  await reply($, 100_000)
+  // The engine keeps the entry across a hot reload; the module must say it is off, not assume it
+  expect(status.length).toBeGreaterThan(0)
+  expect(status.filter(t => t != null)).toEqual([])
+})
+
 test('/pace runs at once, mid-turn too, and answers in a toast: nothing lands in the transcript for the model to read', async ($, on) => {
   const { registered, toasts } = world(on)
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)

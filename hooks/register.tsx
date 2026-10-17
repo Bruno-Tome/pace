@@ -119,7 +119,8 @@ const STATE_SPAN = 8 * 24 * 60 * MIN
 let placement: 'above' | 'status' = 'above'
 let ttlOption: 'auto' | PaceCacheTtl = 'auto'
 let terminalApp = 'Terminal'
-let lastLine: string | undefined
+/** The status-line entry last said; null until this load says one, since the engine keeps an entry across a hot reload */
+let lastLine: string | undefined | null = null
 let lastRow: string | undefined
 let lastState: string | undefined
 /** The window was opened from this session: keep its state file current */

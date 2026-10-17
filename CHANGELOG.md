@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `/pace line off` clears the status-line entry after a hot reload too: a freshly loaded module says its entry
+  once instead of assuming none is shown.
 - Each quota shows where your rate takes it: the percent it lands at by its reset (`→ 71% at reset`), or when it
   runs out (`out in 38m`). It replaces the `rate of budget %/h` score, whose budget grew without bound as a
   window neared its reset. `$.pace.snapshot()` adds `percentAtReset` to each quota's rate.
