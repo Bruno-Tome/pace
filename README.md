@@ -118,6 +118,11 @@ pane says what it does and that it spends quota on its own; it starts when you p
 
 - After each turn pace sends the next prompt, until Claude ends a turn with `PACE: DONE` or `PACE: BLOCKED`, or the
   turn cap (40 by default) is reached.
+- It never prompts a turn that would only wait. When Claude is waiting on background work (a test run, a
+  subagent, CI), it ends the turn with `PACE: WAITING <what>` and pace sends nothing: Claude Code starts the next
+  turn when the work reports, and pace checks in after 15 minutes in case it hung. Two turns in a row that change
+  neither the plan nor `.pace/handoff.md` count as no progress: pace stops prompting and waits 5 minutes, then 10,
+  20 and 30, until a turn moves the plan again.
 - It answers Claude's questions with the recommended option.
 - It has Claude hand searches and routine edits to subagents on lighter models, and keep `.pace/handoff.md` up to
   date. When the context gets heavy, or is cold and large, pace clears it and resumes from that file.

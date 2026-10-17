@@ -2,7 +2,8 @@
 //
 // Auto mode works through a plan with no one at the keyboard: after each turn it continues with the next step,
 // hands off to a fresh context when this one is heavy, holds while a quota is gassed out or the rate would gas one
-// out, and stops when the plan is done or blocked. On pace mode keeps a long-running session's context and cache
+// out, waits without prompting while Claude waits on background work or its turns stop making progress, and stops
+// when the plan is done or blocked. On pace mode keeps a long-running session's context and cache
 // in shape: it compacts a heavy context while the cache is warm, and keeps an idle cache from lapsing.
 
 import type { PaceAuto, PaceSnapshot, PaceWarmMode } from '../types'
@@ -18,32 +19,48 @@ const HEAVY = 0.6
 const COLD_LARGE = 100_000
 /** How long auto mode holds before looking again at a rate that would gas a quota out */
 const PACING_HOLD = 15 * MIN
+/** How long auto mode waits on background work before checking in, in case it hung without reporting */
+const WAIT_CHECK = 15 * MIN
+/** Turns in a row without progress before auto mode stops prompting */
+const STALL_LIMIT = 2
+/** The first wait after turns stop making progress, doubled each time after, up to the cap */
+const STALL_WAIT = 5 * MIN
+const STALL_WAIT_MAX = 30 * MIN
 
-export type Marker = { kind: 'next' | 'done' | 'blocked'; reason?: string }
+export type Marker = { kind: 'next' | 'done' | 'blocked' | 'waiting'; reason?: string }
 
 /** How the turn says it ended: its last `PACE:` line, `next` when it has none */
 export function markerOf(answer: string): Marker {
-  const lines = [...answer.matchAll(/^PACE: (NEXT|DONE|BLOCKED)\b[ \t]*(.*)$/gm)]
+  const lines = [...answer.matchAll(/^PACE: (NEXT|DONE|BLOCKED|WAITING)\b[ \t]*(.*)$/gm)]
   const m = lines[lines.length - 1]
   if (!m) return { kind: 'next' }
   const kind = m[1]!.toLowerCase() as Marker['kind']
-  return kind === 'blocked' && m[2] ? { kind, reason: m[2].trim() } : { kind }
+  return (kind === 'blocked' || kind === 'waiting') && m[2] ? { kind, reason: m[2].trim() } : { kind }
 }
+
+/** How long to wait after `stalls` turns in a row without progress: 5 minutes, doubling, at most half an hour */
+const stallWait = (stalls: number) => Math.min(STALL_WAIT_MAX, STALL_WAIT * 2 ** (stalls - STALL_LIMIT))
 
 const fill = (s: PaceSnapshot) => (s.cache ? s.cache.tokens / s.cache.window : 0)
 
+/** `stalls`: turns in a row without progress, carried to the next decision */
 export type Decision =
-  | { kind: 'continue'; prompt: string }
+  | { kind: 'continue'; prompt: string; stalls: number }
   /** `/clear`, then the prompt, which resumes from the handoff file */
-  | { kind: 'handoff'; prompt: string }
-  /** Look again at `until` */
+  | { kind: 'handoff'; prompt: string; stalls: number }
+  /** Look again at `until`, turns ending meanwhile ignored */
   | { kind: 'hold'; until: number; why: string }
+  /** Send nothing: the next turn's end decides again, as background work reporting starts one; check in at `until` */
+  | { kind: 'wait'; until: number; why: string; stalls: number }
   /** Off until `/pace auto resume` */
   | { kind: 'pause'; why: string }
   | { kind: 'stop'; why: string }
 
-/** The session's model, by id; undefined before its first request */
-export type DecideInput = { auto: PaceAuto; snap: PaceSnapshot; answer: string; aborted: boolean; model?: string }
+/**
+ * `model`: the session's, by id; undefined before its first request. `progressed`: whether the turn moved the plan
+ * or the handoff file; undefined with no turn to judge (a hold or a wait ending), which keeps the stall count.
+ */
+export type DecideInput = { auto: PaceAuto; snap: PaceSnapshot; answer: string; aborted: boolean; model?: string; progressed?: boolean }
 
 /** The snapshot as a session on `model` sees it: only the quotas it draws on */
 export const forModel = (s: PaceSnapshot, model: string | undefined): PaceSnapshot =>
@@ -65,9 +82,13 @@ export function decide(i: DecideInput): Decision {
     const when = fast.rate.emptyIn != null ? ` gasses out in ${formatDuration(fast.rate.emptyIn)}` : ' runs out before it resets'
     return { kind: 'hold', until: snap.at + PACING_HOLD, why: `Pacing: at this rate ${fast.name}${when}` }
   }
+  // Background work reports by starting a turn of its own: prompting meanwhile only spends turns
+  const stalls = i.progressed == null ? (auto.stalls ?? 0) : i.progressed ? 0 : (auto.stalls ?? 0) + 1
+  if (marker.kind === 'waiting') return { kind: 'wait', until: snap.at + WAIT_CHECK, why: `Waiting on ${marker.reason ?? 'background work'}`, stalls }
+  if (i.progressed === false && stalls >= STALL_LIMIT) return { kind: 'wait', until: snap.at + stallWait(stalls), why: `No progress in ${stalls} turns: waiting for background work to report`, stalls }
   const c = snap.cache
-  if (c && (fill(snap) >= HEAVY || (c.secondsLeft === 0 && c.tokens >= COLD_LARGE))) return { kind: 'handoff', prompt: handoffPrompt(auto.plan, snap) }
-  return { kind: 'continue', prompt: continuePrompt(auto.plan, snap) }
+  if (c && (fill(snap) >= HEAVY || (c.secondsLeft === 0 && c.tokens >= COLD_LARGE))) return { kind: 'handoff', prompt: handoffPrompt(auto.plan, snap), stalls }
+  return { kind: 'continue', prompt: continuePrompt(auto.plan, snap), stalls }
 }
 
 /** What the next turn should know about pacing: said in the prompt, never in the system prompt, which stays cached */
@@ -96,7 +117,8 @@ export function protocol(): string {
     '- Never wait for the user. Where you would ask, take the recommended option and say which you took.',
     `- Before ending each turn, update ${HANDOFF_FILE}: what is done, what is next, and the facts a fresh session needs (files, commands, decisions). pace may clear the context and resume from it.`,
     '- Use subagents for work that does not need the main thread: searches, reading many files, mechanical edits, test runs. Give them a lighter model (haiku for search and reads, sonnet for routine edits) and keep the main thread for decisions.',
-    '- End every turn with exactly one line: `PACE: NEXT` when steps remain, `PACE: DONE` when the plan is finished, or `PACE: BLOCKED <reason>` when you cannot go on without the user.',
+    '- Never poll background work (a shell, a subagent, CI). When the next step waits on it, end the turn with `PACE: WAITING <what>`: pace sends nothing, and Claude Code starts your next turn when it reports.',
+    '- End every turn with exactly one line: `PACE: NEXT` when steps remain, `PACE: WAITING <what>` while background work runs, `PACE: DONE` when the plan is finished, or `PACE: BLOCKED <reason>` when you cannot go on without the user.',
   ].join('\n')
 }
 

@@ -5,6 +5,7 @@ import { answerQuestions, decide, markerOf, protocol, upkeep, warmModeFor } from
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const H = 3600_000
+const MIN = 60_000
 
 const quota = (over: Partial<PaceQuota> = {}): PaceQuota => ({
   key: 'five_hour', name: '5-hour window', percent: 40, status: 'onPace', resetsAt: NOW + 2 * H, runOutAt: null,
@@ -31,6 +32,33 @@ describe('auto mode', () => {
     expect(markerOf('All done.\nPACE: DONE')).toEqual({ kind: 'done' })
     expect(markerOf('PACE: BLOCKED needs an API key')).toEqual({ kind: 'blocked', reason: 'needs an API key' })
     expect(markerOf('no marker at all')).toEqual({ kind: 'next' })
+  })
+
+  test('reads a turn that waits on background work', () => {
+    expect(markerOf('Started the suite.\nPACE: WAITING the test run')).toEqual({ kind: 'waiting', reason: 'the test run' })
+  })
+
+  test('sends nothing while Claude waits on background work, checking in after 15 minutes in case it hangs', () => {
+    expect(decide({ auto: AUTO, snap: snap(), answer: 'PACE: WAITING the test run', aborted: false, progressed: true }))
+      .toMatchObject({ kind: 'wait', until: NOW + 15 * MIN, why: 'Waiting on the test run' })
+    // Never a handoff under work still running: /clear would lose track of it
+    const heavy = snap({ cache: { ...snap().cache!, tokens: 700_000 } })
+    expect(decide({ auto: AUTO, snap: heavy, answer: 'PACE: WAITING the test run', aborted: false, progressed: true }).kind).toBe('wait')
+  })
+
+  test('backs off when turns stop making progress: the plan and the handoff file unchanged', () => {
+    const after = (stalls: number, progressed?: boolean) => decide({ auto: { ...AUTO, stalls }, snap: snap(), answer: 'Still waiting.', aborted: false, progressed })
+    // One quiet turn is fine: it may have been checking on something
+    expect(after(0, false)).toMatchObject({ kind: 'continue', stalls: 1 })
+    // Two in a row: stop prompting, and wait longer each time, up to half an hour
+    expect(after(1, false)).toMatchObject({ kind: 'wait', until: NOW + 5 * MIN, stalls: 2 })
+    expect(after(2, false)).toMatchObject({ kind: 'wait', until: NOW + 10 * MIN, stalls: 3 })
+    expect(after(3, false)).toMatchObject({ kind: 'wait', until: NOW + 20 * MIN, stalls: 4 })
+    expect(after(6, false)).toMatchObject({ kind: 'wait', until: NOW + 30 * MIN, stalls: 7 })
+    // A turn that moves the plan starts over
+    expect(after(4, true)).toMatchObject({ kind: 'continue', stalls: 0 })
+    // A check-in after a wait, with no turn to judge, keeps the count so the next quiet turn waits longer
+    expect(after(4)).toMatchObject({ kind: 'continue', stalls: 4 })
   })
 
   test('continues with the next step, the pacing it should know about in the prompt', () => {
@@ -84,6 +112,10 @@ describe('auto mode', () => {
     expect(protocol()).toMatch(/PACE: NEXT/)
     expect(protocol()).toMatch(/subagent/i)
     expect(protocol()).toMatch(/\.pace\/handoff\.md/)
+  })
+
+  test('its instructions say to wait for background work, never poll it', () => {
+    expect(protocol()).toContain('PACE: WAITING')
   })
 
   test('answers a question for you with the recommended option, else the first', () => {

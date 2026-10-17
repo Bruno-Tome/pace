@@ -14,8 +14,11 @@ export type PaceCacheInfo = { at: number; tokens: number; window: number; ttl: P
 /** Warm mode: off, compact the conversation, or ping the cache through a fork, before an idle cache lapses */
 export type PaceWarmMode = 'off' | 'compact' | 'ping'
 
-/** Auto mode's run: the plan file, the turns taken and allowed, and while it holds, until when and why */
-export type PaceAuto = { plan: string; turns: number; max: number; heldUntil?: number; why?: string; paused?: boolean }
+/**
+ * Auto mode's run: the plan file, the turns taken and allowed; while it holds or waits, until when and why; and the
+ * turns in a row that made no progress
+ */
+export type PaceAuto = { plan: string; turns: number; max: number; heldUntil?: number; waitingUntil?: number; why?: string; paused?: boolean; stalls?: number }
 
 /**
  * What is shown (the band above the prompt, the status-line entry), warm mode, on pace mode (keeps a long-running

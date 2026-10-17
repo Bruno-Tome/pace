@@ -142,3 +142,51 @@ test('an interrupt pauses auto mode until /pace auto resume', async ($, on) => {
   await clock.advance(1)
   expect(submitted.length).toBe(2)
 })
+
+test('auto mode sends nothing while Claude waits on background work, and picks up when it reports', async ($, on) => {
+  const { submitted, clock, files } = world(on)
+  files['/tmp/ROADMAP.md'] = '- [ ] step one'
+  await start($)
+  await pace($, 'auto ROADMAP.md')
+  await onboard($, clock)
+  await turnEnds($, 'Started the suite.\nPACE: WAITING the test run')
+  expect(submitted.length).toBe(1)
+  // The run reports: Claude Code starts a turn of its own, which moves the plan
+  files['/tmp/ROADMAP.md'] = '- [x] step one'
+  await turnEnds($, 'Suite green, step one done.\nPACE: NEXT')
+  expect(submitted.length).toBe(2)
+  expect(submitted[1]).toContain('Continue with the next unfinished step')
+})
+
+test('auto mode checks in on background work that has not reported in 15 minutes', async ($, on) => {
+  const { submitted, clock } = world(on)
+  await start($)
+  await pace($, 'auto ROADMAP.md')
+  await onboard($, clock)
+  await turnEnds($, 'PACE: WAITING the test run')
+  await clock.advance(14 * 60_000)
+  expect(submitted.length).toBe(1)
+  await clock.advance(60_000)
+  expect(submitted.length).toBe(2)
+})
+
+test('auto mode stops prompting turns that make no progress, and backs off', async ($, on) => {
+  const { submitted, clock, files } = world(on)
+  files['/tmp/ROADMAP.md'] = '- [ ] step one'
+  await start($)
+  await pace($, 'auto ROADMAP.md')
+  await onboard($, clock)
+  await turnEnds($, 'Still waiting on the test run.')
+  expect(submitted.length).toBe(2)
+  // A second turn in a row with the plan and the handoff file unchanged: no third prompt
+  await turnEnds($, 'Still waiting.')
+  expect(submitted.length).toBe(2)
+  await clock.advance(5 * 60_000)
+  expect(submitted.length).toBe(3)
+  // Still nothing: twice as long this time
+  await turnEnds($, 'Still waiting.')
+  await clock.advance(5 * 60_000)
+  expect(submitted.length).toBe(3)
+  await clock.advance(5 * 60_000)
+  expect(submitted.length).toBe(4)
+})

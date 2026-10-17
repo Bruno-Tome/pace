@@ -18,7 +18,7 @@ import type { Register } from 'claude-code'
 
 import type { Pace, PaceAuto, PaceCacheInfo, PaceCacheTtl, PaceSnapshot, PacePrefs, PaceReading, PaceSample, PaceSpend, PaceWarmMode } from '../types'
 import { alertsOf } from './alerts.ts'
-import { answerQuestions, continuePrompt, decide, forModel, protocol, startPrompt, upkeep, warmModeFor, type Decision } from './auto.ts'
+import { answerQuestions, continuePrompt, decide, forModel, HANDOFF_FILE, protocol, startPrompt, upkeep, warmModeFor, type Decision } from './auto.ts'
 import { addPrice, priceOf, replyEquivalents, ttlSeconds, warmAction } from './cache.ts'
 import { snapshotOf, type Snapshot } from './model.ts'
 import * as Q from './quota.ts'
@@ -422,8 +422,9 @@ async function load($: any): Promise<void> {
   const prices = await $.store.get('prices')
   if (Array.isArray(prices)) await update($, pricesA, () => prices.filter((p): p is number => typeof p === 'number'))
   await tick($)
-  const held = (await read($, prefsA))?.auto?.heldUntil
-  if (held != null) await holdUntil($, held)
+  const auto = (await read($, prefsA))?.auto
+  const until = auto?.heldUntil ?? auto?.waitingUntil
+  if (until != null) await holdUntil($, until)
 }
 
 async function setPrefs($: any, fn: (p: PacePrefs) => PacePrefs): Promise<void> {
@@ -460,7 +461,12 @@ const AUTO_PANE = 'pace-auto'
 const AUTO_TURNS = 40
 /** A plan waiting on the onboarding pane's Start */
 let pendingPlan: { plan: string; max: number } | null = null
+/** The pending end of a hold or a wait: one at a time */
 let holdTimer: { cancel: () => void } | undefined
+/** The session's working directory, where a plan's relative path starts */
+let cwd = ''
+/** The plan and the handoff file as the last turn left them; null before one was read */
+let progressMark: string | null = null
 
 async function autoOf($: any): Promise<PaceAuto | null> {
   return ((await read($, prefsA)) ?? DEFAULT_PREFS).auto ?? null
@@ -470,8 +476,23 @@ async function setAuto($: any, auto: PaceAuto | null): Promise<void> {
   await setPrefs($, p => ({ ...p, auto }))
 }
 
-/** Auto mode's run, without a hold or a pause */
-const running = (a: PaceAuto): PaceAuto => ({ plan: a.plan, turns: a.turns, max: a.max })
+/** Auto mode's run, without a hold, a wait or a pause */
+const running = (a: PaceAuto): PaceAuto => ({ plan: a.plan, turns: a.turns, max: a.max, ...(a.stalls ? { stalls: a.stalls } : {}) })
+
+/** The plan and the handoff file's text: a turn that changed neither made no progress */
+async function progressText($: any, plan: string): Promise<string> {
+  const at = (p: string) => (p.startsWith('/') ? p : `${cwd}/${p}`)
+  const text = async (p: string) => ((await $.fs.exists(at(p))) ? String(await $.fs.read(at(p))) : '')
+  return `${await text(plan)}\u0000${await text(HANDOFF_FILE)}`
+}
+
+/** Whether the turn just ended moved the plan or the handoff file; undefined when there is nothing to compare with */
+async function progressed($: any, plan: string): Promise<boolean | undefined> {
+  const now = await progressText($, plan).catch(() => null)
+  const before = progressMark
+  progressMark = now
+  return before == null || now == null ? undefined : now !== before
+}
 
 /** A prompt for a turn of its own, sent once the hook that asked has returned: a command's hook holds the turn it would wait on */
 async function submitSoon($: any, text: string): Promise<void> {
@@ -480,6 +501,7 @@ async function submitSoon($: any, text: string): Promise<void> {
 
 async function startAuto($: any, plan: string, max: number): Promise<void> {
   await setPrefs($, p => ({ ...p, onPace: true, auto: { plan, turns: 1, max } }))
+  progressMark = await progressText($, plan).catch(() => null)
   await tell($, `Auto mode on: works through ${plan} on its own and spends quota while you are away. /pace auto off stops it.`)
   await submitSoon($, startPrompt(plan))
 }
@@ -491,12 +513,18 @@ const modelOf = async ($: any): Promise<string | undefined> => $.session.model()
 async function act($: any, d: Decision): Promise<void> {
   const auto = await autoOf($)
   if (!auto) return
-  if (d.kind === 'continue' || d.kind === 'handoff') {
+  // A turn ending decides afresh: whatever wait it ends is over
+  if (d.kind !== 'hold') holdTimer?.cancel()
+  if (d.kind === 'wait') {
+    await setAuto($, { ...running(auto), waitingUntil: d.until, why: d.why, stalls: d.stalls })
+    await holdUntil($, d.until)
+    $.ui.toast(`pace: auto mode sends nothing until ${Q.clockAt(d.until, false)} or a turn of its own. ${d.why}`)
+  } else if (d.kind === 'continue' || d.kind === 'handoff') {
     if (d.kind === 'handoff') {
       $.ui.toast('pace: handing off to a fresh context')
       await $.command.run({ command: 'clear' })
     }
-    await setAuto($, { ...running(auto), turns: auto.turns + 1 })
+    await setAuto($, { ...running(auto), turns: auto.turns + 1, stalls: d.stalls })
     await $.prompt.submit({ text: d.prompt })
   } else if (d.kind === 'hold') {
     await setAuto($, { ...running(auto), heldUntil: d.until, why: d.why })
@@ -519,10 +547,10 @@ async function holdUntil($: any, until: number): Promise<void> {
   timers.push(t)
 }
 
-/** A hold is over: fresh figures, then decide again */
+/** A hold or a wait is over: fresh figures, then decide again, with no turn to judge */
 async function endHold($: any): Promise<void> {
   const auto = await autoOf($)
-  if (!auto || auto.heldUntil == null || auto.paused) return
+  if (!auto || (auto.heldUntil == null && auto.waitingUntil == null) || auto.paused) return
   await setAuto($, running(auto))
   await refreshAll($)
   await act($, decide({ auto: running(auto), snap: published!, answer: '', aborted: false, model: await modelOf($) }))
@@ -534,7 +562,7 @@ async function afterTurn($: any, answer: string, aborted: boolean): Promise<void
   await refreshLine($)
   const auto = prefs.auto
   if (auto && !auto.paused) {
-    if (auto.heldUntil == null) await act($, decide({ auto, snap: published!, answer, aborted, model: await modelOf($) }))
+    if (auto.heldUntil == null) await act($, decide({ auto, snap: published!, answer, aborted, model: await modelOf($), progressed: await progressed($, auto.plan) }))
     return
   }
   if (prefs.onPace && upkeep(published!) === 'compact') {
@@ -637,6 +665,7 @@ export const register: Register = (on, options) => {
   })
 
   on('session.start', async ($, e, next) => {
+    cwd = e.cwd ?? ''
     spendId = await $.session.id().catch(() => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`)
     await $.command.register({ name: 'pace', description: 'Rate-limit pace, prompting rate and the prompt cache, charted', argumentHint: USAGE, immediate: true })
     try { await load($) } catch {}

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Auto mode no longer prompts turns that only wait. Claude ends a turn with `PACE: WAITING <what>` while background
+  work runs, and pace sends nothing until a turn of its own starts or 15 minutes pass. Two turns in a row that move
+  neither the plan nor the handoff file stop the prompting, with waits of 5, 10, 20 and 30 minutes.
 - `/pace line off` clears the status-line entry after a hot reload too: a freshly loaded module says its entry
   once instead of assuming none is shown.
 - Each quota shows where your rate takes it: the percent it lands at by its reset (`→ 71% at reset`), or when it
