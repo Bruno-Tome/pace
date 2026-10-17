@@ -398,7 +398,7 @@ function restLines(s: Snapshot, now: number, o: PaneLayout): Line[] {
     blank()
   }
   if (o.prefs) {
-    out.push([{ t: `/pace refresh · /pace window · /pace ${o.prefs.band ? 'hide' : 'show'} band · /pace line ${o.prefs.line ? 'off' : 'on'}`, dim: true }])
+    out.push([{ t: `/pace refresh · /pace window · /pace ${o.prefs.onPace ? 'off' : 'on'} (on pace mode) · /pace auto <plan> · /pace ${o.prefs.band ? 'hide' : 'show'} band · /pace line ${o.prefs.line ? 'off' : 'on'}`, dim: true }])
   }
   return out
 }

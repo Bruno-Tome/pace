@@ -1,0 +1,13 @@
+{
+  "name": "pace",
+  "description": "pace: rate-limit pacing for Claude Code in the terminal",
+  "owner": {
+    "name": "Bruno Rosa"
+  },
+  "plugins": [
+    {
+      "name": "pace",
+      "source": "./"
+    }
+  ]
+}

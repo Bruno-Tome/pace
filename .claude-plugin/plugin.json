@@ -1,9 +1,19 @@
 {
   "name": "pace",
-  "version": "0.7.0",
-  "description": "Rate-limit pacing in the terminal: 5-hour and weekly bars paced in dollars an hour across all parallel sessions (burst vs too fast), a per-prompt cost from the first prompt, the prompt-cache timer with the next prompt's cost in tokens and dollars and suggestions, a warm-cache mode, and /pace: burn-up charts in a terminal window of their own (two columns when wide; keys w, r, 1–9)",
-  "types": "./types/index.d.ts",
+  "version": "0.8.0",
+  "description": "Rate-limit pacing for Claude Code in the terminal: quotas against the clock, paced in dollars an hour across parallel sessions, a per-prompt cost, the prompt cache's timer, warnings before you get gassed out, on pace mode and auto mode for long-running sessions, and $.pace for other mods",
+  "author": {
+    "name": "Bruno Rosa"
+  },
   "license": "MIT",
+  "keywords": [
+    "rate-limit",
+    "quota",
+    "pace",
+    "cache",
+    "terminal"
+  ],
+  "types": "./types/index.d.ts",
   "userConfig": {
     "placement": {
       "type": "string",
@@ -29,7 +39,7 @@
     "terminal": {
       "type": "string",
       "title": "Terminal app for /pace",
-      "description": "The macOS app /pace opens its window in (Terminal, iTerm, Ghostty\u2026)",
+      "description": "The macOS app /pace opens its window in (Terminal, iTerm, Ghostty…)",
       "default": "Terminal"
     }
   }
