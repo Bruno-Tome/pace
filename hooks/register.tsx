@@ -15,7 +15,9 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Pace, PaceCacheInfo, PaceCacheTtl, PaceSnapshot, PacePrefs, PaceReading, PaceSample, PaceSpend, PaceWarmMode } from '../types'
+import type { Pace, PaceAuto, PaceCacheInfo, PaceCacheTtl, PaceSnapshot, PacePrefs, PaceReading, PaceSample, PaceSpend, PaceWarmMode } from '../types'
+import { alertsOf } from './alerts.ts'
+import { answerQuestions, continuePrompt, decide, protocol, startPrompt, upkeep, warmModeFor, type Decision } from './auto.ts'
 import { addPrice, priceOf, replyEquivalents, ttlSeconds, warmAction } from './cache.ts'
 import { snapshotOf, type Snapshot } from './model.ts'
 import * as Q from './quota.ts'
@@ -50,6 +52,8 @@ async function snapshot($: any): Promise<Snapshot> {
     prompts: (await read($, promptsA)) ?? [],
     cache: (await read($, cacheA)) ?? null,
     warm: ((await read($, prefsA)) ?? DEFAULT_PREFS).warm ?? 'off',
+    onPace: ((await read($, prefsA)) ?? DEFAULT_PREFS).onPace ?? false,
+    auto: ((await read($, prefsA)) ?? DEFAULT_PREFS).auto ?? null,
     price: priceOf((await read($, pricesA)) ?? []),
     spend: (await read($, spendA)) ?? [],
   }
@@ -132,6 +136,7 @@ async function refreshLine($: any): Promise<void> {
   const s = await snapshot($)
   const now = await $.clock.now()
   published = snapshotOf(s, now)
+  try { await announce($, published) } catch {}
   const text = prefs.line ? lineText(s, now) : undefined
   try { await refreshRow($, s, prefs, now) } catch {}
   try { await writeState($, s, now) } catch {}
@@ -336,7 +341,8 @@ async function cacheTick($: any): Promise<void> {
   const now = await $.clock.now()
   if (!c || (now - c.at) / 1000 > ttlSeconds(c.ttl) + 15) return
   await update($, nowA, () => now)
-  const mode = ((await read($, prefsA)) ?? DEFAULT_PREFS).warm ?? 'off'
+  const prefs = (await read($, prefsA)) ?? DEFAULT_PREFS
+  const mode = warmModeFor({ onPace: prefs.onPace ?? false, warm: prefs.warm ?? 'off' }, snapshotOf(await snapshot($), now))
   const act = warmAction({ mode, cache: c, now, working, actions: warmActions, lastFor: warmFor })
   if (!act) return
   warmActions += 1
@@ -362,12 +368,191 @@ async function load($: any): Promise<void> {
   const prices = await $.store.get('prices')
   if (Array.isArray(prices)) await update($, pricesA, () => prices.filter((p): p is number => typeof p === 'number'))
   await tick($)
+  const held = (await read($, prefsA))?.auto?.heldUntil
+  if (held != null) await holdUntil($, held)
 }
 
 async function setPrefs($: any, fn: (p: PacePrefs) => PacePrefs): Promise<void> {
   await update($, prefsA, p => fn(p ?? DEFAULT_PREFS))
   await $.store.set('prefs', await read($, prefsA))
   await refreshLine($)
+}
+
+// ======================================================================
+// Warnings, on pace mode and auto mode
+// ======================================================================
+
+/** Says each warning once per window across every session: a toast, and a notification for a terminal in the background */
+async function announce($: any, snap: PaceSnapshot): Promise<void> {
+  const alerts = alertsOf(snap)
+  if (!alerts.length) return
+  const said = await $.store.get('alerted')
+  const seen = new Set<string>(Array.isArray(said) ? (said as string[]) : [])
+  const fresh = alerts.filter(a => !seen.has(a.id))
+  if (!fresh.length) return
+  for (const a of fresh) seen.add(a.id)
+  await $.store.set('alerted', [...seen].slice(-200))
+  for (const a of fresh) await tell($, a.text)
+}
+
+/** Something the person should hear though they may be away: a toast, and a notification */
+async function tell($: any, text: string): Promise<void> {
+  $.ui.toast(`pace: ${text}`)
+  try { await $.ui.notify(text, { title: 'pace' }) } catch {}
+}
+
+const AUTO_PANE = 'pace-auto'
+/** Turns auto mode takes before it stops to let the person look */
+const AUTO_TURNS = 40
+/** A plan waiting on the onboarding pane's Start */
+let pendingPlan: { plan: string; max: number } | null = null
+let holdTimer: { cancel: () => void } | undefined
+
+async function autoOf($: any): Promise<PaceAuto | null> {
+  return ((await read($, prefsA)) ?? DEFAULT_PREFS).auto ?? null
+}
+
+async function setAuto($: any, auto: PaceAuto | null): Promise<void> {
+  await setPrefs($, p => ({ ...p, auto }))
+}
+
+/** Auto mode's run, without a hold or a pause */
+const running = (a: PaceAuto): PaceAuto => ({ plan: a.plan, turns: a.turns, max: a.max })
+
+/** A prompt for a turn of its own, sent once the hook that asked has returned: a command's hook holds the turn it would wait on */
+async function submitSoon($: any, text: string): Promise<void> {
+  timers.push($.clock.after(0, () => { void $.prompt.submit({ text }).catch(() => {}) }))
+}
+
+async function startAuto($: any, plan: string, max: number): Promise<void> {
+  await setPrefs($, p => ({ ...p, onPace: true, auto: { plan, turns: 1, max } }))
+  await tell($, `Auto mode on: works through ${plan} on its own and spends quota while you are away. /pace auto off stops it.`)
+  await submitSoon($, startPrompt(plan))
+}
+
+/** Carries out what auto mode decided after a turn or a hold */
+async function act($: any, d: Decision): Promise<void> {
+  const auto = await autoOf($)
+  if (!auto) return
+  if (d.kind === 'continue' || d.kind === 'handoff') {
+    if (d.kind === 'handoff') {
+      $.ui.toast('pace: handing off to a fresh context')
+      await $.command.run({ command: 'clear' })
+    }
+    await setAuto($, { ...running(auto), turns: auto.turns + 1 })
+    await $.prompt.submit({ text: d.prompt })
+  } else if (d.kind === 'hold') {
+    await setAuto($, { ...running(auto), heldUntil: d.until, why: d.why })
+    await holdUntil($, d.until)
+    await tell($, `Auto mode holding until ${Q.clockAt(d.until, d.until - (await $.clock.now()) >= 86400_000)}. ${d.why}`)
+  } else if (d.kind === 'pause') {
+    await setAuto($, { ...running(auto), paused: true, why: d.why })
+    await tell($, `Auto mode paused. ${d.why}`)
+  } else {
+    holdTimer?.cancel()
+    await setAuto($, null)
+    await tell($, `Auto mode off. ${d.why}`)
+  }
+}
+
+async function holdUntil($: any, until: number): Promise<void> {
+  holdTimer?.cancel()
+  const t = $.clock.after(Math.max(0, until - (await $.clock.now())), () => { void endHold($).catch(() => {}) })
+  holdTimer = t
+  timers.push(t)
+}
+
+/** A hold is over: fresh figures, then decide again */
+async function endHold($: any): Promise<void> {
+  const auto = await autoOf($)
+  if (!auto || auto.heldUntil == null || auto.paused) return
+  await setAuto($, running(auto))
+  await refreshAll($)
+  await act($, decide({ auto: running(auto), snap: published!, answer: '', aborted: false }))
+}
+
+/** After a turn of the main loop: auto mode's next move, else on pace mode's upkeep */
+async function afterTurn($: any, answer: string, aborted: boolean): Promise<void> {
+  const prefs = (await read($, prefsA)) ?? DEFAULT_PREFS
+  await refreshLine($)
+  const auto = prefs.auto
+  if (auto && !auto.paused) {
+    if (auto.heldUntil == null) await act($, decide({ auto, snap: published!, answer, aborted }))
+    return
+  }
+  if (prefs.onPace && upkeep(published!) === 'compact') {
+    $.ui.toast('pace: compacting a heavy context while its cache is warm')
+    await $.command.run({ command: 'compact' })
+  }
+}
+
+/** The onboarding pane: what auto mode does and what it costs, before it starts the first time */
+function drawOnboarding($: any, e: any): any {
+  const { Box, Text, Button } = $.ui.resolve(e)
+  const plan = pendingPlan?.plan ?? 'the plan'
+  const lines = [
+    `Auto mode works through ${plan} with no one at the keyboard:`,
+    `• after each turn pace sends the next prompt, until Claude says PACE: DONE or BLOCKED, or after ${pendingPlan?.max ?? AUTO_TURNS} turns`,
+    "• it answers Claude's questions with the recommended option",
+    '• it has Claude hand searches and routine edits to subagents on lighter models, and hands a heavy context off to a fresh one through .pace/handoff.md',
+    '• it holds while the rate would get a quota gassed out, and while one is gassed out, until it resets',
+    '• it turns on pace mode: a heavy context is compacted while its cache is warm, and an idle cache kept warm',
+  ]
+  return (
+    <Box flexDirection="column">
+      {lines.map((l, i) => <Text key={`pace-auto-${i}`}>{l}</Text>)}
+      <Text key="pace-auto-cost" color="warning" bold>It spends quota on its own while you are away. Watch the band; /pace auto off stops it.</Text>
+      <Box key="pace-auto-buttons">
+        <Button key="pace-auto-start" label="Start" hotkey="s" variant="primary" onPress={async () => {
+          const p = pendingPlan
+          pendingPlan = null
+          await setPrefs($, x => ({ ...x, onboarded: true }))
+          await $.ui.close({ id: AUTO_PANE })
+          if (p) await startAuto($, p.plan, p.max)
+        }} />
+        <Button key="pace-auto-cancel" label="Cancel" hotkey="c" onPress={async () => {
+          pendingPlan = null
+          await $.ui.close({ id: AUTO_PANE })
+        }} />
+      </Box>
+    </Box>
+  )
+}
+
+/** `/pace on | off | auto …`: on pace mode and auto mode; null for any other argument */
+async function modeCommand($: any, raw: string): Promise<string | null> {
+  const arg = raw.toLowerCase()
+  if (arg === 'on' || arg === 'off') {
+    await setPrefs($, p => ({ ...p, onPace: arg === 'on' }))
+    return arg === 'on'
+      ? 'On pace mode on: compacts a heavy context while its cache is warm, keeps an idle cache warm, and warns before a quota gasses out'
+      : 'On pace mode off'
+  }
+  if (arg !== 'auto' && !arg.startsWith('auto ')) return null
+  const rest = raw.slice(4).trim()
+  if (rest.toLowerCase() === 'off') {
+    holdTimer?.cancel()
+    await setAuto($, null)
+    return 'Auto mode off'
+  }
+  if (rest.toLowerCase() === 'resume') {
+    const auto = await autoOf($)
+    if (!auto) return 'Auto mode is not running: /pace auto <plan file> starts it'
+    await setAuto($, { ...running(auto), turns: auto.turns + 1, max: auto.turns >= auto.max ? auto.turns + AUTO_TURNS : auto.max })
+    await submitSoon($, continuePrompt(auto.plan, published ?? snapshotOf(await snapshot($), await $.clock.now())))
+    return `Auto mode resumed: ${auto.plan}`
+  }
+  const m = /^(\S+)(?:\s+(\d+))?$/.exec(rest)
+  if (!m) return 'Use /pace auto <plan file> [turns], /pace auto off or /pace auto resume'
+  const plan = m[1]!
+  const max = m[2] ? Math.max(1, Number(m[2])) : AUTO_TURNS
+  if (!((await read($, prefsA)) ?? DEFAULT_PREFS).onboarded) {
+    pendingPlan = { plan, max }
+    await $.ui.open({ id: AUTO_PANE, title: 'Pace · auto mode', rows: 12, focus: true, closeOnEscape: true })
+    return 'Auto mode: read what it does and press Start'
+  }
+  await startAuto($, plan, max)
+  return `Auto mode on: ${plan}`
 }
 
 // ======================================================================
@@ -380,7 +565,7 @@ function say($: any, text: string): {} {
   return {}
 }
 
-const USAGE = 'window | pane | refresh | hide | show | line on | line off | warm compact | warm ping | warm off'
+const USAGE = 'window | pane | refresh | on | off | auto <plan> [turns] | auto off | auto resume | hide | show | line on | line off | warm compact | warm ping | warm off'
 
 export const register: Register = (on, options) => {
   placement = options.placement === 'status' ? 'status' : 'above'
@@ -457,10 +642,30 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('turn.complete', async (_$, e, next) => {
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId !== undefined) return next(e)
     working = false
-    return next(e)
+    const r = await next(e)
+    try { await afterTurn($, e.answer, e.isAborted) } catch {}
+    return r
   })
+
+  // Auto mode's instructions: fixed text after the engine's sections, so the prompt cache keeps them
+  on('prompt.compose', async ($, e, next) => {
+    const r = await next(e)
+    const auto = ((await read($, prefsA)) ?? DEFAULT_PREFS).auto
+    if (!auto || auto.paused) return r
+    return { sections: [...r.sections, { id: 'pace:auto', text: protocol(), scope: 'session' as const }] }
+  })
+
+  // No one is at the keyboard in auto mode: take the recommended answer
+  on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
+    const auto = ((await read($, prefsA)) ?? DEFAULT_PREFS).auto
+    if (!auto || auto.paused) return next(e)
+    return { result: { questions: e.questions, answers: answerQuestions(e.questions) } as any }
+  })
+
+  on('ui.render', { component: 'Pane', requestId: AUTO_PANE }, async ($, e) => drawOnboarding($, e))
 
   on('prompt.submit', async ($, e, next) => {
     if (!e.command && !e.isMeta) {
@@ -474,7 +679,10 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'pace' }, async ($, e) => {
-    const arg = (e.args ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
+    const raw = (e.args ?? '').trim().replace(/\s+/g, ' ')
+    const arg = raw.toLowerCase()
+    const mode = await modeCommand($, raw)
+    if (mode != null) return say($, mode)
     if (arg === 'hide' || arg === 'show') {
       await setPrefs($, p => ({ ...p, band: arg === 'show' }))
       return say($, arg === 'show' ? 'Pace band shown' : 'Pace band hidden; /pace show brings it back')

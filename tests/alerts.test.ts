@@ -12,7 +12,7 @@ const quota = (over: Partial<PaceQuota> = {}): PaceQuota => ({
   ...over,
 })
 const snap = (quotas: PaceQuota[]): PaceSnapshot => ({
-  at: NOW, quotas, cache: null, spend: { usdPerHour: 0, sessions: 1, usdPerPrompt: null }, gassedOut: quotas.some(q => q.status === 'gassedOut'), advice: [],
+  at: NOW, quotas, cache: null, spend: { usdPerHour: 0, sessions: 1, usdPerPrompt: null }, gassedOut: quotas.some(q => q.status === 'gassedOut'), advice: [], modes: { onPace: false, auto: null },
 })
 
 test('nothing to say about a quota with room to spare', () => {

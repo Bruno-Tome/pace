@@ -94,7 +94,7 @@ export function protocol(): string {
   ].join('\n')
 }
 
-type Question = { question: string; kind?: string; multiSelect?: boolean; options: readonly { label: string }[]; min?: number; defaultValue?: number }
+type Question = { question: string; header?: string; kind?: string; multiSelect?: boolean; options: readonly { label: string }[]; min?: number; max?: number; defaultValue?: number }
 
 /** Answers to `AskUserQuestion` for auto mode: the option marked `(Recommended)`, else the first */
 export function answerQuestions(questions: readonly Question[]): Record<string, string> {

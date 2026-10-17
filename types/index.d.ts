@@ -15,7 +15,7 @@ export type PaceCacheInfo = { at: number; tokens: number; window: number; ttl: P
 export type PaceWarmMode = 'off' | 'compact' | 'ping'
 
 /** Auto mode's run: the plan file, the turns taken and allowed, and while it holds, until when and why */
-export type PaceAuto = { plan: string; turns: number; max: number; heldUntil?: number; why?: string }
+export type PaceAuto = { plan: string; turns: number; max: number; heldUntil?: number; why?: string; paused?: boolean }
 
 /**
  * What is shown (the band above the prompt, the status-line entry), warm mode, on pace mode (keeps a long-running
@@ -74,6 +74,8 @@ export type PaceSnapshot = {
   spend: { usdPerHour: number; sessions: number; usdPerPrompt: number | null }
   /** A quota is spent: prompts fail until it resets */
   gassedOut: boolean
+  /** On pace mode, and auto mode's run while one is going */
+  modes: { onPace: boolean; auto: PaceAuto | null }
   /** What would cut token usage now, most urgent first */
   advice: { level: 'urgent' | 'warn' | 'info'; text: string }[]
 }

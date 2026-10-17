@@ -172,7 +172,23 @@ export function bandLines(s: Snapshot, now: number, cols: number): Line[] {
   ]
   // The bar takes what the widest row's words leave, the bar's own trailing space included
   const room = cols - Math.max(...columns(lay(0)).map(width)) - 1
-  return columns(lay(room >= 8 ? Math.min(48, room) : 0))
+  const modes = modesLine(s, now)
+  return [...columns(lay(room >= 8 ? Math.min(48, room) : 0)), ...(modes ? [modes] : [])]
+}
+
+/** Auto mode's run or on pace mode, in a row under the band; none while both are off */
+function modesLine(s: Snapshot, now: number): Line | null {
+  const a = s.auto
+  if (a?.paused) return [{ t: 'auto  ⏸ paused', color: 'warning', bold: true }, { t: ` · ${a.plan} · /pace auto resume`, dim: true }]
+  if (a?.heldUntil != null) {
+    return [
+      { t: `auto  ⏸ held until ${Q.clockAt(a.heldUntil, a.heldUntil - now >= 86400_000)}`, color: 'warning', bold: true },
+      { t: ` · ${a.why ?? ''} · /pace auto off`, dim: true },
+    ]
+  }
+  if (a) return [{ t: 'auto  ▶ ', color: 'success', bold: true }, { t: `${a.plan} · turn ${a.turns}/${a.max} · /pace auto off`, dim: true }]
+  if (s.onPace) return [{ t: 'on pace ●', color: 'success' }, { t: ' compacts heavy contexts while warm, keeps the cache warm', dim: true }]
+  return null
 }
 
 /** Rows of [figures, rate or suggestion], the figures padded to one width so the separators stack in a column */

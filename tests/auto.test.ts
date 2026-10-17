@@ -19,6 +19,7 @@ const snap = (over: Partial<PaceSnapshot> = {}): PaceSnapshot => ({
   spend: { usdPerHour: 10, sessions: 1, usdPerPrompt: 1 },
   gassedOut: false,
   advice: [],
+  modes: { onPace: false, auto: null },
   ...over,
 })
 

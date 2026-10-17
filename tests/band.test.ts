@@ -1,76 +1,6 @@
-import { expect, mock, test } from 'claude-code/testing'
+import { expect, test } from 'claude-code/testing'
 
-const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
-const H = 3600_000
-const iso = (ms: number) => new Date(ms).toISOString()
-
-// 5-hour: 60% used with 60% of the window gone; the Fable week comes from the usage endpoint
-const LIMITS = [
-  { kind: 'five_hour', percentUsed: 60, resetsAt: iso(NOW + 2 * H) },
-  { kind: 'seven_day', percentUsed: 30, resetsAt: iso(NOW + 3 * 24 * H) },
-]
-const USAGE = {
-  limits: [
-    { kind: 'session', percent: 60, resets_at: iso(NOW + 2 * H) },
-    { kind: 'weekly_scoped', percent: 68, resets_at: iso(NOW + 3 * 24 * H), scope: { model: { display_name: 'Fable' } } },
-  ],
-}
-
-function world(on: any) {
-  const clock = mock.clock(on, { now: NOW })
-  const stored: Record<string, unknown> = {}
-  const status: (string | undefined)[] = []
-  const files: Record<string, string> = {}
-  on('store.get', (_$: unknown, e: { key: string }) => ({ value: stored[e.key] }))
-  on('store.set', (_$: unknown, e: { key: string; value: unknown }) => { stored[e.key] = e.value; return { value: undefined } })
-  on('session.usage', () => ({ value: { startedAt: NOW, context: { window: 200000 }, rateLimits: LIMITS } }))
-  on('session.start', (_$: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
-  on('prompt.submit', (_$: unknown, e: unknown) => e)
-  on('session.measure', (_$: unknown, e: { changed: string[] }) => ({ changed: e.changed }))
-  on('classic.PostModelSwitch', () => ({}) as any)
-  on('session.authorize', () => ({ value: { kind: 'bearer', handle: 'h' } }))
-  let fetches = 0
-  on('http.fetch', () => (fetches++, { value: { ok: true, status: 200, text: JSON.stringify(USAGE), headers: {} } }))
-  on('env.get', (_$: unknown, e: { name: string }) => ({ value: e.name === 'HOME' ? '/home/u' : undefined }))
-  on('fs.write', (_$: unknown, e: { path: string; text: string }) => { files[e.path] = e.text; return { value: undefined } })
-  on('fs.exists', (_$: unknown, e: { path: string }) => ({ value: e.path in files }))
-  on('fs.read', (_$: unknown, e: { path: string }) => ({ value: files[e.path] ?? '' }))
-  const registered: any[] = []
-  on('command.register', (_$: unknown, e: { name: string }) => { registered.push(e); return { value: { command: e.name } } })
-  const runs: string[][] = []
-  on('process.run', (_$: unknown, e: { argv: string[] }) => {
-    runs.push(e.argv)
-    return { value: { exitCode: 0, stdout: e.argv[0] === '/usr/bin/which' ? '/opt/node/bin/node\n' : '', stderr: '' } }
-  })
-  const commands: string[] = []
-  on('command.run', { command: 'compact' }, () => { commands.push('compact'); return { text: '' } as any })
-  const forks: string[] = []
-  on('model.fork', (_$: unknown, e: { prompt: string }) => {
-    forks.push(e.prompt)
-    return { value: { isAnswered: true, text: 'ok', usage: { input_tokens: 10, output_tokens: 1, cache_read_input_tokens: 180_000, cache_creation_input_tokens: 0 } } } as any
-  })
-  const toasts: string[] = []
-  on('ui.toast', (_$: unknown, e: { text: string }) => { toasts.push(e.text); return { value: undefined } })
-  on('ui.status', (_$: unknown, e: { text: string | undefined }) => { status.push(e.text); return { value: undefined } })
-  const opens: any[] = []
-  on('ui.open', (_$: unknown, e: unknown) => { opens.push(e); return { value: { isPlaced: true } } })
-  on('ui.render', { component: 'AbovePrompt' }, () => ({ type: 'Box', props: { key: 'native' }, children: [] }) as any)
-  return { stored, status, clock, files, opens, runs, commands, forks, toasts, registered, fetches: () => fetches }
-}
-
-/** Every string in a drawn tree, joined: what the terminal shows, without the styling */
-const textOf = (n: any): string => (typeof n === 'string' ? n : Array.isArray(n) ? n.map(textOf).join('') : n && typeof n === 'object' ? textOf(n.children ?? []) : '')
-
-/** Another plugin that reads `$.pace.snapshot()`, as a mod listing pace under `dependencies` does */
-const READER = {
-  name: 'reader',
-  register: (on: any) => {
-    on('command.run', { command: 'probe' }, async ($: any) => ({ text: JSON.stringify(await $.pace.snapshot()) }))
-  },
-}
-const paceSnapshot = async (engine: any) => JSON.parse((await engine.command.run({ command: 'probe', args: '' })).text)
-
-const BAND = { hasSurvey: false, isWorking: false, maxRows: 4, bodyColumns: 120, scroll: {} }
+import { BAND, H, iso, LIMITS, NOW, paceSnapshot, pricedReply, READER, reply, textOf, world } from './world.ts'
 
 test('the band shows the 5-hour and Fable bars and calls a burst on an on-pace window a burst', async ($, on) => {
   const { status, clock } = world(on)
@@ -203,10 +133,6 @@ test('/pace pane opens the pane tall enough for everything it shows, closed by E
   expect(open.focus).toBe(true)
   expect(open.closeOnEscape).toBe(true)
 })
-
-/** A reply landing: the context it left and the session's rate limits */
-const reply = ($: any, tokens: number) =>
-  $.session.measure({ context: { tokens, window: 1_000_000, percent: Math.round(tokens / 10_000) }, rateLimits: LIMITS, changed: ['context'] } as any)
 
 test('the band\'s third row counts the prompt cache down from the last reply, with what the next prompt costs', async ($, on) => {
   const { clock } = world(on)
@@ -352,8 +278,6 @@ test('the window\'s keys reach the session: w steps warm mode off → ping → c
   expect(fetches()).toBe(before + 1)
 })
 
-const pricedReply = ($: any, tokens: number, usd: number) =>
-  $.session.measure({ context: { tokens, window: 1_000_000, percent: Math.round(tokens / 10_000) }, rateLimits: LIMITS, cost: { usd }, changed: ['context', 'cost'] } as any)
 
 test('the next prompt\'s cost shows in dollars, priced from what the session\'s own replies cost', async ($, on) => {
   const { clock, stored } = world(on)

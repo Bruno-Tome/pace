@@ -1,7 +1,7 @@
 // What the drawings show, from the samples, the prompts and the cache: each quota's pace, the prompting rate
 // against it, and what to do about token usage. Pure; times in ms.
 
-import type { PaceCacheInfo, PaceQuota, PaceReading, PaceSample, PaceSnapshot, PaceSpend, PaceWarmMode } from '../types'
+import type { PaceAuto, PaceCacheInfo, PaceQuota, PaceReading, PaceSample, PaceSnapshot, PaceSpend, PaceWarmMode } from '../types'
 import { cacheLeft, nextCost, suggestions, type Suggestion } from './cache.ts'
 import * as Q from './quota.ts'
 import { budgetText, rateSince, type RateVerdict } from './rate.ts'
@@ -20,6 +20,9 @@ export type Snapshot = {
   price?: number | null
   /** What every local session spent */
   spend?: readonly PaceSpend[]
+  /** On pace mode, and auto mode's run */
+  onPace?: boolean
+  auto?: PaceAuto | null
 }
 
 /** A quota as drawn: its names, its latest reading, what can be shown of it and its window's length (seconds) */
@@ -160,6 +163,7 @@ export function snapshotOf(s: Snapshot, now: number): PaceSnapshot {
     } : null,
     spend: { usdPerHour: usdPerHour(spend, now), sessions: sessionsOf(spend, now), usdPerPrompt: usdPerPrompt(spend, s.prompts, now) },
     gassedOut: quotas.some(q => q.status === 'gassedOut'),
+    modes: { onPace: s.onPace ?? false, auto: s.auto ?? null },
     advice: adviceOf(s, now).map(a => ({ level: a.level, text: a.text })),
   }
 }
