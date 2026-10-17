@@ -16,13 +16,16 @@ export const USAGE = {
   ],
 }
 
-export function world(on: any, env: Record<string, string> = {}, usage: unknown = USAGE) {
+export function world(on: any, env: Record<string, string> = {}, usage: unknown = USAGE, sessionId = 'session-a') {
   const clock = mock.clock(on, { now: NOW })
   const stored: Record<string, unknown> = {}
   const status: (string | undefined)[] = []
   const files: Record<string, string> = {}
   on('store.get', (_$: unknown, e: { key: string }) => ({ value: stored[e.key] }))
   on('store.set', (_$: unknown, e: { key: string; value: unknown }) => { stored[e.key] = e.value; return { value: undefined } })
+  on('store.delete', (_$: unknown, e: { key: string }) => { delete stored[e.key]; return { value: undefined } })
+  on('store.keys', () => ({ value: Object.keys(stored) }))
+  on('session.id', () => ({ value: sessionId }))
   on('session.usage', () => ({ value: { startedAt: NOW, context: { window: 200000 }, rateLimits: LIMITS } }))
   on('session.start', (_$: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
   on('session.end', () => ({ sessionId: 's' }) as any)

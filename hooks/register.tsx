@@ -18,6 +18,7 @@ import type { Register } from 'claude-code'
 
 import type { Pace, PaceAuto, PaceCacheInfo, PaceCacheTtl, PaceSnapshot, PacePrefs, PaceReading, PaceSample, PaceSpend, PaceWarmMode } from '../types'
 import { alertsOf } from './alerts.ts'
+import { isSessionKey, isStale, prefsFrom, sessionKey, sessionOf, sharedOf } from './prefs.ts'
 import { answerQuestions, continuePrompt, decide, forModel, HANDOFF_FILE, protocol, startPrompt, upkeep, warmModeFor, type Decision } from './auto.ts'
 import { addPrice, priceOf, replyEquivalents, ttlSeconds, warmAction } from './cache.ts'
 import { snapshotOf, type Snapshot } from './model.ts'
@@ -415,8 +416,10 @@ async function cacheTick($: any): Promise<void> {
 }
 
 async function load($: any): Promise<void> {
-  const prefs = await $.store.get('prefs')
-  if (prefs && typeof prefs === 'object') await update($, prefsA, cur => ({ ...(cur ?? DEFAULT_PREFS), ...(prefs as PacePrefs) }))
+  // The shared prefs, and this session's own modes: never another session's
+  const prefs = prefsFrom(await $.store.get('prefs'), await $.store.get(sessionKey(spendId)))
+  await update($, prefsA, () => prefs)
+  try { await forgetOldSessions($) } catch {}
   const ttl = await $.store.get('ttl')
   if (ttl === '5m' || ttl === '1h') await update($, ttlA, () => ttl)
   const prices = await $.store.get('prices')
@@ -427,9 +430,19 @@ async function load($: any): Promise<void> {
   if (until != null) await holdUntil($, until)
 }
 
+/** Other sessions' modes a month after they last changed them: a session ends without saying so */
+async function forgetOldSessions($: any): Promise<void> {
+  const now = await $.clock.now()
+  for (const key of await $.store.keys()) {
+    if (isSessionKey(key) && key !== sessionKey(spendId) && isStale(await $.store.get(key), now)) await $.store.delete(key)
+  }
+}
+
 async function setPrefs($: any, fn: (p: PacePrefs) => PacePrefs): Promise<void> {
   await update($, prefsA, p => fn(p ?? DEFAULT_PREFS))
-  await $.store.set('prefs', await read($, prefsA))
+  const prefs = (await read($, prefsA)) ?? DEFAULT_PREFS
+  await $.store.set('prefs', sharedOf(prefs))
+  await $.store.set(sessionKey(spendId), sessionOf(prefs, await $.clock.now()))
   await refreshLine($)
 }
 

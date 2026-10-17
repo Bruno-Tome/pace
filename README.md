@@ -131,6 +131,10 @@ pane says what it does and that it spends quota on its own; it starts when you p
   An Opus session never waits on the Fable week.
 - It turns on on pace mode.
 
+Auto mode, on pace mode and warm mode belong to the session you turn them on in. Another session never runs your
+plan, and `claude --resume` picks the run back up. The band and the status-line entry are yours everywhere, and the
+quotas, prompts and spend are shared, so every session paces against the same budget.
+
 Its instructions are a fixed system-prompt section, so the prompt cache keeps them. Live pacing notes ride in each
 prompt instead. `/pace auto off` stops it; an interrupt pauses it until `/pace auto resume`.
 

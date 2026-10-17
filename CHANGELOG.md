@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Auto mode, on pace mode and warm mode are scoped to the session that turned them on, stored under its id, so
+  `claude --resume` picks a run back up. Before, they lived in prefs every session shared: an auto run started in
+  one session drove any other that started or reloaded. Modes an older pace stored there are ignored. A session's
+  modes are forgotten a month after it last changed them.
 - Auto mode no longer prompts turns that only wait. Claude ends a turn with `PACE: WAITING <what>` while background
   work runs, and pace sends nothing until a turn of its own starts or 15 minutes pass. Two turns in a row that move
   neither the plan nor the handoff file stop the prompting, with waits of 5, 10, 20 and 30 minutes.

@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { BAND, H, iso, NOW, reply, textOf, world } from './world.ts'
+import { BAND, H, iso, NOW, reply, textOf, USAGE, world } from './world.ts'
 
 const start = ($: any) => $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
 const pace = ($: any, args: string) => $.command.run({ command: 'pace', args } as any)
@@ -189,4 +189,44 @@ test('auto mode stops prompting turns that make no progress, and backs off', asy
   expect(submitted.length).toBe(3)
   await clock.advance(5 * 60_000)
   expect(submitted.length).toBe(4)
+})
+
+const compose = ($: any) => $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: ['terminal'], tools: [], outputStyle: null, traits: [] } as any)
+
+test('auto mode stays in the session that started it: a run stored where every session reads it drives none', async ($, on) => {
+  const { submitted, stored } = world(on, {}, USAGE, 'session-b')
+  // Another session's run, kept the old way in the prefs every session shares
+  stored.prefs = { band: true, line: true, warm: 'off', onPace: true, auto: { plan: 'Roadmap.md', turns: 25, max: 40 } }
+  await start($)
+  await turnEnds($, 'done')
+  expect(submitted).toEqual([])
+  expect(((await compose($)) as any).sections.map((s: any) => s.id)).toEqual(['intro'])
+})
+
+test('starting auto mode stores the run under the session alone', async ($, on) => {
+  const { stored, clock } = world(on)
+  await start($)
+  await pace($, 'auto ROADMAP.md')
+  await onboard($, clock)
+  expect((stored['session:session-a'] as any).auto).toMatchObject({ plan: 'ROADMAP.md' })
+  expect((stored.prefs as any).auto).toBeUndefined()
+  expect((stored.prefs as any).onPace).toBeUndefined()
+})
+
+test('a resumed session picks its own run back up', async ($, on) => {
+  const { submitted, stored } = world(on)
+  stored['session:session-a'] = { at: NOW - H, onPace: true, auto: { plan: 'ROADMAP.md', turns: 5, max: 40 } }
+  await start($)
+  await turnEnds($, 'step five\nPACE: NEXT')
+  expect(submitted.length).toBe(1)
+  expect(submitted[0]).toContain('ROADMAP.md')
+})
+
+test('a session\'s own modes are forgotten a month after it was last used', async ($, on) => {
+  const { stored } = world(on)
+  stored['session:old'] = { at: NOW - 31 * 24 * H, onPace: true }
+  stored['session:recent'] = { at: NOW - 24 * H, onPace: true }
+  await start($)
+  expect(stored['session:old']).toBeUndefined()
+  expect(stored['session:recent']).toBeDefined()
 })

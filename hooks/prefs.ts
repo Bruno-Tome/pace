@@ -1,0 +1,59 @@
+// Preferences by reach. What is drawn (the band, the status-line entry) and the onboarding are the person's, the
+// same in every session. The modes a session runs in (warm mode, on pace mode, auto mode's run) are its own, kept
+// under its id: `claude --resume` finds them again, and no other session ever acts on them. Pure; times in ms.
+
+import type { PaceAuto, PacePrefs, PaceWarmMode } from '../types'
+
+const DAY = 24 * 60 * 60_000
+
+/** The store key a session's own modes are kept under, by its id */
+export const sessionKey = (id: string) => `session:${id}`
+export const isSessionKey = (key: string) => key.startsWith('session:')
+
+/** A session's own modes as stored, and when the session last changed them */
+export type SessionPrefs = { at: number; warm?: PaceWarmMode; onPace?: boolean; auto?: PaceAuto | null }
+
+/** How long a session's modes are kept after it last changed them */
+const SESSION_KEEP = 30 * DAY
+
+const WARM: readonly PaceWarmMode[] = ['off', 'ping', 'compact']
+
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v != null && !Array.isArray(v)
+
+/** An auto mode run as stored, or null where it does not parse */
+function autoOf(v: unknown): PaceAuto | null {
+  if (!isObject(v) || typeof v.plan !== 'string' || typeof v.turns !== 'number' || typeof v.max !== 'number') return null
+  const num = (k: string) => (typeof v[k] === 'number' ? { [k]: v[k] as number } : {})
+  return {
+    plan: v.plan, turns: v.turns, max: v.max,
+    ...num('heldUntil'), ...num('waitingUntil'), ...num('stalls'),
+    ...(typeof v.why === 'string' ? { why: v.why } : {}),
+    ...(v.paused === true ? { paused: true } : {}),
+  }
+}
+
+/** The prefs every session shares, as stored: never a session's modes */
+export const sharedOf = (p: PacePrefs): PacePrefs => ({ band: p.band, line: p.line, ...(p.onboarded ? { onboarded: true } : {}) })
+
+/** A session's own modes, as stored at `at` */
+export const sessionOf = (p: PacePrefs, at: number): SessionPrefs => ({ at, warm: p.warm ?? 'off', onPace: p.onPace ?? false, auto: p.auto ?? null })
+
+/**
+ * A session's prefs from what is stored: the shared ones, and its own modes. Modes in the shared copy, where an
+ * older pace kept them, are left out: they were another session's. What does not parse falls back to the default.
+ */
+export function prefsFrom(shared: unknown, own: unknown): PacePrefs {
+  const s = isObject(shared) ? shared : {}
+  const o = isObject(own) ? own : {}
+  return {
+    band: typeof s.band === 'boolean' ? s.band : true,
+    line: typeof s.line === 'boolean' ? s.line : true,
+    ...(s.onboarded === true ? { onboarded: true } : {}),
+    warm: WARM.includes(o.warm as PaceWarmMode) ? (o.warm as PaceWarmMode) : 'off',
+    onPace: o.onPace === true,
+    auto: autoOf(o.auto),
+  }
+}
+
+/** Whether a session's stored modes are old enough to forget, or do not parse */
+export const isStale = (v: unknown, now: number) => !isObject(v) || typeof v.at !== 'number' || v.at < now - SESSION_KEEP
