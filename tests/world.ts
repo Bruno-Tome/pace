@@ -16,7 +16,7 @@ export const USAGE = {
   ],
 }
 
-export function world(on: any, env: Record<string, string> = {}) {
+export function world(on: any, env: Record<string, string> = {}, usage: unknown = USAGE) {
   const clock = mock.clock(on, { now: NOW })
   const stored: Record<string, unknown> = {}
   const status: (string | undefined)[] = []
@@ -32,7 +32,7 @@ export function world(on: any, env: Record<string, string> = {}) {
   on('classic.PostModelSwitch', () => ({}) as any)
   on('session.authorize', () => ({ value: { kind: 'bearer', handle: 'h' } }))
   let fetches = 0
-  on('http.fetch', () => (fetches++, { value: { ok: true, status: 200, text: JSON.stringify(USAGE), headers: {} } }))
+  on('http.fetch', () => (fetches++, { value: { ok: true, status: 200, text: JSON.stringify(usage), headers: {} } }))
   on('env.get', (_$: unknown, e: { name: string }) => ({ value: e.name === 'HOME' ? '/home/u' : env[e.name] }))
   on('fs.write', (_$: unknown, e: { path: string; text: string }) => { files[e.path] = e.text; return { value: undefined } })
   on('fs.exists', (_$: unknown, e: { path: string }) => ({ value: e.path in files }))

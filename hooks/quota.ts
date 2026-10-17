@@ -33,6 +33,19 @@ export function shortName(key: string, name?: string): string {
   return `${modelOf(key, name)} wk`
 }
 
+/**
+ * Whether a session on `model` draws on a quota: the 5-hour window and the all-models week always, a model's own
+ * week (`seven_day_fable`) only when the model is that one; every quota while the model is not known yet
+ */
+export function drawsOn(key: string, model: string | undefined): boolean {
+  if (!model || !key.startsWith('seven_day_')) return true
+  const family = key.slice('seven_day_'.length).split('_')[0]!
+  return model.toLowerCase().includes(family)
+}
+
+/** A quota's name mid-sentence: `the 5-hour window`, `the week · Fable` */
+export const theName = (name: string) => `the ${name.startsWith('5-hour') ? name : name.replace(/^Week/, 'week')}`
+
 /** A week's model alone, for advice: `Fable`, `All models` */
 export const modelName = (key: string, name?: string) => (isPerModel(key) ? modelOf(key, name) : key === 'seven_day' ? 'All models' : '5-hour')
 

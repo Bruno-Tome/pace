@@ -3,8 +3,8 @@ export type PaceReading = { percent: number; resetsAt?: number; name?: string }
 /** The readings taken at one moment (ms), by quota key: `five_hour`, `seven_day`, `seven_day_<model>` */
 export type PaceSample = { at: number; quotas: Record<string, PaceReading> }
 
-/** Dollars one session (`id`, its own) spent in the minute from `t` (ms), or with `h` in the hour from it */
-export type PaceSpend = { t: number; id: string; usd: number; h?: true }
+/** Dollars one session (`id`, its own) spent in the minute from `t` (ms), or with `h` in the hour from it, on model `m` where known */
+export type PaceSpend = { t: number; id: string; usd: number; h?: true; m?: string }
 
 /** How long the prompt cache stays warm after a reply */
 export type PaceCacheTtl = '5m' | '1h'
@@ -47,6 +47,11 @@ export type PaceQuota = {
     /** Dollars an hour every local session spends, once the shared spend prices this quota */
     usdPerHour: number | null
     usdBudgetPerHour: number | null
+    /** Points of this quota an hour at the current rate, and the points an hour that land it at 100% on reset */
+    percentPerHour: number | null
+    percentBudgetPerHour: number | null
+    /** Percent used at the reset if the rate keeps up, past 100 where it runs out first */
+    percentAtReset: number | null
     /** Percent of the quota one prompt costs */
     costPerPrompt: number | null
     /** Seconds until it runs out at the current rate */
@@ -94,6 +99,8 @@ declare module 'claude-code' {
       samples: PaceSample[]
       /** Prompt submission times (ms) from every local session, the last day */
       prompts: number[]
+      /** The same prompts by the model they went to, where it was known */
+      modelPrompts: Record<string, number[]>
       prefs: PacePrefs
       /** The last reply's context, null before one and after /clear or a compaction */
       cache: PaceCacheInfo | null

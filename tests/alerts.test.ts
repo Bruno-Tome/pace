@@ -8,7 +8,7 @@ const H = 3600_000
 
 const quota = (over: Partial<PaceQuota> = {}): PaceQuota => ({
   key: 'five_hour', name: '5-hour window', percent: 40, status: 'onPace', resetsAt: NOW + 2 * H, runOutAt: null,
-  rate: { level: 'ok', promptsPerHour: 6, usdPerHour: null, usdBudgetPerHour: null, costPerPrompt: null, emptyIn: null },
+  rate: { level: 'ok', promptsPerHour: 6, usdPerHour: null, usdBudgetPerHour: null, percentPerHour: null, percentBudgetPerHour: 30, percentAtReset: null, costPerPrompt: null, emptyIn: null },
   ...over,
 })
 const snap = (quotas: PaceQuota[]): PaceSnapshot => ({
@@ -30,7 +30,7 @@ test('warns at 80% and 95% of a quota, and when it is gassed out, each once per 
 })
 
 test('warns when the rate would gas a quota out before it resets', () => {
-  const a = alertsOf(snap([quota({ rate: { level: 'fast', promptsPerHour: 40, usdPerHour: 62, usdBudgetPerHour: 30, costPerPrompt: 2, emptyIn: 2400 } })]))
+  const a = alertsOf(snap([quota({ rate: { level: 'fast', promptsPerHour: 40, usdPerHour: 62, usdBudgetPerHour: 30, percentPerHour: 80, percentBudgetPerHour: 30, percentAtReset: null, costPerPrompt: 2, emptyIn: 2400 } })]))
   expect(a.map(x => x.id)).toEqual([`five_hour@${NOW + 2 * H}:fast`])
   expect(a[0]!.text).toBe('At $62/h the 5-hour window gasses out in 40m, 1h 20m before it resets.')
 })

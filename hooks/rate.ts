@@ -27,6 +27,12 @@ export type RateVerdict = {
   usdPerHour?: number
   /** Dollars an hour that would land exactly at 100% on reset */
   usdBudgetPerHour?: number | null
+  /** Points of this quota an hour at the current rate: the rate scored against this quota alone; null without a cost */
+  pctPerHour: number | null
+  /** Points of this quota an hour that would land exactly at 100% on reset */
+  pctBudgetPerHour: number | null
+  /** Percent used at the reset if the rate keeps up, past 100 where it runs out first; null without a cost */
+  pctAtReset: number | null
 }
 
 const countSince = (prompts: readonly number[], from: number, now: number) =>
@@ -62,18 +68,36 @@ export function rateSince(prompts: readonly number[], reading: PaceReading | und
   else if (emptyIn != null && resetIn != null && emptyIn < resetIn) level = 'fast'
   else if (budgetPerHour != null && perHour > 0.75 * budgetPerHour) level = 'brisk'
 
-  return { last15, perHour, costPerPrompt, budgetPerHour, emptyIn, resetIn, level }
+  const pctPerHour = costPerPrompt != null ? costPerPrompt * perHour : null
+  return {
+    last15, perHour, costPerPrompt, budgetPerHour, emptyIn, resetIn, level,
+    pctPerHour,
+    pctBudgetPerHour: pctBudget(reading, resetIn),
+    pctAtReset: pctAt(reading, pctPerHour, resetIn),
+  }
 }
 
-const usd = (n: number) => `$${n >= 10 ? Math.round(n) : n.toFixed(1)}`
+/** Points an hour that spend what a quota has left exactly by its reset */
+export const pctBudget = (reading: PaceReading | undefined, resetIn: number | null) =>
+  reading && resetIn != null ? Math.max(0, 100 - reading.percent) / (resetIn / 3600) : null
 
-/** The rate as said: dollars an hour where it is judged in dollars, else prompts an hour */
+/** Where a quota lands by its reset at `pctPerHour`: it closes in on what is used as the reset nears */
+export const pctAt = (reading: PaceReading | undefined, pctPerHour: number | null, resetIn: number | null) =>
+  reading && pctPerHour != null && resetIn != null ? reading.percent + pctPerHour * (resetIn / 3600) : null
+
+const usd = (n: number) => `$${n >= 10 ? Math.round(n) : n.toFixed(1)}`
+const pct = (n: number) => `${n >= 10 ? Math.round(n) : n >= 1 ? n.toFixed(1) : n.toFixed(2)}%`
+
+/** The rate scored against its own quota, points of it an hour; `—%/h` until it has a cost */
+export const scoreText = (v: RateVerdict) => `${v.pctPerHour != null ? pct(v.pctPerHour) : '—%'}/h`
+
+/** The rate as said: dollars an hour where it is judged in dollars, else prompts an hour; shared by every quota */
 export const rateText = (v: RateVerdict) => (v.usdPerHour != null ? `${usd(v.usdPerHour)}/h` : `${v.perHour}/h`)
 
 /** The rate that lands at 100% on reset, said the same way; null where unknown */
 export function budgetText(v: RateVerdict): string | null {
   if (v.usdPerHour != null) return v.usdBudgetPerHour != null ? `${usd(v.usdBudgetPerHour)}/h` : null
-  return v.budgetPerHour != null ? `${Math.floor(v.budgetPerHour)}/h` : null
+  return v.budgetPerHour != null ? `${Math.floor(v.budgetPerHour)} prompts/h` : null
 }
 
 export type CellKind = 'used' | 'ahead' | 'margin' | 'tick' | 'empty'
@@ -115,4 +139,14 @@ export function buckets(prompts: readonly number[], now: number, n: number, buck
 export function mergePrompts(a: readonly number[], b: readonly number[], now: number): number[] {
   const all = [...new Set([...a, ...b])].filter(t => typeof t === 'number' && t > now - 24 * 60 * MIN).sort((x, y) => x - y)
   return all.slice(-4000)
+}
+
+/** Two copies of the prompts by model as one: each model's lists merged; a list that does not parse is dropped */
+export function mergeModelPrompts(a: Readonly<Record<string, readonly number[]>>, b: Readonly<Record<string, readonly number[]>>, now: number): Record<string, number[]> {
+  const out: Record<string, number[]> = {}
+  for (const model of new Set([...Object.keys(a ?? {}), ...Object.keys(b ?? {})])) {
+    const list = mergePrompts(Array.isArray(a?.[model]) ? a[model]! : [], Array.isArray(b?.[model]) ? b[model]! : [], now)
+    if (list.length) out[model] = list
+  }
+  return out
 }

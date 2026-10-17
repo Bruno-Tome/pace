@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Each quota shows where your rate takes it: the percent it lands at by its reset (`→ 71% at reset`), or when it
+  runs out (`out in 38m`). It replaces the `rate of budget %/h` score, whose budget grew without bound as a
+  window neared its reset. `$.pace.snapshot()` adds `percentAtReset` to each quota's rate.
+- A model's own week counts only that model's prompts and spend: prompting Opus no longer makes the Fable week
+  too fast. Prompts and spend record the session's model; ones recorded before still count everywhere.
+- Too fast flashes red only while you are prompting: a quota with no prompt in the last 15 minutes reads idle,
+  however far over pace it is or whatever a running turn still spends. Alerts and auto mode's holds follow.
+- Each quota keeps its own score: the band, the status line and the pane rate every quota in points of it an hour
+  against its own budget (`19 of 20%/h`, `0.3 of 0.44%/h`), instead of repeating the prompts or dollars an hour
+  every quota shares. `$.pace.snapshot()` adds `percentPerHour` and `percentBudgetPerHour` to each quota's rate.
+- The status-line row puts each quota's rate beside it, without the band's column padding.
+- The pane's advice names the quota mid-sentence (`the week · Fable`) and says its budget in prompts or dollars.
+
 ## 0.8.0
 
 pace, a terminal-first take on [weektoken](https://github.com/3dnow/claude-mods/tree/main/weektoken)'s idea, with

@@ -6,7 +6,7 @@
 // in shape: it compacts a heavy context while the cache is warm, and keeps an idle cache from lapsing.
 
 import type { PaceAuto, PaceSnapshot, PaceWarmMode } from '../types'
-import { clockAt, formatDuration } from './quota.ts'
+import { clockAt, drawsOn, formatDuration } from './quota.ts'
 
 export const HANDOFF_FILE = '.pace/handoff.md'
 
@@ -44,16 +44,6 @@ export type Decision =
 
 /** The session's model, by id; undefined before its first request */
 export type DecideInput = { auto: PaceAuto; snap: PaceSnapshot; answer: string; aborted: boolean; model?: string }
-
-/**
- * Whether a session on `model` draws on a quota: the 5-hour window and the all-models week always, a model's own
- * week (`seven_day_fable`) only when the model is that one; every quota while the model is not known yet
- */
-export function drawsOn(key: string, model: string | undefined): boolean {
-  if (!model || !key.startsWith('seven_day_')) return true
-  const family = key.slice('seven_day_'.length).split('_')[0]!
-  return model.toLowerCase().includes(family)
-}
 
 /** The snapshot as a session on `model` sees it: only the quotas it draws on */
 export const forModel = (s: PaceSnapshot, model: string | undefined): PaceSnapshot =>

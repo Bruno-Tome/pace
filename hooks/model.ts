@@ -14,6 +14,8 @@ const DAY = 24 * 60 * MIN
 export type Snapshot = {
   samples: readonly PaceSample[]
   prompts: readonly number[]
+  /** The same prompts by the model they went to, where it was known */
+  modelPrompts?: Readonly<Record<string, readonly number[]>>
   cache: PaceCacheInfo | null
   warm?: PaceWarmMode
   /** Dollars per input-token equivalent, from the session's replies; absent before one was priced */
@@ -67,12 +69,16 @@ function baselineOf(samples: readonly PaceSample[], row: Row, now: number): { at
  * The prompting rate against one quota: in dollars an hour across every session once the shared spend says what
  * a dollar of it costs, else in prompts an hour against what it moved since a baseline reading. A rate that
  * empties it before the reset is `fast` only when the quota is over pace or its average alone runs it out;
- * otherwise it is a `burst`. With no per-prompt cost yet, a quota over pace is `fast` at any rate.
+ * otherwise it is a `burst`. With no per-prompt cost yet, a quota over pace is `fast` at any rate. With no prompt
+ * in the last 15 minutes it is `idle`, however the quota stands or what a running turn still spends: a warning is
+ * for prompting, never for the quota alone.
  */
 export function rateOf(s: Snapshot, row: Row, now: number): RateVerdict {
-  const { samples, prompts } = s
+  const { samples } = s
+  const prompts = promptsFor(s, row.key)
   if (row.view.kind !== 'pace') return rateSince(prompts, undefined, null, now)
   const v = spentRate(s, row, now) ?? rateSince(prompts, row.reading, baselineOf(samples, row, now), now)
+  if (v.last15 === 0) return { ...v, level: 'idle' }
   if (v.level === 'fast') return isOver(row) || row.view.pace.runOutAt != null ? v : { ...v, level: 'burst' }
   if (v.level === 'idle' || v.costPerPrompt != null) return v
   return isOver(row) ? { ...v, level: 'fast' } : v
@@ -80,12 +86,25 @@ export function rateOf(s: Snapshot, row: Row, now: number): RateVerdict {
 
 /** The rate judged in dollars, where the shared spend prices both the quota and a prompt */
 function spentRate(s: Snapshot, row: Row, now: number): RateVerdict | null {
-  const spend = s.spend ?? []
+  const spend = spendFor(s, row.key)
+  const prompts = promptsFor(s, row.key)
   const perDollar = row.reading ? quotaPerDollar(s.samples, row.key, spend, now) : null
-  const perPrompt = usdPerPrompt(spend, s.prompts, now)
+  const perPrompt = usdPerPrompt(spend, prompts, now)
   if (!row.reading || perDollar == null || perPrompt == null) return null
-  return spendVerdict({ prompts: s.prompts, reading: row.reading, perDollar, usdPerPrompt: perPrompt, usdPerHour: usdPerHour(spend, now), now })
+  return spendVerdict({ prompts, reading: row.reading, perDollar, usdPerPrompt: perPrompt, usdPerHour: usdPerHour(spend, now), now })
 }
+
+/**
+ * The prompts that draw on a quota: every prompt, less those that went to a model whose use does not count against
+ * it. A prompt whose model is not known counts, so a quota is never under-warned.
+ */
+export function promptsFor(s: Snapshot, key: string): readonly number[] {
+  const elsewhere = new Set(Object.entries(s.modelPrompts ?? {}).flatMap(([model, list]) => (Q.drawsOn(key, model) ? [] : list)))
+  return elsewhere.size ? s.prompts.filter(t => !elsewhere.has(t)) : s.prompts
+}
+
+/** The spend that draws on a quota: all of it, less what went to a model whose use does not count against it */
+export const spendFor = (s: Snapshot, key: string) => (s.spend ?? []).filter(x => Q.drawsOn(key, x.m))
 
 const SEVERITY: Record<RateVerdict['level'], number> = { idle: 0, ok: 1, brisk: 2, burst: 3, fast: 4 }
 
@@ -122,8 +141,8 @@ export function adviceOf(s: Snapshot, now: number): Suggestion[] {
     now,
     warm: s.warm,
     contextPercent: s.cache ? Math.round((s.cache.tokens / s.cache.window) * 100) : undefined,
-    fast: priced && worst.r.level === 'fast' ? { name: worst.row.name, emptyIn: worst.r.emptyIn, slowTo: budgetText(worst.r) } : undefined,
-    burst: priced && worst.r.level === 'burst' ? { name: worst.row.name, emptyIn: worst.r.emptyIn } : undefined,
+    fast: priced && worst.r.level === 'fast' ? { name: Q.theName(worst.row.name), emptyIn: worst.r.emptyIn, slowTo: budgetText(worst.r) } : undefined,
+    burst: priced && worst.r.level === 'burst' ? { name: Q.theName(worst.row.name), emptyIn: worst.r.emptyIn } : undefined,
     weeklyOverPace: over ? Q.modelName(over.key, over.reading?.name) : undefined,
   })
 }
@@ -146,6 +165,9 @@ export function snapshotOf(s: Snapshot, now: number): PaceSnapshot {
         promptsPerHour: r.perHour,
         usdPerHour: r.usdPerHour ?? null,
         usdBudgetPerHour: r.usdBudgetPerHour ?? null,
+        percentPerHour: r.pctPerHour,
+        percentBudgetPerHour: r.pctBudgetPerHour,
+        percentAtReset: r.pctAtReset,
         costPerPrompt: r.costPerPrompt,
         emptyIn: r.emptyIn,
       },

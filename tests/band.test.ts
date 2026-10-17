@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { BAND, H, iso, LIMITS, NOW, paceSnapshot, pricedReply, READER, reply, textOf, world } from './world.ts'
+import { BAND, H, iso, LIMITS, NOW, paceSnapshot, pricedReply, READER, reply, textOf, USAGE, world } from './world.ts'
 
 test('the band shows the 5-hour and Fable bars and calls a burst on an on-pace window a burst', async ($, on) => {
   const { status, clock } = world(on)
@@ -16,10 +16,11 @@ test('the band shows the 5-hour and Fable bars and calls a burst on an on-pace w
   expect(drawn).toContain('Fable wk ')
   expect(drawn).toContain('68%')
   expect(drawn).toContain('│')
-  expect(drawn).toContain('40/h')
-  expect(drawn).toContain('burst')
+  // 3 points a prompt at 40 prompts an hour: the 40 points left last 20 minutes
+  expect(drawn).toContain('out in 20m burst')
   expect(drawn).not.toContain('too fast')
-  expect(status[status.length - 1]).toBe('5h 60% · Fable wk 68% · 40/h burst')
+  expect(drawn).not.toContain('%/h')
+  expect(status[status.length - 1]).toBe('5h 60% out in 20m burst · Fable wk 68%')
 })
 
 test('the band animates: the bars fill in, then a sheen sweeps across them, its text unchanged', async ($, on) => {
@@ -114,9 +115,10 @@ test('each band row judges the prompting rate against its own quota', async ($, 
   const tree: any = await ui.drawn({ in: 'pace-band' })
   const [five, week] = tree.children.map(textOf)
   // The 5-hour window runs out before its reset at this rate; the week has no reading old enough to price a prompt
-  expect(five).toContain('burst')
-  expect(five).toContain('out in')
-  expect(week).toContain('40/h')
+  expect(five).toContain('out in 20m burst')
+  // Never the prompts an hour every quota shares: where the week lands comes once a prompt's cost is known
+  expect(week).toContain('→ —')
+  expect(week).not.toContain('40/h')
   expect(week).not.toContain('too fast')
   for (const row of [five, week]) expect([...row].length).toBeLessThanOrEqual(BAND.bodyColumns)
 })
@@ -342,13 +344,51 @@ test('parallel sessions pace together: the rate is every session\'s dollars an h
   await pricedReply($, 110_000, 1.5)
   const ui = await $.ui.mount({ plugin: 'pace', surface: 'terminal', component: 'AbovePrompt', props: BAND as any })
   const tree: any = await ui.drawn({ in: 'pace-band' })
-  expect(textOf(tree.children[0])).toContain('$62/h')
+  // About $62/h at 0.5 points a dollar: the 40 points left last 1h18m
+  expect(textOf(tree.children[0])).toContain('out in 1h18m')
   expect((stored.spend as any[]).some(s => s.id !== 'other')).toBe(true)
   await $.command.run({ command: 'pace', args: 'pane' } as any)
   const pane = await $.ui.mount({ plugin: 'pace', surface: 'terminal', component: 'Pane', requestId: 'pace', props: { bodyColumns: 100 } as any } as any)
   const drawn = textOf(await pane.drawn())
   expect(drawn).toContain('2 sessions')
+  expect(drawn).toContain('$62/h')
   expect(drawn).toMatch(/~\d+(\.\d+)?% per prompt/)
+})
+
+test('a window over pace is not too fast once the prompting stops', async ($, on) => {
+  const { clock, status } = world(on)
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  for (let i = 0; i < 20; i++) {
+    if (i) await clock.advance(60_000)
+    await $.prompt.submit({ text: `p${i}` } as any)
+  }
+  // A window over pace, 90% used with about 70% of it gone, but the last prompt was 16 minutes ago
+  await clock.advance(16 * 60_000)
+  await $.session.measure({ context: { window: 1_000_000 }, rateLimits: [{ kind: 'five_hour', percentUsed: 90, resetsAt: iso(NOW + 2 * H) }], changed: ['rateLimits'] } as any)
+  const ui = await $.ui.mount({ plugin: 'pace', surface: 'terminal', component: 'AbovePrompt', props: BAND as any })
+  const tree: any = await ui.drawn({ in: 'pace-band' })
+  const five = textOf(tree.children[0])
+  expect(five).toContain('Over pace')
+  expect(five).not.toContain('too fast')
+  expect(status[status.length - 1]).not.toContain('too fast')
+})
+
+test('prompting one model never makes another model\'s week too fast', async ($, on) => {
+  // The Fable week at 85% with 3 of its 7 days left: over pace
+  const { clock } = world(on, {}, { limits: [USAGE.limits[0], { ...USAGE.limits[1], percent: 85 }] })
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  for (let i = 0; i < 20; i++) {
+    if (i) await clock.advance(60_000)
+    await $.prompt.submit({ text: `p${i}` } as any)
+  }
+  const ui = await $.ui.mount({ plugin: 'pace', surface: 'terminal', component: 'AbovePrompt', props: BAND as any })
+  const tree: any = await ui.drawn({ in: 'pace-band' })
+  const week = textOf(tree.children[1])
+  // Every prompt went to Opus
+  expect(week).toContain('Fable wk')
+  expect(week).toContain('Over pace')
+  expect(week).not.toContain('too fast')
 })
 
 test('/pace runs at once, mid-turn too, and answers in a toast: nothing lands in the transcript for the model to read', async ($, on) => {

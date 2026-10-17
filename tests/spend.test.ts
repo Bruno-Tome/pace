@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { PaceSample } from '../types'
+import { rateOf, rowsOf } from '../hooks/model.ts'
 import { addSpend, mergeSpend, quotaPerDollar, sessionsOf, spendIn, spendVerdict, usdPerPrompt } from '../hooks/spend.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
@@ -82,8 +83,30 @@ describe('spend pacing', () => {
     near(v.usdBudgetPerHour, 40)
     near(v.budgetPerHour, 40)
     near(v.emptyIn, 80 * 60)
+    // $60/h at 0.5 points a dollar, against 40 points over 2h
+    near(v.pctPerHour, 30)
+    near(v.pctBudgetPerHour, 20)
+    // 60% and 30 points an hour for 2 hours: past 100%, it runs out first
+    near(v.pctAtReset, 120)
     expect(v.level).toBe('fast')
     const slow = spendVerdict({ prompts, reading: { percent: 60, resetsAt: NOW + 2 * H }, perDollar: 0.5, usdPerPrompt: 1, usdPerHour: 20, now: NOW })
     expect(slow.level).toBe('ok')
+  })
+})
+
+describe('the rate against an over-pace quota', () => {
+  test('is idle with no prompt in the last 15 minutes, though a running turn still spends', () => {
+    // 80% used with two thirds of the window gone: over pace, and the spend prices it
+    const samples: PaceSample[] = [
+      { at: NOW - 3 * H, quotas: { five_hour: { percent: 10, resetsAt: NOW + 2 * H } } },
+      { at: NOW - 20 * MIN, quotas: { five_hour: { percent: 80, resetsAt: NOW + 2 * H } } },
+    ]
+    // The last prompt was 35 minutes ago; its turn is still running and spending
+    const prompts = Array.from({ length: 10 }, (_, i) => NOW - 35 * MIN - i * 15 * MIN)
+    let spend = addSpend([], 'a', NOW - 2 * H, 20, NOW)
+    spend = addSpend(spend, 'a', NOW - 25 * MIN, 40, NOW)
+    const s = { samples, prompts, cache: null, spend }
+    const [five] = rowsOf(samples, NOW)
+    expect(rateOf(s, five!, NOW).level).toBe('idle')
   })
 })

@@ -22,7 +22,7 @@ import { answerQuestions, continuePrompt, decide, forModel, protocol, startPromp
 import { addPrice, priceOf, replyEquivalents, ttlSeconds, warmAction } from './cache.ts'
 import { snapshotOf, type Snapshot } from './model.ts'
 import * as Q from './quota.ts'
-import { mergePrompts } from './rate.ts'
+import { mergeModelPrompts, mergePrompts } from './rate.ts'
 import { addSpend, mergeSpend } from './spend.ts'
 import { bandLines, chartHeight, lineText, paneLines, statusRow, toAnsi, type Seg } from './view.ts'
 
@@ -33,6 +33,7 @@ const DEFAULT_PREFS: PacePrefs = { band: true, line: true, warm: 'off' }
 
 const samplesA = atom({ plugin: 'pace', key: 'samples' } as const, [] as PaceSample[])
 const promptsA = atom({ plugin: 'pace', key: 'prompts' } as const, [] as number[])
+const modelPromptsA = atom({ plugin: 'pace', key: 'modelPrompts' } as const, {} as Record<string, number[]>)
 const prefsA = atom({ plugin: 'pace', key: 'prefs' } as const, DEFAULT_PREFS)
 const nowA = atom({ plugin: 'pace', key: 'now' } as const, 0)
 const cacheA = atom({ plugin: 'pace', key: 'cache' } as const, null as PaceCacheInfo | null)
@@ -51,6 +52,7 @@ async function snapshot($: any): Promise<Snapshot> {
   return {
     samples: (await read($, samplesA)) ?? [],
     prompts: (await read($, promptsA)) ?? [],
+    modelPrompts: (await read($, modelPromptsA)) ?? {},
     cache: (await read($, cacheA)) ?? null,
     warm: ((await read($, prefsA)) ?? DEFAULT_PREFS).warm ?? 'off',
     onPace: ((await read($, prefsA)) ?? DEFAULT_PREFS).onPace ?? false,
@@ -332,7 +334,7 @@ async function sampleUsageApi($: any): Promise<boolean> {
 async function recordSpend($: any, usd: number): Promise<void> {
   const now = await $.clock.now()
   const stored = await $.store.get('spend')
-  const mine = addSpend((await read($, spendA)) ?? [], spendId, now, usd, now)
+  const mine = addSpend((await read($, spendA)) ?? [], spendId, now, usd, now, await modelOf($))
   const merged = mergeSpend(Array.isArray(stored) ? (stored as PaceSpend[]) : [], mine, now)
   await $.store.set('spend', merged)
   await update($, spendA, () => merged)
@@ -345,7 +347,17 @@ async function recordPrompt($: any): Promise<void> {
   const merged = mergePrompts(Array.isArray(stored) ? (stored as number[]) : [], (await read($, promptsA)) ?? [], now)
   await $.store.set('prompts', merged)
   await update($, promptsA, () => merged)
+  // The model it went to, so a model's own week counts only its prompts
+  const model = await modelOf($)
+  if (!model) return
+  await update($, modelPromptsA, byModel => mergeModelPrompts(byModel ?? {}, { [model]: [now] }, now))
+  const storedByModel = await $.store.get('modelPrompts')
+  const mergedByModel = mergeModelPrompts(isRecord(storedByModel) ? storedByModel : {}, (await read($, modelPromptsA)) ?? {}, now)
+  await $.store.set('modelPrompts', mergedByModel)
+  await update($, modelPromptsA, () => mergedByModel)
 }
+
+const isRecord = (v: unknown): v is Record<string, number[]> => typeof v === 'object' && v != null && !Array.isArray(v)
 
 /** The last reply's context starts the cache's timer; none (after /clear or a compaction) clears it. `usd` is what the reply cost, which prices it */
 async function recordContext($: any, tokens: number | undefined, window: number, usd?: number): Promise<void> {
@@ -368,6 +380,8 @@ async function tick($: any): Promise<void> {
   if (Array.isArray(stored)) await update($, samplesA, cur => Q.mergeSamples(stored as PaceSample[], cur ?? []))
   const sp = await $.store.get('prompts')
   if (Array.isArray(sp)) await update($, promptsA, cur => mergePrompts(sp as number[], cur ?? [], now))
+  const byModel = await $.store.get('modelPrompts')
+  if (isRecord(byModel)) await update($, modelPromptsA, cur => mergeModelPrompts(byModel, cur ?? {}, now))
   const spent = await $.store.get('spend')
   if (Array.isArray(spent)) await update($, spendA, cur => mergeSpend(spent as PaceSpend[], cur ?? [], now))
   await update($, nowA, () => now)

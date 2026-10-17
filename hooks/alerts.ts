@@ -2,7 +2,7 @@
 // id tied to its quota's window, so it is said once per window across every session. Pure; times in ms.
 
 import type { PaceQuota, PaceSnapshot } from '../types'
-import { clockAt, formatDuration } from './quota.ts'
+import { clockAt, formatDuration, theName } from './quota.ts'
 
 export type Alert = { id: string; level: 'warn' | 'urgent'; text: string }
 
@@ -20,13 +20,10 @@ function quotaAlerts(q: PaceQuota, now: number): Alert[] {
   } else if (q.rate.level === 'fast' && q.rate.emptyIn != null) {
     const rate = q.rate.usdPerHour != null ? usd(q.rate.usdPerHour) : `${q.rate.promptsPerHour} prompts`
     const before = formatDuration((q.resetsAt - now) / 1000 - q.rate.emptyIn)
-    out.push({ id: id('fast'), level: 'urgent', text: `At ${rate}/h the ${lower(q.name)} gasses out in ${formatDuration(q.rate.emptyIn)}, ${before} before it resets.` })
+    out.push({ id: id('fast'), level: 'urgent', text: `At ${rate}/h ${theName(q.name)} gasses out in ${formatDuration(q.rate.emptyIn)}, ${before} before it resets.` })
   }
   return out
 }
-
-/** `5-hour window` mid-sentence; a week's name keeps its capital */
-const lower = (name: string) => (name.startsWith('5-hour') ? name : name.replace(/^Week/, 'week'))
 
 /** Every warning that holds now; the caller says only the ones it has not said before */
 export function alertsOf(s: PaceSnapshot): Alert[] {

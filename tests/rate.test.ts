@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { PaceReading } from '../types'
-import { bar, rateSince, sparkline } from '../hooks/rate.ts'
+import { bar, mergeModelPrompts, rateSince, sparkline } from '../hooks/rate.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const MIN = 60_000
@@ -28,6 +28,8 @@ describe('rateVerdict', () => {
     expect(v.budgetPerHour).toBe(20)
     expect(v.perHour).toBe(4)
     expect(v.level).toBe('ok')
+    // 8 points an hour for the 2 hours left: it lands at 36%
+    expect(v.pctAtReset).toBe(36)
   })
 
   test('prompting faster than the budget runs out before the reset', () => {
@@ -38,6 +40,20 @@ describe('rateVerdict', () => {
     expect(v.level).toBe('fast')
     // 20 prompts left at 30/h: 40 minutes
     expect(v.emptyIn).toBe(40 * 60)
+    // Scored against this quota alone: 2 points a prompt at 30/h, against 40 points over 2h
+    expect(v.pctPerHour).toBe(60)
+    expect(v.pctBudgetPerHour).toBe(20)
+    // Past 100%: it runs out first
+    expect(v.pctAtReset).toBe(180)
+  })
+
+  test('where it lands closes in on what is used as the reset nears, never exploding', () => {
+    // 65% used with 17 minutes left; 28 prompts over the window, 3 in the last half hour
+    const r = { percent: 65, resetsAt: NOW + 17 * MIN }
+    const near = (left: number) => rateSince(every(10, 28), { ...r }, { at: r.resetsAt - 5 * H - 1, percent: 0 }, r.resetsAt - left * MIN).pctAtReset!
+    expect(near(17)).toBeGreaterThan(65)
+    expect(near(17)).toBeLessThan(70)
+    expect(near(1)).toBeLessThan(near(17))
   })
 
   test('close to the budget is brisk', () => {
@@ -92,5 +108,13 @@ describe('rateSince', () => {
     const v = rateSince(every(5, 6), { percent: 60, resetsAt: NOW + 80 * H }, null, NOW)
     expect(v.costPerPrompt).toBeNull()
     expect(v.level).toBe('ok')
+  })
+})
+
+describe('mergeModelPrompts', () => {
+  test('merges each model\'s prompts from both copies, the last day only, and drops what does not parse', () => {
+    const a = { 'claude-opus-5-5': [NOW - 2 * MIN, NOW - 25 * H], 'claude-fable-5-1': [NOW - MIN] }
+    const b = { 'claude-opus-5-5': [NOW - MIN, NOW - 2 * MIN], junk: 'x', 'claude-haiku-5-5': [] } as any
+    expect(mergeModelPrompts(a, b, NOW)).toEqual({ 'claude-opus-5-5': [NOW - 2 * MIN, NOW - MIN], 'claude-fable-5-1': [NOW - MIN] })
   })
 })

@@ -8,7 +8,7 @@
 // minutes summed first, so a half-copied hour loses to a full one in the same way.
 
 import type { PaceReading, PaceSample, PaceSpend } from '../types'
-import type { RateVerdict } from './rate.ts'
+import { pctAt, pctBudget, type RateVerdict } from './rate.ts'
 
 export type Spend = PaceSpend
 
@@ -30,8 +30,9 @@ function fold(list: readonly Spend[], now: number): Map<string, Spend> {
     if (typeof s?.t !== 'number' || typeof s.usd !== 'number' || typeof s.id !== 'string' || s.t < now - KEEP) continue
     const h = s.h || folds(s.t, now)
     const t = Math.floor(s.t / (h ? HOUR : MIN)) * (h ? HOUR : MIN)
-    const key = `${s.id}@${t}${h ? 'h' : ''}`
-    out.set(key, { t, id: s.id, usd: (out.get(key)?.usd ?? 0) + s.usd, ...(h ? { h: true as const } : {}) })
+    const m = typeof s.m === 'string' ? s.m : undefined
+    const key = `${s.id}@${t}${h ? 'h' : ''}${m ? `:${m}` : ''}`
+    out.set(key, { t, id: s.id, usd: (out.get(key)?.usd ?? 0) + s.usd, ...(h ? { h: true as const } : {}), ...(m ? { m } : {}) })
   }
   return out
 }
@@ -43,10 +44,10 @@ export function mergeSpend(a: readonly Spend[], b: readonly Spend[], now: number
   return [...out.values()].sort((x, y) => x.t - y.t || (x.id < y.id ? -1 : 1))
 }
 
-/** `usd` this session (`id`) spent at `at`, added to its bucket for that minute */
-export function addSpend(list: readonly Spend[], id: string, at: number, usd: number, now: number): Spend[] {
+/** `usd` this session (`id`) spent at `at` on `model`, added to its bucket for that minute */
+export function addSpend(list: readonly Spend[], id: string, at: number, usd: number, now: number, model?: string): Spend[] {
   if (!(usd > 0)) return mergeSpend(list, [], now)
-  return mergeSpend([...list, { t: at, id, usd }], [], now)
+  return mergeSpend([...list, { t: at, id, usd, ...(model ? { m: model } : {}) }], [], now)
 }
 
 /** Dollars every session spent in (from, to]: a minute's bucket at its minute, an hour's spread evenly over it */
@@ -134,5 +135,8 @@ export function spendVerdict(i: SpendInput): RateVerdict {
     level,
     usdPerHour: i.usdPerHour,
     usdBudgetPerHour,
+    pctPerHour: i.usdPerHour * i.perDollar,
+    pctBudgetPerHour: pctBudget(i.reading, resetIn),
+    pctAtReset: pctAt(i.reading, i.usdPerHour * i.perDollar, resetIn),
   }
 }

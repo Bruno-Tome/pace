@@ -8,7 +8,7 @@ const H = 3600_000
 
 const quota = (over: Partial<PaceQuota> = {}): PaceQuota => ({
   key: 'five_hour', name: '5-hour window', percent: 40, status: 'onPace', resetsAt: NOW + 2 * H, runOutAt: null,
-  rate: { level: 'ok', promptsPerHour: 6, usdPerHour: 10, usdBudgetPerHour: 30, costPerPrompt: 1, emptyIn: null },
+  rate: { level: 'ok', promptsPerHour: 6, usdPerHour: 10, usdBudgetPerHour: 30, percentPerHour: 10, percentBudgetPerHour: 30, percentAtReset: null, costPerPrompt: 1, emptyIn: null },
   ...over,
 })
 

@@ -7,7 +7,7 @@ import { cacheLeft, formatTokens, formatUsd, nextCost, ttlSeconds, type Suggesti
 import { chart, type Layer } from './chart.ts'
 import { adviceOf, bandRows, isFable, ratedOf, rowsOf, verdictOf, worstOf, type Row, type Snapshot } from './model.ts'
 import * as Q from './quota.ts'
-import { bar, budgetText, buckets, rateText, sparkline, type Cell, type RateVerdict } from './rate.ts'
+import { bar, budgetText, buckets, rateText, scoreText, sparkline, type Cell, type RateVerdict } from './rate.ts'
 import { sessionsOf, usdPerPrompt } from './spend.ts'
 
 const MIN = 60_000
@@ -92,28 +92,37 @@ function barSegs(cells: readonly Cell[], key: string, status: Q.Status): Seg[] {
 }
 
 /** A quota in one row: label, bar, percent used, status and the time to reset */
-function quotaLine(row: Row, labelW: number, barWidth: number, wide: boolean): Line {
+function quotaLine(row: Row, labelW: number, barWidth: number, wide: boolean, packed = false): Line {
   const out: Line = [{ t: `${row.short.padEnd(labelW)} `, dim: true }]
   if (row.view.kind !== 'pace') return [...out, { t: Q.viewSummary(row.view), dim: true }]
   const p = row.view.pace
   const status = p.status
   if (barWidth > 0) out.push(...barSegs(bar(p.used, p.elapsed, barWidth), row.key, status), { t: ' ' })
-  out.push({ t: `${pctOf(p.used)}%`.padStart(4), color: STATUS_COLOR[status], bold: true })
-  out.push({ t: ` ${Q.statusLabel(status).padEnd(11)}`, color: STATUS_COLOR[status] })
+  out.push({ t: packed ? `${pctOf(p.used)}%` : `${pctOf(p.used)}%`.padStart(4), color: STATUS_COLOR[status], bold: true })
+  out.push({ t: ` ${packed ? Q.statusLabel(status) : Q.statusLabel(status).padEnd(11)}`, color: STATUS_COLOR[status] })
   if (wide) out.push({ t: ` ↻ ${compact(p.resetIn).padEnd(6)}`, dim: true })
   return out
 }
 
-/** The prompting rate against a quota: the rate, its budget, and for a burst or worse when the quota runs out */
+/**
+ * Where the rate takes a quota: when it runs out, if before the reset, else the percent it lands at by the reset
+ * (`→ 71% at reset`). Null until a prompt's cost is known.
+ */
+function landingText(v: RateVerdict, wide: boolean): string | null {
+  if (v.emptyIn != null && v.resetIn != null && v.emptyIn < v.resetIn) return `out in ${compact(v.emptyIn)}`
+  if (v.pctAtReset == null) return null
+  return `→ ${Math.round(v.pctAtReset)}%${wide ? ' at reset' : ''}`
+}
+
+/** The prompting rate against a quota, as where it takes the quota: idle, the percent at reset, or when it runs out */
 function rateSegs(v: RateVerdict, wide: boolean): Seg[] {
   const l = LEVEL[v.level]
   const fast = v.level === 'fast'
-  const budget = budgetText(v)
-  const out: Seg[] = [{ t: `${l.mark} `, color: l.color, pulse: fast }, { t: rateText(v), bold: true }]
-  if (wide && budget) out.push({ t: ` of ${budget}`, dim: true })
+  const out: Seg[] = [{ t: `${l.mark} `, color: l.color, pulse: fast }]
+  if (v.level === 'idle') return [...out, { t: l.word, dim: true }]
+  out.push({ t: landingText(v, wide) ?? `→ —${wide ? ' at reset' : ''}`, bold: true })
   if (fast) out.push({ t: ' too fast', color: 'error', bold: true, pulse: true })
   else if (v.level === 'burst' || v.level === 'brisk') out.push({ t: ` ${l.word}`, color: 'warning' })
-  if (wide && (fast || v.level === 'burst') && v.emptyIn != null) out.push({ t: ` · out in ${compact(v.emptyIn)}`, dim: true })
   return out
 }
 
@@ -197,30 +206,31 @@ function columns(rows: readonly [Line, Line][]): Line[] {
   return rows.map(([l, r]) => [...l, ...(width(l) < left ? [{ t: ' '.repeat(left - width(l)) }] : []), SEP, ...r])
 }
 
-/** The status-line row: the band's quotas and the overall rate on one line, short bars */
+/** The status-line row: the band's quotas on one line, each with the rate scored against it, short bars */
 export function statusRow(s: Snapshot, now: number, cols: number): Line {
   const rows = rowsOf(s.samples, now)
-  const shown = bandRows(rows)
   const barWidth = cols >= 110 ? 14 : cols >= 85 ? 8 : 0
-  const wide = cols >= 70
-  const parts: Line = []
-  for (const row of shown) parts.push(...quotaLine(row, row.short.length, barWidth, false), SEP)
-  if (!shown.length) parts.push({ t: 'usage appears after the first reply', dim: true }, SEP)
-  parts.push(...rateSegs(verdictOf(s, rows, now), wide))
-  return parts
+  const rated = ratedOf(s, rows, now)
+  if (!rated.length) return [{ t: 'usage appears after the first reply', dim: true }, SEP, ...rateSegs(verdictOf(s, rows, now), cols >= 70)]
+  return rated.flatMap(({ row, r }, i) => [...(i ? [SEP] : []), ...quotaLine(row, row.short.length, barWidth, false, true), { t: ' ' }, ...rateSegs(r, false)])
 }
 
-/** The status-line entry: the band in a few words */
+const levelWord = (v: RateVerdict) => (v.level === 'fast' || v.level === 'burst' || v.level === 'brisk' ? ` ${LEVEL[v.level].word}` : '')
+
+/** The status-line entry: the band in a few words, each quota with its own score */
 export function lineText(s: Snapshot, now: number): string {
   const rows = rowsOf(s.samples, now)
-  const parts = bandRows(rows).map(r => {
-    const u = Q.viewUsed(r.view)
-    return `${r.short} ${u == null ? '—' : `${pctOf(u)}%`}`
-  })
-  const v = verdictOf(s, rows, now)
-  const word = v.level === 'fast' || v.level === 'burst' || v.level === 'brisk' ? ` ${LEVEL[v.level].word}` : ''
-  parts.push(`${rateText(v)}${word}`)
-  return parts.join(' · ')
+  const rated = ratedOf(s, rows, now)
+  if (!rated.length) {
+    const v = verdictOf(s, rows, now)
+    return `${rateText(v)}${levelWord(v)}`
+  }
+  return rated.map(({ row, r }) => {
+    const u = Q.viewUsed(row.view)
+    if (u == null) return `${row.short} —`
+    const landing = r.level !== 'idle' ? landingText(r, false) : null
+    return `${row.short} ${pctOf(u)}%${landing ? ` ${landing}${levelWord(r)}` : ''}`
+  }).join(' · ')
 }
 
 // ----------------------------------------------------------------------
@@ -335,7 +345,7 @@ function restLines(s: Snapshot, now: number, o: PaneLayout): Line[] {
   const labelW = Math.max(0, ...rated.map(q => q.row.short.length))
   const l = LEVEL[v.level]
   out.push([{ t: 'Prompting', bold: true }])
-  out.push([{ t: `${v.perHour}/h`, bold: true }, { t: `  · ${v.last15} in the last 15m`, dim: true }])
+  out.push([{ t: `${v.perHour} prompts/h`, bold: true }, { t: `  · ${v.last15} in the last 15m, every session`, dim: true }])
   const spend = s.spend ?? []
   const sessions = sessionsOf(spend, now)
   if (v.usdPerHour != null) {
@@ -348,6 +358,7 @@ function restLines(s: Snapshot, now: number, o: PaneLayout): Line[] {
   for (const { row, r } of rated) {
     const ql = LEVEL[r.level]
     const figures = [
+      landingText(r, true) ?? 'lands —',
       r.costPerPrompt != null ? `~${r.costPerPrompt.toFixed(r.costPerPrompt < 1 ? 2 : 1)}% per prompt` : 'no per-prompt cost yet',
       budgetText(r) ? `budget ${budgetText(r)}` : '',
       r.emptyIn != null && r.resetIn != null && r.emptyIn < r.resetIn ? `out in ${compact(r.emptyIn)}` : '',
@@ -357,14 +368,15 @@ function restLines(s: Snapshot, now: number, o: PaneLayout): Line[] {
   const promptBuckets = buckets(s.prompts, now, 20, 15 * MIN)
   out.push([{ t: sparkline(promptBuckets), color: l.color }, { t: `  prompts per 15m, last ${(promptBuckets.length * 15) / 60}h`, dim: true }])
   const advice = (() => {
-    const name = worst?.name ?? 'the 5-hour window'
+    const name = worst ? Q.theName(worst.name) : 'the 5-hour window'
+    const Name = name[0]!.toUpperCase() + name.slice(1)
     if ((v.level === 'fast' || v.level === 'burst') && v.emptyIn != null && v.resetIn != null) {
       const slow = budgetText(v) ? ` Slow to ≤${budgetText(v)}` : ''
       return v.level === 'fast'
-        ? `At ${rateText(v)} ${name} runs out in ${Q.formatDuration(v.emptyIn)}, ${Q.formatDuration(v.resetIn - v.emptyIn)} before it resets, and it is already over pace.${slow}.`
-        : `A burst: at ${rateText(v)} ${name} would run out in ${Q.formatDuration(v.emptyIn)}, though its average is on pace. Fine for a short run.${slow ? `${slow} if it keeps up.` : ''}`
+        ? `At ${scoreText(v)} ${name} runs out in ${Q.formatDuration(v.emptyIn)}, ${Q.formatDuration(v.resetIn - v.emptyIn)} before it resets, and it is already over pace.${slow}.`
+        : `A burst: at ${scoreText(v)} ${name} would run out in ${Q.formatDuration(v.emptyIn)}, though its average is on pace. Fine for a short run.${slow ? `${slow} if it keeps up.` : ''}`
     }
-    if (v.level === 'fast') return `${name} is ahead of the clock: ease off until it falls back under pace.`
+    if (v.level === 'fast') return `${Name} is ahead of the clock: ease off until it falls back under pace.`
     if (v.level === 'brisk' && budgetText(v)) return `Close to the budget of ${budgetText(v)} for ${name}.`
     if (rated.some(q => q.r.costPerPrompt == null)) return 'A per-prompt cost appears after 3 prompts and half an hour of readings.'
     return null
