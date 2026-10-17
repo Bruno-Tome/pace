@@ -369,6 +369,12 @@ async function setPrefs($: any, fn: (p: PacePrefs) => PacePrefs): Promise<void> 
 // Hooks
 // ======================================================================
 
+/** /pace answers in a toast: no transcript row, so the model never reads it and the context stays as it was */
+function say($: any, text: string): {} {
+  $.ui.toast(text)
+  return {}
+}
+
 const USAGE = 'window | pane | refresh | hide | show | line on | line off | warm compact | warm ping | warm off'
 
 export const register: Register = (on, options) => {
@@ -379,7 +385,7 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     spendId = await $.session.id().catch(() => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`)
-    await $.command.register({ name: 'pace', description: 'Rate-limit pace, prompting rate and the prompt cache, charted', argumentHint: USAGE })
+    await $.command.register({ name: 'pace', description: 'Rate-limit pace, prompting rate and the prompt cache, charted', argumentHint: USAGE, immediate: true })
     try { await load($) } catch {}
     try {
       const usage = await $.session.usage()
@@ -460,37 +466,35 @@ export const register: Register = (on, options) => {
     const arg = (e.args ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
     if (arg === 'hide' || arg === 'show') {
       await setPrefs($, p => ({ ...p, band: arg === 'show' }))
-      return { text: arg === 'show' ? 'Pace band shown' : 'Pace band hidden; /pace show brings it back' }
+      return say($, arg === 'show' ? 'Pace band shown' : 'Pace band hidden; /pace show brings it back')
     }
     if (arg === 'line on' || arg === 'line off') {
       await setPrefs($, p => ({ ...p, line: arg === 'line on' }))
-      return { text: `Pace status line ${arg === 'line on' ? 'on' : 'off'}` }
+      return say($, `Pace status line ${arg === 'line on' ? 'on' : 'off'}`)
     }
     if (arg.startsWith('warm ')) {
       const mode = arg.slice(5) as PaceWarmMode
-      if (mode !== 'off' && mode !== 'compact' && mode !== 'ping') return { text: 'Use /pace warm compact, ping or off' }
+      if (mode !== 'off' && mode !== 'compact' && mode !== 'ping') return say($, 'Use /pace warm compact, ping or off')
       await setPrefs($, p => ({ ...p, warm: mode }))
       warmActions = 0
-      return {
-        text: mode === 'off'
-          ? 'Warm mode off'
-          : `Warm mode ${mode}: with under 10 minutes of cache left and Claude idle, ${mode === 'compact' ? 'runs /compact (once until your next prompt)' : 'pings the cache through a fork (up to 3 times until your next prompt)'}`,
-      }
+      return say($, mode === 'off'
+        ? 'Warm mode off'
+        : `Warm mode ${mode}: with under 10 minutes of cache left and Claude idle, ${mode === 'compact' ? 'runs /compact (once until your next prompt)' : 'pings the cache through a fork (up to 3 times until your next prompt)'}`)
     }
     if (arg === 'refresh') {
       const ok = await refreshAll($)
-      return { text: ok ? 'Pace figures refreshed' : 'Could not reach the usage endpoint; showing the latest local figures' }
+      return say($, ok ? 'Pace figures refreshed' : 'Could not reach the usage endpoint; showing the latest local figures')
     }
-    if (arg && arg !== 'pane' && arg !== 'window') return { text: `Unknown argument "${arg}": use ${USAGE}` }
+    if (arg && arg !== 'pane' && arg !== 'window') return say($, `Unknown argument "${arg}": use ${USAGE}`)
     await tick($)
     if (arg !== 'pane') {
       let opened = false
       try { opened = await openWindow($) } catch {}
-      if (opened) return { text: 'Pace window opened; q closes it' }
+      if (opened) return say($, 'Pace window opened; q closes it')
     }
     const lines = paneLines(await snapshot($), await $.clock.now(), paneLayout(Math.max(40, (e.presentation?.columns ?? 80) - 4), DEFAULT_PREFS))
     await $.ui.open({ id: PANE, title: 'Pace', rows: lines.length + 4, focus: true, closeOnEscape: true })
-    return { text: arg === 'pane' ? 'Pace pane opened' : 'Could not open a terminal window; Pace pane opened here' }
+    return say($, arg === 'pane' ? 'Pace pane opened' : 'Could not open a terminal window; Pace pane opened here')
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {

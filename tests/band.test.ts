@@ -35,7 +35,8 @@ function world(on: any) {
   on('fs.write', (_$: unknown, e: { path: string; text: string }) => { files[e.path] = e.text; return { value: undefined } })
   on('fs.exists', (_$: unknown, e: { path: string }) => ({ value: e.path in files }))
   on('fs.read', (_$: unknown, e: { path: string }) => ({ value: files[e.path] ?? '' }))
-  on('command.register', (_$: unknown, e: { name: string }) => ({ value: { command: e.name } }))
+  const registered: any[] = []
+  on('command.register', (_$: unknown, e: { name: string }) => { registered.push(e); return { value: { command: e.name } } })
   const runs: string[][] = []
   on('process.run', (_$: unknown, e: { argv: string[] }) => {
     runs.push(e.argv)
@@ -48,12 +49,13 @@ function world(on: any) {
     forks.push(e.prompt)
     return { value: { isAnswered: true, text: 'ok', usage: { input_tokens: 10, output_tokens: 1, cache_read_input_tokens: 180_000, cache_creation_input_tokens: 0 } } } as any
   })
-  on('ui.toast', () => ({ value: undefined }))
+  const toasts: string[] = []
+  on('ui.toast', (_$: unknown, e: { text: string }) => { toasts.push(e.text); return { value: undefined } })
   on('ui.status', (_$: unknown, e: { text: string | undefined }) => { status.push(e.text); return { value: undefined } })
   const opens: any[] = []
   on('ui.open', (_$: unknown, e: unknown) => { opens.push(e); return { value: { isPlaced: true } } })
   on('ui.render', { component: 'AbovePrompt' }, () => ({ type: 'Box', props: { key: 'native' }, children: [] }) as any)
-  return { stored, status, clock, files, opens, runs, commands, forks, fetches: () => fetches }
+  return { stored, status, clock, files, opens, runs, commands, forks, toasts, registered, fetches: () => fetches }
 }
 
 /** Every string in a drawn tree, joined: what the terminal shows, without the styling */
@@ -269,7 +271,7 @@ test('/pace opens the charts full-screen in a terminal window of their own, fed 
   expect(script).toContain("'/home/u/.claude/pace-keys.json'")
   expect(runs).toContainEqual(['chmod', '+x', '/home/u/.claude/pace-view.command'])
   expect(runs).toContainEqual(['open', '-a', 'Terminal', '/home/u/.claude/pace-view.command'])
-  expect(r.text).toContain('window')
+  expect(r.text).toBeUndefined()
 })
 
 test('warm mode compact compacts once when an idle cache nears its end, then waits for the next prompt', async ($, on) => {
@@ -392,4 +394,17 @@ test('parallel sessions pace together: the rate is every session\'s dollars an h
   const drawn = textOf(await pane.drawn())
   expect(drawn).toContain('2 sessions')
   expect(drawn).toMatch(/~\d+(\.\d+)?% per prompt/)
+})
+
+test('/pace runs at once, mid-turn too, and answers in a toast: nothing lands in the transcript for the model to read', async ($, on) => {
+  const { registered, toasts } = world(on)
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  expect(registered.find(c => c.name === 'pace')?.immediate).toBe(true)
+  for (const args of ['hide', 'show', 'refresh', 'warm ping', 'line off', 'nonsense']) {
+    const r: any = await $.command.run({ command: 'pace', args } as any)
+    expect(r.text).toBeUndefined()
+    expect(r.context).toBeUndefined()
+  }
+  expect(toasts.some(t => t.includes('Warm mode ping'))).toBe(true)
+  expect(toasts.some(t => t.includes('Unknown argument'))).toBe(true)
 })
