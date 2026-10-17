@@ -107,3 +107,9 @@ describe('readings', () => {
     expect(trajectoryOf('five_hour', reset, samples.slice(0, 1), FIVE)).toBeNull()
   })
 })
+
+test('a malformed reading in a stored history is dropped, not thrown over', () => {
+  const good: PaceSample = { at: NOW, quotas: { five_hour: { percent: 10, resetsAt: NOW + H } } }
+  const junk = [{ t: NOW - H, w: { five_hour: { u: 5 } } }, null, { at: 'x', quotas: {} }, { at: NOW - 2 * H, quotas: { five_hour: { percent: 'a' } } }] as any[]
+  expect(mergeSamples(junk, [good])).toEqual([good])
+})

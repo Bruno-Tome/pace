@@ -274,10 +274,21 @@ export function appendSample(list: readonly PaceSample[], s: PaceSample): PaceSa
   return [...list, s].sort((a, b) => a.at - b.at).slice(-KEEP)
 }
 
-/** Two copies of the history as one: readings at the same moment joined, repeats dropped */
+/** A stored reading in the shape pace writes, its malformed quotas left out; null when nothing of it is */
+function wellFormed(s: unknown): PaceSample | null {
+  const x = s as { at?: unknown; quotas?: unknown } | null
+  if (!x || typeof x.at !== 'number' || !x.quotas || typeof x.quotas !== 'object') return null
+  const quotas: Record<string, PaceReading> = {}
+  for (const [k, r] of Object.entries(x.quotas as Record<string, PaceReading | null>)) {
+    if (r && typeof r.percent === 'number' && (r.resetsAt == null || typeof r.resetsAt === 'number')) quotas[k] = r
+  }
+  return Object.keys(quotas).length ? { at: x.at, quotas } : null
+}
+
+/** Two copies of the history as one: readings at the same moment joined, repeats and malformed ones dropped */
 export function mergeSamples(a: readonly PaceSample[], b: readonly PaceSample[]): PaceSample[] {
   const byAt = new Map<number, PaceSample>()
-  for (const s of [...a, ...b]) {
+  for (const s of [...a, ...b].map(wellFormed).filter((x): x is PaceSample => x != null)) {
     const prev = byAt.get(s.at)
     byAt.set(s.at, prev ? { at: s.at, quotas: { ...prev.quotas, ...s.quotas } } : s)
   }
