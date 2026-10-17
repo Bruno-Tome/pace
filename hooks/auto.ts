@@ -1,0 +1,119 @@
+// Auto mode and on pace mode, as decisions. Pure; times in ms.
+//
+// Auto mode works through a plan with no one at the keyboard: after each turn it continues with the next step,
+// hands off to a fresh context when this one is heavy, holds while a quota is gassed out or the rate would gas one
+// out, and stops when the plan is done or blocked. On pace mode keeps a long-running session's context and cache
+// in shape: it compacts a heavy context while the cache is warm, and keeps an idle cache from lapsing.
+
+import type { PaceAuto, PaceSnapshot, PaceWarmMode } from '../types'
+import { clockAt, formatDuration } from './quota.ts'
+
+export const HANDOFF_FILE = '.pace/handoff.md'
+
+const MIN = 60_000
+
+/** A context this full is worth compacting or handing off: every prompt re-sends it */
+const HEAVY = 0.6
+/** A cold context this large costs more to read again than a handoff costs to start over */
+const COLD_LARGE = 100_000
+/** How long auto mode holds before looking again at a rate that would gas a quota out */
+const PACING_HOLD = 15 * MIN
+
+export type Marker = { kind: 'next' | 'done' | 'blocked'; reason?: string }
+
+/** How the turn says it ended: its last `PACE:` line, `next` when it has none */
+export function markerOf(answer: string): Marker {
+  const lines = [...answer.matchAll(/^PACE: (NEXT|DONE|BLOCKED)\b[ \t]*(.*)$/gm)]
+  const m = lines[lines.length - 1]
+  if (!m) return { kind: 'next' }
+  const kind = m[1]!.toLowerCase() as Marker['kind']
+  return kind === 'blocked' && m[2] ? { kind, reason: m[2].trim() } : { kind }
+}
+
+const fill = (s: PaceSnapshot) => (s.cache ? s.cache.tokens / s.cache.window : 0)
+
+export type Decision =
+  | { kind: 'continue'; prompt: string }
+  /** `/clear`, then the prompt, which resumes from the handoff file */
+  | { kind: 'handoff'; prompt: string }
+  /** Look again at `until` */
+  | { kind: 'hold'; until: number; why: string }
+  /** Off until `/pace auto resume` */
+  | { kind: 'pause'; why: string }
+  | { kind: 'stop'; why: string }
+
+export type DecideInput = { auto: PaceAuto; snap: PaceSnapshot; answer: string; aborted: boolean }
+
+/** What auto mode does after a turn, or after a hold */
+export function decide(i: DecideInput): Decision {
+  const { auto, snap } = i
+  if (i.aborted) return { kind: 'pause', why: 'You interrupted: /pace auto resume picks the plan back up' }
+  const marker = markerOf(i.answer)
+  if (marker.kind === 'done') return { kind: 'stop', why: `Plan done: ${auto.plan}` }
+  if (marker.kind === 'blocked') return { kind: 'stop', why: `Blocked: ${marker.reason ?? 'no reason given'}` }
+  if (auto.turns >= auto.max) return { kind: 'stop', why: `Reached ${auto.max} turns: /pace auto resume for more` }
+  const out = snap.quotas.find(q => q.status === 'gassedOut' && q.resetsAt != null)
+  if (out) return { kind: 'hold', until: out.resetsAt! + MIN, why: `Gassed out: ${out.name} resets at ${clockAt(out.resetsAt!, out.resetsAt! - snap.at >= 86400_000)}` }
+  const fast = snap.quotas.find(q => q.rate.level === 'fast')
+  if (fast) {
+    const when = fast.rate.emptyIn != null ? ` gasses out in ${formatDuration(fast.rate.emptyIn)}` : ' runs out before it resets'
+    return { kind: 'hold', until: snap.at + PACING_HOLD, why: `Pacing: at this rate ${fast.name}${when}` }
+  }
+  const c = snap.cache
+  if (c && (fill(snap) >= HEAVY || (c.secondsLeft === 0 && c.tokens >= COLD_LARGE))) return { kind: 'handoff', prompt: handoffPrompt(auto.plan, snap) }
+  return { kind: 'continue', prompt: continuePrompt(auto.plan, snap) }
+}
+
+/** What the next turn should know about pacing: said in the prompt, never in the system prompt, which stays cached */
+export function pacingNote(s: PaceSnapshot): string {
+  const notes: string[] = []
+  const over = s.quotas.find(q => q.key !== 'five_hour' && (q.status === 'over' || q.rate.level === 'burst'))
+  if (over) notes.push(`${over.name} is over pace: hand searches, reads and routine edits to subagents on a lighter model (haiku, sonnet).`)
+  if (s.quotas.some(q => q.rate.level === 'brisk' || q.rate.level === 'burst')) notes.push('Spending is brisk: do fewer, fuller steps.')
+  return notes.length ? ` Pace: ${notes.join(' ')}` : ''
+}
+
+export const startPrompt = (plan: string) =>
+  `Work through the plan in ${plan}, one step per turn, following pace's auto mode instructions. Start with its first unfinished step.`
+
+export const continuePrompt = (plan: string, s: PaceSnapshot) => `Continue with the next unfinished step of ${plan}.${pacingNote(s)}`
+
+export const handoffPrompt = (plan: string, s: PaceSnapshot) =>
+  `Resume the plan in ${plan} from ${HANDOFF_FILE}: it says what is done, what is next and what you need to know. Then continue with the next unfinished step.${pacingNote(s)}`
+
+/** Auto mode's instructions, a system-prompt section while it runs: fixed text, so the prompt cache keeps it */
+export function protocol(): string {
+  return [
+    '# Auto mode (pace)',
+    'You are working through a plan with no one at the keyboard. pace sends the next prompt after each turn.',
+    '- Do one step of the plan per turn, then stop. Tick it off in the plan file when it is done.',
+    '- Never wait for the user. Where you would ask, take the recommended option and say which you took.',
+    `- Before ending each turn, update ${HANDOFF_FILE}: what is done, what is next, and the facts a fresh session needs (files, commands, decisions). pace may clear the context and resume from it.`,
+    '- Use subagents for work that does not need the main thread: searches, reading many files, mechanical edits, test runs. Give them a lighter model (haiku for search and reads, sonnet for routine edits) and keep the main thread for decisions.',
+    '- End every turn with exactly one line: `PACE: NEXT` when steps remain, `PACE: DONE` when the plan is finished, or `PACE: BLOCKED <reason>` when you cannot go on without the user.',
+  ].join('\n')
+}
+
+type Question = { question: string; kind?: string; multiSelect?: boolean; options: readonly { label: string }[]; min?: number; defaultValue?: number }
+
+/** Answers to `AskUserQuestion` for auto mode: the option marked `(Recommended)`, else the first */
+export function answerQuestions(questions: readonly Question[]): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const q of questions) {
+    if (q.kind === 'number') out[q.question] = String(q.defaultValue ?? q.min ?? 0)
+    else if (q.kind === 'text' || !q.options.length) out[q.question] = 'Use your judgment and take the recommended approach.'
+    else out[q.question] = (q.options.find(o => /\(recommended\)/i.test(o.label)) ?? q.options[0]!).label
+  }
+  return out
+}
+
+/** On pace mode after a turn: compact a heavy context while the cache is warm, when reading it is cheapest */
+export function upkeep(s: PaceSnapshot): 'compact' | null {
+  return s.cache && s.cache.secondsLeft > 0 && fill(s) >= HEAVY ? 'compact' : null
+}
+
+/** The warm mode in force: yours when set, else on pace mode's own, compacting a large context and pinging a small one */
+export function warmModeFor(o: { onPace: boolean; warm: PaceWarmMode }, s: PaceSnapshot): PaceWarmMode {
+  if (o.warm !== 'off' || !o.onPace) return o.warm
+  return fill(s) >= 0.3 ? 'compact' : 'ping'
+}
