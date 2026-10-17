@@ -15,9 +15,9 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { PaceCacheInfo, PaceCacheTtl, PacePrefs, PaceReading, PaceSample, PaceSpend, PaceWarmMode } from '../types'
+import type { Pace, PaceCacheInfo, PaceCacheTtl, PaceSnapshot, PacePrefs, PaceReading, PaceSample, PaceSpend, PaceWarmMode } from '../types'
 import { addPrice, priceOf, replyEquivalents, ttlSeconds, warmAction } from './cache.ts'
-import type { Snapshot } from './model.ts'
+import { snapshotOf, type Snapshot } from './model.ts'
 import * as Q from './quota.ts'
 import { mergePrompts } from './rate.ts'
 import { addSpend, mergeSpend } from './spend.ts'
@@ -122,11 +122,16 @@ let spendId = ''
 
 const homeOf = async ($: any): Promise<string | undefined> => $.env.get('HOME')
 
-/** The status-line entry, the status-line row and the window's state, each written only when it changed */
+/** What `$.pace.snapshot()` answers: kept here, since the noun has no `$` of its own to read the state through */
+let published: PaceSnapshot | undefined
+const EMPTY: Snapshot = { samples: [], prompts: [], cache: null }
+
+/** The status-line entry, the status-line row, the window's state and `$.pace`'s snapshot, each written only when it changed */
 async function refreshLine($: any): Promise<void> {
   const prefs = (await read($, prefsA)) ?? DEFAULT_PREFS
   const s = await snapshot($)
   const now = await $.clock.now()
+  published = snapshotOf(s, now)
   const text = prefs.line ? lineText(s, now) : undefined
   try { await refreshRow($, s, prefs, now) } catch {}
   try { await writeState($, s, now) } catch {}
@@ -382,6 +387,12 @@ export const register: Register = (on, options) => {
   ttlOption = options.cacheTtl === '5m' || options.cacheTtl === '1h' ? options.cacheTtl : 'auto'
   terminalApp = typeof options.terminal === 'string' && options.terminal ? options.terminal : 'Terminal'
   lastRow = undefined
+
+  // $.pace: what pace knows, for other plugins, as of the last reply, reading or minute tick
+  on('engine.create', async (_$, e, next) => {
+    const pace: Pace = { snapshot: async () => published ?? snapshotOf(EMPTY, 0) }
+    return { ...(await next(e)), pace }
+  })
 
   on('session.start', async ($, e, next) => {
     spendId = await $.session.id().catch(() => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`)

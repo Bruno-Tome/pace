@@ -61,6 +61,15 @@ function world(on: any) {
 /** Every string in a drawn tree, joined: what the terminal shows, without the styling */
 const textOf = (n: any): string => (typeof n === 'string' ? n : Array.isArray(n) ? n.map(textOf).join('') : n && typeof n === 'object' ? textOf(n.children ?? []) : '')
 
+/** Another plugin that reads `$.pace.snapshot()`, as a mod listing pace under `dependencies` does */
+const READER = {
+  name: 'reader',
+  register: (on: any) => {
+    on('command.run', { command: 'probe' }, async ($: any) => ({ text: JSON.stringify(await $.pace.snapshot()) }))
+  },
+}
+const paceSnapshot = async (engine: any) => JSON.parse((await engine.command.run({ command: 'probe', args: '' })).text)
+
 const BAND = { hasSurvey: false, isWorking: false, maxRows: 4, bodyColumns: 120, scroll: {} }
 
 test('the band shows the 5-hour and Fable bars and calls a burst on an on-pace window a burst', async ($, on) => {
@@ -407,4 +416,31 @@ test('/pace runs at once, mid-turn too, and answers in a toast: nothing lands in
   }
   expect(toasts.some(t => t.includes('Warm mode ping'))).toBe(true)
   expect(toasts.some(t => t.includes('Unknown argument'))).toBe(true)
+})
+
+test('other plugins read pace through $.pace.snapshot(): quotas with their rate, the cache, the shared spend', { plugins: [READER] }, async ($, on) => {
+  world(on)
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  await pricedReply($, 100_000, 0.5)
+  await pricedReply($, 120_000, 0.625)
+  const snap = await paceSnapshot($)
+  expect(snap.quotas.map((q: any) => q.key)).toEqual(['five_hour', 'seven_day', 'seven_day_fable'])
+  const five = snap.quotas[0]
+  expect(five).toMatchObject({ name: '5-hour window', percent: 60, status: 'onPace', resetsAt: NOW + 2 * H })
+  expect(five.rate.level).toBe('idle')
+  expect(snap.cache).toMatchObject({ tokens: 120_000, ttl: '1h', secondsLeft: 3600, nextWarm: 12_000 })
+  expect(snap.cache.nextWarmUsd).toBeGreaterThan(0)
+  expect(snap.gassedOut).toBe(false)
+  expect(Array.isArray(snap.advice)).toBe(true)
+})
+
+test('a spent quota is gassed out, in the snapshot and on the band', { plugins: [READER] }, async ($, on) => {
+  world(on)
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  await $.session.measure({ context: { window: 1_000_000 }, rateLimits: [{ kind: 'five_hour', percentUsed: 100, resetsAt: iso(NOW + H) }], changed: ['rateLimits'] } as any)
+  const snap = await paceSnapshot($)
+  expect(snap.gassedOut).toBe(true)
+  expect(snap.quotas[0].status).toBe('gassedOut')
+  const ui = await $.ui.mount({ plugin: 'pace', surface: 'terminal', component: 'AbovePrompt', props: BAND as any })
+  expect(textOf((await ui.drawn({ in: 'pace-band' }) as any).children[0])).toContain('Gassed out')
 })

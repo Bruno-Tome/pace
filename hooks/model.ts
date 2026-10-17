@@ -1,11 +1,11 @@
 // What the drawings show, from the samples, the prompts and the cache: each quota's pace, the prompting rate
 // against it, and what to do about token usage. Pure; times in ms.
 
-import type { PaceCacheInfo, PaceReading, PaceSample, PaceSpend, PaceWarmMode } from '../types'
-import { suggestions, type Suggestion } from './cache.ts'
+import type { PaceCacheInfo, PaceQuota, PaceReading, PaceSample, PaceSnapshot, PaceSpend, PaceWarmMode } from '../types'
+import { cacheLeft, nextCost, suggestions, type Suggestion } from './cache.ts'
 import * as Q from './quota.ts'
 import { budgetText, rateSince, type RateVerdict } from './rate.ts'
-import { quotaPerDollar, spendVerdict, usdPerHour, usdPerPrompt } from './spend.ts'
+import { quotaPerDollar, sessionsOf, spendVerdict, usdPerHour, usdPerPrompt } from './spend.ts'
 
 const MIN = 60_000
 const DAY = 24 * 60 * MIN
@@ -123,4 +123,43 @@ export function adviceOf(s: Snapshot, now: number): Suggestion[] {
     burst: priced && worst.r.level === 'burst' ? { name: worst.row.name, emptyIn: worst.r.emptyIn } : undefined,
     weeklyOverPace: over ? Q.modelName(over.key, over.reading?.name) : undefined,
   })
+}
+
+/** What `$.pace.snapshot()` answers: every quota with the rate against it, the cache, the shared spend, the advice */
+export function snapshotOf(s: Snapshot, now: number): PaceSnapshot {
+  const spend = s.spend ?? []
+  const quotas = rowsOf(s.samples, now).map((row): PaceQuota => {
+    const r = rateOf(s, row, now)
+    const pace = row.view.kind === 'pace' ? row.view.pace : null
+    return {
+      key: row.key,
+      name: row.name,
+      percent: row.reading?.percent ?? null,
+      status: pace?.status ?? null,
+      resetsAt: row.reading?.resetsAt ?? null,
+      runOutAt: pace?.runOutAt ?? null,
+      rate: {
+        level: r.level,
+        promptsPerHour: r.perHour,
+        usdPerHour: r.usdPerHour ?? null,
+        usdBudgetPerHour: r.usdBudgetPerHour ?? null,
+        costPerPrompt: r.costPerPrompt,
+        emptyIn: r.emptyIn,
+      },
+    }
+  })
+  const c = s.cache
+  const cost = c ? nextCost(c.tokens, c.ttl) : null
+  const usd = (tokens: number) => (s.price != null ? tokens * s.price : null)
+  return {
+    at: now,
+    quotas,
+    cache: c && cost ? {
+      tokens: c.tokens, window: c.window, ttl: c.ttl, secondsLeft: cacheLeft(c, now),
+      nextWarm: cost.warm, nextCold: cost.cold, nextWarmUsd: usd(cost.warm), nextColdUsd: usd(cost.cold),
+    } : null,
+    spend: { usdPerHour: usdPerHour(spend, now), sessions: sessionsOf(spend, now), usdPerPrompt: usdPerPrompt(spend, s.prompts, now) },
+    gassedOut: quotas.some(q => q.status === 'gassedOut'),
+    advice: adviceOf(s, now).map(a => ({ level: a.level, text: a.text })),
+  }
 }
