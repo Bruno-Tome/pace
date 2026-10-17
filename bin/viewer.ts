@@ -6,12 +6,13 @@
 
 import { readFileSync, watchFile, writeFileSync } from 'node:fs'
 
+import { KEYS_FILE, STATE_FILE } from '../hooks/files.ts'
 import { keyAction, screen, type Feed } from '../hooks/view.ts'
 
 const path = process.argv[2]
 const keysPath = process.argv[3]
 if (!path) {
-  process.stderr.write('usage: viewer.ts <state file> [keys file]\n')
+  process.stderr.write(`usage: viewer.ts <state file: ~/${STATE_FILE}> [keys file: ~/${KEYS_FILE}]\n`)
   process.exit(2)
 }
 

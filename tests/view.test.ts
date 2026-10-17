@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
-import { keyAction, screen, type Feed } from '../hooks/view.ts'
+import type { Snapshot } from '../hooks/model.ts'
+import { bandLines, keyAction, lineText, screen, statusRow, type Line, type Feed } from '../hooks/view.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const H = 3600_000
@@ -67,4 +68,25 @@ test('the window\'s keys: a digit focuses its quota and again shows all, w and r
   expect(keyAction('q', undefined)).toEqual({ quit: true })
   expect(keyAction('\x03', undefined)).toEqual({ quit: true })
   expect(keyAction('x', 1)).toEqual({})
+})
+
+const textOfLine = (l: Line) => l.map(x => x.t).join('')
+
+test('the band, the status-line row and the status-line entry say the same rate for each quota', () => {
+  const week = { percent: 80, resetsAt: NOW + 72 * H, name: 'Fable' }
+  const cases: Snapshot[] = [
+    // 20 prompts in 20 minutes on a window at 60%: a burst; the Fable week over pace with no cost yet
+    { samples: [{ at: NOW, quotas: { five_hour: { percent: 60, resetsAt: NOW + 2 * H }, seven_day_fable: week } }], prompts: Array.from({ length: 20 }, (_, i) => NOW - i * 60_000), cache: null },
+    // No prompt in the last 15 minutes: idle
+    { samples: [{ at: NOW, quotas: { five_hour: { percent: 30, resetsAt: NOW + 2 * H } } }], prompts: [NOW - 40 * 60_000], cache: null },
+  ]
+  for (const s of cases) {
+    const entry = lineText(s, NOW)
+    const row = textOfLine(statusRow(s, NOW, 120))
+    for (const l of bandLines(s, NOW, 60).slice(0, -1)) {
+      const rate = textOfLine(l).split('│').pop()!.trim()
+      expect(entry).toContain(rate)
+      expect(row).toContain(rate)
+    }
+  }
 })

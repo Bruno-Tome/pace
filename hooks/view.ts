@@ -129,7 +129,10 @@ function rateSegs(v: RateVerdict, wide: boolean): Seg[] {
   const out: Seg[] = [{ t: `${l.mark} `, color: l.color, pulse: fast }]
   if (v.level === 'idle') return [...out, { t: l.word, dim: true }]
   if (uncosted(v)) return [{ t: `${OVER_PACE.mark} `, color: OVER_PACE.color }, { t: OVER_PACE.word, color: OVER_PACE.color }, { t: ' · no cost yet', dim: true }]
-  out.push({ t: landingText(v, wide) ?? `→ —${wide ? ' at reset' : ''}`, bold: true })
+  // A burst is the recent rate, not the window so far: say so, so it does not read against an under-pace status
+  const landing = landingText(v, wide)
+  if (v.level === 'burst' && landing) return [...out, { t: l.word, color: l.color }, { t: ' · ' }, { t: `${landing} at this rate`, bold: true }]
+  out.push({ t: landing ?? `→ —${wide ? ' at reset' : ''}`, bold: true })
   if (fast) out.push({ t: ' too fast', color: 'error', bold: true, pulse: true })
   else if (v.level === 'burst' || v.level === 'brisk') out.push({ t: ` ${l.word}`, color: 'warning' })
   return out
@@ -226,21 +229,18 @@ export function statusRow(s: Snapshot, now: number, cols: number): Line {
 
 const levelWord = (v: RateVerdict) => (v.level === 'fast' || v.level === 'burst' || v.level === 'brisk' ? ` ${levelLook(v).word}` : '')
 
-/** The status-line entry: the band in a few words, each quota with its own score */
+/** Plain text of a drawn line */
+const plainOf = (l: Line) => l.map(x => x.t).join('')
+
+/** The status-line entry: each quota's percent and the band's own rate cell, in plain text */
 export function lineText(s: Snapshot, now: number): string {
   const rows = rowsOf(s.samples, now)
   const rated = ratedOf(s, rows, now)
-  if (!rated.length) {
-    const v = verdictOf(s, rows, now)
-    return `${rateText(v)}${levelWord(v)}`
-  }
+  if (!rated.length) return plainOf(rateSegs(verdictOf(s, rows, now), false))
   return rated.map(({ row, r }) => {
     const u = Q.viewUsed(row.view)
-    if (u == null) return `${row.short} —`
-    const landing = r.level !== 'idle' ? landingText(r, false) : null
-    if (uncosted(r)) return `${row.short} ${pctOf(u)}%${levelWord(r)}`
-    return `${row.short} ${pctOf(u)}%${landing ? ` ${landing}${levelWord(r)}` : ''}`
-  }).join(' · ')
+    return u == null ? `${row.short} —` : `${row.short} ${pctOf(u)}% ${plainOf(rateSegs(r, false))}`
+  }).join(' │ ')
 }
 
 // ----------------------------------------------------------------------

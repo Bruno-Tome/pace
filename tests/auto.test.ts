@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { PaceQuota, PaceSnapshot } from '../types'
-import { answerQuestions, decide, markerOf, protocol, upkeep, warmModeFor } from '../hooks/auto.ts'
+import { answerQuestions, decide, effortFor, markerOf, protocol, upkeep, warmModeFor } from '../hooks/auto.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const H = 3600_000
@@ -139,5 +139,27 @@ describe('on pace mode', () => {
     expect(warmModeFor({ onPace: true, warm: 'off' }, snap())).toBe('ping')
     expect(warmModeFor({ onPace: true, warm: 'ping' }, snap({ cache: { ...snap().cache!, tokens: 400_000 } }))).toBe('ping')
     expect(warmModeFor({ onPace: false, warm: 'off' }, snap())).toBe('off')
+  })
+})
+
+describe('effort in a burst', () => {
+  const burst = snap({ quotas: [quota({ rate: { ...quota().rate, level: 'burst', emptyIn: 1800 } })] })
+
+  test('thinks one level lighter while the rate would run a quota out before its reset', () => {
+    expect(effortFor(burst, 'high')).toBe('medium')
+    expect(effortFor(burst, 'max')).toBe('xhigh')
+    // Too fast with a known run-out is lighter too
+    expect(effortFor(snap({ quotas: [quota({ rate: { ...quota().rate, level: 'fast', emptyIn: 1800 } })] }), 'high')).toBe('medium')
+  })
+
+  test('keeps the effort asked once the rate is steady, and never goes below low', () => {
+    expect(effortFor(snap(), 'high')).toBe('high')
+    expect(effortFor(burst, 'low')).toBe('low')
+    expect(effortFor(burst, undefined)).toBeUndefined()
+    expect(effortFor(burst, 4000)).toBe(4000)
+  })
+
+  test('leaves the effort alone when too fast has no run-out behind it yet', () => {
+    expect(effortFor(snap({ quotas: [quota({ status: 'over', rate: { ...quota().rate, level: 'fast', emptyIn: null } })] }), 'high')).toBe('high')
   })
 })

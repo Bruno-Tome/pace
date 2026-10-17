@@ -18,18 +18,19 @@ changelog updated, and the step ticked here. Steps marked **(needs you)** wait f
 - [x] **Type the hooks module.** Replace `$: any` in `register.tsx` with the engine's types. Splitting
       `register.tsx` further is limited by two engine rules: a `$.state` atom must be read in the file that
       defines it, and `$` is followed across files only into `function` declarations.
-- [ ] **Say a burst is the recent rate.** `11% Under pace … ▲ out in 2h51m burst` reads as a contradiction: the
+- [x] **Say a burst is the recent rate.** `11% Under pace … ▲ out in 2h51m burst` reads as a contradiction: the
       status is the window so far, the rate is the last 30 minutes. Draw it `▲ burst · out in 2h51m at this rate`.
-- [ ] **A lighter model in a burst.** When the rate would run a quota out before its reset, move the session to
+- [x] **A lighter model in a burst.** When the rate would run a quota out before its reset, move the session to
       a smaller model or a lower reasoning effort to bring it back on pace, and back once the rate is steady.
-- [ ] **One compact layout.** The status-line row and `lineText` drawn from `bandLines`, so the band, the row and
+      Done as one effort level lighter in on pace mode; a model switch would rewrite the cache.
+- [x] **One compact layout.** The status-line row and `lineText` drawn from `bandLines`, so the band, the row and
       the entry cannot disagree.
-- [ ] **File paths in one place.** One constants block for `pace-row.txt`, `pace-state.json`, `pace-keys.json`
+- [x] **File paths in one place.** One constants block for `pace-row.txt`, `pace-state.json`, `pace-keys.json`
       and `pace-view.command`, shared with `bin/viewer.ts`.
 
 ## 3. Docs
 
-- [ ] **Platform table** in both READMEs: the band, the status line and the pane work anywhere Claude Code runs;
+- [x] **Platform table** in both READMEs: the band, the status line and the pane work anywhere Claude Code runs;
       the tmux split needs tmux and Node 23.6+; `/pace window` is macOS-only.
 - [ ] **Screenshots or an asciinema clip** of the band, the window in two columns, a focused chart and auto
       mode's pane. **(needs you)**

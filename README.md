@@ -44,8 +44,15 @@ The band appears above the prompt after the first reply. Then:
 - `/pace on` keeps a long session on pace.
 - `/pace auto PLAN.md` works through a plan unattended.
 
-The tmux split and `/pace window` need a Node that runs TypeScript directly (23.6 or later) on your `PATH`.
-`/pace window` also needs macOS.
+### Where it runs
+
+| Feature | Needs |
+| --- | --- |
+| The band, the status line, `/pace pane`, on pace mode and auto mode | Anywhere Claude Code runs |
+| `/pace` in a split beside Claude | tmux, and Node 23.6 or later (it runs TypeScript directly) on your `PATH` |
+| `/pace window` | macOS, and Node 23.6 or later on your `PATH` |
+
+Outside tmux, `/pace` opens the pane instead.
 
 ## What it shows
 
@@ -84,7 +91,7 @@ Fable week's rate. Prompts from before pace knew the model count everywhere, so 
 | `·` idle | No prompt in the last 15 minutes |
 | `●` steady | Well inside the budget |
 | `▲` brisk | Near the budget |
-| `▲` burst | Would run out early if it keeps up, though the average is on pace |
+| `▲` burst | Would run out early if it keeps up, though the average is on pace: `▲ burst · out in 2h51m at this rate` |
 | **`▲▲` too fast** | Runs out before the reset, and the quota is already over pace |
 
 **Too fast** is the only warning that flashes red, and only while you are prompting. A quota over pace with no
@@ -108,6 +115,9 @@ gassed out before it resets, and when it is gassed out.
 
 - compacts a heavy context (60% of the window) after a turn, while its cache is still warm and compacting is cheap
 - keeps an idle cache from lapsing: compacting a large context, pinging a small one
+- thinks one effort level lighter (`high` to `medium`) while the rate would run a quota out before its reset, and
+  back as soon as it is steady. It lowers the effort rather than switching to a smaller model: a new model starts
+  with a cold cache, which can cost more than the burst
 - warns before a quota gets gassed out
 
 `/pace off` turns it off.
@@ -216,6 +226,7 @@ hooks/view.ts          every drawing as lines of styled segments: band, status l
    └─ bin/viewer.ts    the full-screen window, run by Node in a tmux split or a terminal window
 hooks/auto.ts          auto mode and on pace mode, as decisions
 hooks/alerts.ts        the once-per-window warnings
+hooks/files.ts         the files pace writes in ~/.claude, shared with the viewer
 types/index.d.ts       the public contract: stored shapes and $.pace
 ```
 

@@ -4,7 +4,8 @@
 // hands off to a fresh context when this one is heavy, holds while a quota is gassed out or the rate would gas one
 // out, waits without prompting while Claude waits on background work or its turns stop making progress, and stops
 // when the plan is done or blocked. On pace mode keeps a long-running session's context and cache
-// in shape: it compacts a heavy context while the cache is warm, and keeps an idle cache from lapsing.
+// in shape: it compacts a heavy context while the cache is warm, keeps an idle cache from lapsing, and thinks one
+// effort level lighter while the rate would run a quota out.
 
 import type { PaceAuto, PaceSnapshot, PaceWarmMode } from '../types'
 import { clockAt, drawsOn, formatDuration } from './quota.ts'
@@ -133,6 +134,22 @@ export function answerQuestions(questions: readonly Question[]): Record<string, 
     else out[q.question] = (q.options.find(o => /\(recommended\)/i.test(o.label)) ?? q.options[0]!).label
   }
   return out
+}
+
+/** Effort levels, lightest first */
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+
+/** A rate known to run a quota out before its reset: a burst, or too fast with a run-out behind it */
+const runsOut = (s: PaceSnapshot) => s.quotas.some(q => (q.rate.level === 'burst' || q.rate.level === 'fast') && q.rate.emptyIn != null)
+
+/**
+ * On pace mode's effort for a request: one level lighter than asked while the rate would run a quota out before
+ * its reset, the effort asked otherwise. A lighter effort, not a lighter model: a model switch rewrites the cache.
+ */
+export function effortFor<T extends string | number | undefined>(s: PaceSnapshot, effort: T): T {
+  const i = EFFORTS.indexOf(effort as (typeof EFFORTS)[number])
+  if (i <= 0 || !runsOut(s)) return effort
+  return EFFORTS[i - 1] as T
 }
 
 /** On pace mode after a turn: compact a heavy context while the cache is warm, when reading it is cheapest */

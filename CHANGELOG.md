@@ -2,8 +2,16 @@
 
 ## Unreleased
 
-- A quota over pace with no per-prompt cost yet reads `▲ over pace · no cost yet` in the band, `over pace` in the
-  status line and the pane, instead of a red, flashing `→ — at reset too fast`. Red and flashing wait for a cost
+- The status-line entry is built from the band's own rate cell, so the two always agree:
+  `5h 60% ▲ burst · out in 20m at this rate │ Fable wk 68% ● → —`. Quotas are now separated by `│`.
+- On pace mode, and so auto mode, thinks one effort level lighter while the rate would run a quota out before its
+  reset (a burst, or too fast with a known run-out), and goes back to the effort you set once the rate is steady.
+  It lowers the effort rather than the model, since a new model starts with a cold cache.
+- A burst says it is the recent rate: `▲ burst · out in 2h51m at this rate` on the band and
+  `5h 11% ▲ burst · out in 2h51m at this rate` on the status line, so it no longer reads against an `Under pace`
+  status beside it.
+- A quota over pace with no per-prompt cost yet reads `▲ over pace · no cost yet` in the band and the status line,
+  `over pace` in the pane, instead of a red, flashing `→ — at reset too fast`. Red and flashing wait for a cost
   that shows the rate runs the quota out. Its rate level is still `fast`, so alerts and auto mode's holds are unchanged.
 - A window whose reset has passed shows the new window from that moment, at 0% and counting toward its next
   reset, until a reading of it arrives. Before, the band said `Window ended` and the status line kept the old

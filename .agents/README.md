@@ -68,6 +68,7 @@ spend.ts        the shared spend; pacing in dollars an hour
 cache.ts        the prompt cache's timer and the next prompt's cost
 auto.ts         auto mode and on pace mode, as decisions the shell carries out
 alerts.ts       warnings, keyed so each is said once per window
+files.ts        the files pace writes in ~/.claude, shared with bin/viewer.ts
 view.ts         every drawing as lines of styled segments
 chart.ts        braille burn-up charts
 band-client.tsx the band's animation, on the client's frame clock

@@ -18,8 +18,9 @@ import type { ElementConstructor, EngineInterface as Engine, Register, RenderEle
 
 import type { Pace, PaceAuto, PaceCacheInfo, PaceCacheTtl, PaceSnapshot, PacePrefs, PaceReading, PaceSample, PaceSpend, PaceWarmMode } from '../types'
 import { alertsOf } from './alerts.ts'
+import { KEYS_FILE, ROW_FILE, STATE_FILE, VIEW_FILE } from './files.ts'
 import { isSessionKey, isStale, prefsFrom, sessionKey, sessionOf, sharedOf } from './prefs.ts'
-import { answerQuestions, continuePrompt, decide, forModel, HANDOFF_FILE, protocol, startPrompt, upkeep, warmModeFor, type Decision } from './auto.ts'
+import { answerQuestions, continuePrompt, decide, effortFor, forModel, HANDOFF_FILE, protocol, startPrompt, upkeep, warmModeFor, type Decision } from './auto.ts'
 import { addPrice, priceOf, replyEquivalents, ttlSeconds, warmAction } from './cache.ts'
 import { snapshotOf, type Snapshot } from './model.ts'
 import * as Q from './quota.ts'
@@ -108,11 +109,6 @@ function drawPane($: Engine, e: RenderInput<'Pane'>, s: Snapshot, prefs: PacePre
 
 type RateLimitLike = { kind: string; percentUsed: number; resetsAt?: string }
 
-const ROW_FILE = '.claude/pace-row.txt'
-const STATE_FILE = '.claude/pace-state.json'
-const VIEW_FILE = '.claude/pace-view.command'
-/** The window's keys for the session, `{ id, cmd }`: the viewer writes it, the mod polls it while feeding */
-const KEYS_FILE = '.claude/pace-keys.json'
 const WARM_NEXT: Record<PaceWarmMode, PaceWarmMode> = { off: 'ping', ping: 'compact', compact: 'off' }
 /** Columns the status-line row is laid out for: the command is not told the terminal's width */
 const ROW_COLS = 120
@@ -596,7 +592,7 @@ function drawOnboarding($: Engine, e: RenderInput<'Pane'>): RenderElement {
     "• it answers Claude's questions with the recommended option",
     '• it has Claude hand searches and routine edits to subagents on lighter models, and hands a heavy context off to a fresh one through .pace/handoff.md',
     '• it holds while the rate would get a quota gassed out, and while one is gassed out, until it resets',
-    '• it turns on pace mode: a heavy context is compacted while its cache is warm, and an idle cache kept warm',
+    '• it turns on pace mode: a heavy context is compacted while its cache is warm, an idle cache kept warm, and the effort lowered a level while the rate would run a quota out',
   ]
   return (
     <Box flexDirection="column">
@@ -749,6 +745,13 @@ export const register: Register = (on, options) => {
     const r = await next(e)
     try { await afterTurn($, e.answer, e.isAborted) } catch {}
     return r
+  })
+
+  // On pace mode in a burst: each request thinks one effort level lighter, back as soon as the rate is steady
+  on('turn.step', async function* ($, e, next) {
+    const onPace = ((await read($, prefsA)) ?? DEFAULT_PREFS).onPace
+    if (!onPace || !published || e.effort == null) return yield* next(e)
+    return yield* next({ ...e, effort: effortFor(forModel(published, e.model), e.effort) })
   })
 
   // Auto mode's instructions: fixed text after the engine's sections, so the prompt cache keeps them

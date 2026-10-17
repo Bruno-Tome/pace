@@ -17,10 +17,10 @@ test('the band shows the 5-hour and Fable bars and calls a burst on an on-pace w
   expect(drawn).toContain('68%')
   expect(drawn).toContain('│')
   // 3 points a prompt at 40 prompts an hour: the 40 points left last 20 minutes
-  expect(drawn).toContain('out in 20m burst')
+  expect(drawn).toContain('▲ burst · out in 20m at this rate')
   expect(drawn).not.toContain('too fast')
   expect(drawn).not.toContain('%/h')
-  expect(status[status.length - 1]).toBe('5h 60% out in 20m burst · Fable wk 68%')
+  expect(status[status.length - 1]).toBe('5h 60% ▲ burst · out in 20m at this rate │ Fable wk 68% ● → —')
 })
 
 test('the band animates: the bars fill in, then a sheen sweeps across them, its text unchanged', async ($, on) => {
@@ -115,7 +115,7 @@ test('each band row judges the prompting rate against its own quota', async ($, 
   const tree: any = await ui.drawn({ in: 'pace-band' })
   const [five, week] = tree.children.map(textOf)
   // The 5-hour window runs out before its reset at this rate; the week has no reading old enough to price a prompt
-  expect(five).toContain('out in 20m burst')
+  expect(five).toContain('▲ burst · out in 20m at this rate')
   // Never the prompts an hour every quota shares: where the week lands comes once a prompt's cost is known
   expect(week).toContain('→ —')
   expect(week).not.toContain('40/h')
@@ -487,5 +487,28 @@ test('a week over pace with no per-prompt cost yet says so calmly, not too fast'
   expect(week).toContain('over pace · no cost yet')
   expect(week).not.toContain('too fast')
   expect(week).not.toContain('→ —')
-  expect(status[status.length - 1]).toContain('Fable wk 80% over pace')
+  expect(status[status.length - 1]).toContain('Fable wk 80% ▲ over pace · no cost yet')
+})
+
+test('on pace mode asks for one effort level lighter while a burst lasts', async ($, on) => {
+  const { clock } = world(on)
+  const asked: unknown[] = []
+  on('turn.step', async function* (_$: unknown, e: { turnId: string; index: number; effort?: unknown }) {
+    asked.push(e.effort)
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null } as any
+  })
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  await $.command.run({ command: 'pace', args: 'on' } as any)
+  const step = async () => {
+    for await (const _ of $.turn.step({ turnId: 't', index: 0, model: 'claude-opus-5-5', effort: 'high', messageCount: 1 } as any) as any) { /* drain the stream */ }
+  }
+  await step()
+  // 20 prompts in the last 20 minutes on a window at 60%: a burst, out in 20m
+  for (let i = 0; i < 20; i++) {
+    if (i) await clock.advance(60_000)
+    await $.prompt.submit({ text: `p${i}` } as any)
+  }
+  await clock.advance(60_000)
+  await step()
+  expect(asked).toEqual(['high', 'medium'])
 })
