@@ -87,9 +87,10 @@ export function bar(used: number, elapsed: number | null, width: number): Cell[]
   const tick = elapsed == null ? -1 : Math.min(width - 1, Math.floor(elapsed * width))
   return Array.from({ length: width }, (_, i) => {
     const pos = (i + 0.5) / width
+    // The clock's tick shows over the fill too, so a quota over pace still says where even pace is
+    if (i === tick) return { kind: 'tick' }
     if (pos < used) return { kind: elapsed != null && pos > elapsed ? 'ahead' : 'used' }
     if (i < tick) return { kind: 'margin' }
-    if (i === tick) return { kind: 'tick' }
     return { kind: 'empty' }
   })
 }

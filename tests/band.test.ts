@@ -194,10 +194,10 @@ test('a burst over a window already over pace is too fast', async ($, on) => {
   expect(textOf(tree.children[0])).toContain('too fast')
 })
 
-test('/pace opens the charts full-screen in a terminal window of their own, fed by a state file', async ($, on) => {
+test('/pace window opens the charts full-screen in a terminal window of their own, fed by a state file', async ($, on) => {
   const { files, runs } = world(on)
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
-  const r: any = await $.command.run({ command: 'pace', args: '' } as any)
+  const r: any = await $.command.run({ command: 'pace', args: 'window' } as any)
   const state = JSON.parse(files['/home/u/.claude/pace-state.json'] ?? 'null')
   expect(state.samples.length).toBeGreaterThan(0)
   const script = files['/home/u/.claude/pace-view.command'] ?? ''
@@ -207,6 +207,28 @@ test('/pace opens the charts full-screen in a terminal window of their own, fed 
   expect(runs).toContainEqual(['chmod', '+x', '/home/u/.claude/pace-view.command'])
   expect(runs).toContainEqual(['open', '-a', 'Terminal', '/home/u/.claude/pace-view.command'])
   expect(r.text).toBeUndefined()
+})
+
+test('/pace inside tmux opens the viewer in a split beside Claude, once, and closes it with the session', async ($, on) => {
+  const { files, runs, opens, toasts } = world(on, { TMUX: '/tmp/tmux-501/default,1,0', TMUX_PANE: '%3' })
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  await $.command.run({ command: 'pace', args: '' } as any)
+  expect(JSON.parse(files['/home/u/.claude/pace-state.json'] ?? 'null').samples.length).toBeGreaterThan(0)
+  expect(runs).toContainEqual(['tmux', 'split-window', '-h', '-d', '-l', '45%', '-t', '%3', '-P', '-F', '#{pane_id}', '/home/u/.claude/pace-view.command'])
+  await $.command.run({ command: 'pace', args: '' } as any)
+  expect(runs.filter(r => r[1] === 'split-window')).toHaveLength(1)
+  expect(toasts).toContain('Pace is already open in a tmux split')
+  expect(opens).toEqual([])
+  await $.session.end({ reason: 'other' } as any)
+  expect(runs).toContainEqual(['tmux', 'kill-pane', '-t', '%7'])
+})
+
+test('/pace outside tmux opens a pane here, docked wide beside a fullscreen transcript', async ($, on) => {
+  const { runs, opens } = world(on)
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  await $.command.run({ command: 'pace', args: '' } as any)
+  expect(runs.some(r => r[0] === 'tmux' || r[0] === 'open')).toBe(false)
+  expect(opens).toMatchObject([{ id: 'pace', columns: 80 }])
 })
 
 test('warm mode compact compacts once when an idle cache nears its end, then waits for the next prompt', async ($, on) => {
@@ -257,7 +279,7 @@ test('the band\'s rows split in one column: figures left of it, the rate or the 
 test('the window\'s keys reach the session: w steps warm mode off → ping → compact → off, r refreshes the figures', async ($, on) => {
   const { clock, files, stored, fetches } = world(on)
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
-  await $.command.run({ command: 'pace', args: '' } as any)
+  await $.command.run({ command: 'pace', args: 'window' } as any)
   let pressed = 0
   const key = async (cmd: string) => {
     files['/home/u/.claude/pace-keys.json'] = JSON.stringify({ id: NOW + ++pressed, cmd })

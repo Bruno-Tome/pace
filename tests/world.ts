@@ -16,7 +16,7 @@ export const USAGE = {
   ],
 }
 
-export function world(on: any) {
+export function world(on: any, env: Record<string, string> = {}) {
   const clock = mock.clock(on, { now: NOW })
   const stored: Record<string, unknown> = {}
   const status: (string | undefined)[] = []
@@ -25,6 +25,7 @@ export function world(on: any) {
   on('store.set', (_$: unknown, e: { key: string; value: unknown }) => { stored[e.key] = e.value; return { value: undefined } })
   on('session.usage', () => ({ value: { startedAt: NOW, context: { window: 200000 }, rateLimits: LIMITS } }))
   on('session.start', (_$: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
+  on('session.end', () => ({ sessionId: 's' }) as any)
   const submitted: string[] = []
   on('prompt.submit', (_$: unknown, e: { text: string }) => { submitted.push(e.text); return e })
   on('session.measure', (_$: unknown, e: { changed: string[] }) => ({ changed: e.changed }))
@@ -32,7 +33,7 @@ export function world(on: any) {
   on('session.authorize', () => ({ value: { kind: 'bearer', handle: 'h' } }))
   let fetches = 0
   on('http.fetch', () => (fetches++, { value: { ok: true, status: 200, text: JSON.stringify(USAGE), headers: {} } }))
-  on('env.get', (_$: unknown, e: { name: string }) => ({ value: e.name === 'HOME' ? '/home/u' : undefined }))
+  on('env.get', (_$: unknown, e: { name: string }) => ({ value: e.name === 'HOME' ? '/home/u' : env[e.name] }))
   on('fs.write', (_$: unknown, e: { path: string; text: string }) => { files[e.path] = e.text; return { value: undefined } })
   on('fs.exists', (_$: unknown, e: { path: string }) => ({ value: e.path in files }))
   on('fs.read', (_$: unknown, e: { path: string }) => ({ value: files[e.path] ?? '' }))
@@ -41,7 +42,8 @@ export function world(on: any) {
   const runs: string[][] = []
   on('process.run', (_$: unknown, e: { argv: string[] }) => {
     runs.push(e.argv)
-    return { value: { exitCode: 0, stdout: e.argv[0] === '/usr/bin/which' ? '/opt/node/bin/node\n' : '', stderr: '' } }
+    const stdout = e.argv[0] === '/usr/bin/which' ? '/opt/node/bin/node\n' : e.argv[1] === 'split-window' ? '%7\n' : ''
+    return { value: { exitCode: 0, stdout, stderr: '' } }
   })
   const commands: string[] = []
   on('command.run', { command: 'compact' }, () => { commands.push('compact'); return { text: '' } as any })

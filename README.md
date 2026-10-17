@@ -14,9 +14,10 @@ pace is its own take on the idea: a terminal-first port with small upgrades and 
 - **A band above the prompt:** the 5-hour and weekly bars, each with its pace status and the rate against it,
   then the prompt cache's countdown with what the next prompt costs.
 - **A status-line entry,** or with `placement: status`, a full row your status line prints.
-- **`/pace`:** burn-up charts for every quota, full-screen in a terminal window of its own. Two columns on wide
-  terminals. Keys: `1`–`9` shows one quota alone, `w` cycles warm mode, `r` refreshes, `q` quits.
-  `/pace pane` draws the same in a pane inside Claude Code.
+- **`/pace`:** burn-up charts for every quota. Inside tmux it opens full-screen in a split beside Claude (two
+  columns on wide splits; keys: `1`–`9` shows one quota alone, `w` cycles warm mode, `r` refreshes, `q` quits).
+  Outside tmux it opens a pane inside Claude Code, docked full-height beside the transcript in fullscreen mode.
+  `/pace pane` always opens the pane; `/pace window` opens the full-screen view in a macOS terminal window.
 
 `/pace` runs at once, even mid-turn, and answers in a toast. Nothing lands in the conversation, so it never costs
 context.
@@ -63,7 +64,9 @@ pane says what it does and that it spends quota on its own; it starts when you p
 - It answers Claude's questions with the recommended option.
 - It has Claude hand searches and routine edits to subagents on lighter models, and keep `.pace/handoff.md` up to
   date. When the context gets heavy, or is cold and large, pace clears it and resumes from that file.
-- It holds while the rate would get a quota gassed out, and while one is gassed out, until it resets.
+- It holds while the rate would get a quota gassed out, and while one is gassed out, until it resets. It counts
+  only the quotas the session's model draws on: the 5-hour window, the all-models week and that model's own week.
+  An Opus session never waits on the Fable week.
 - It turns on on pace mode.
 
 Its instructions are a fixed system-prompt section, so the prompt cache keeps them. Live pacing notes ride in each
@@ -92,14 +95,15 @@ The snapshot is as of `snap.at`: pace refreshes it after every reply, reading an
 /plugin install pace --marketplace <owner>/pace
 ```
 
-The `/pace` window needs macOS and a Node that runs TypeScript directly (23.6 or later) on your `PATH`.
+The tmux split and `/pace window` need a Node that runs TypeScript directly (23.6 or later) on your `PATH`; `/pace window` also needs macOS.
 
 ## Commands
 
 | Command | Does |
 | --- | --- |
-| `/pace` | Opens the charts window (or a pane, where it can't) |
+| `/pace` | The charts in a tmux split beside Claude, or a pane outside tmux |
 | `/pace pane` | The charts in a pane |
+| `/pace window` | The charts in a macOS terminal window of their own |
 | `/pace refresh` | Reads every source again |
 | `/pace on`, `/pace off` | On pace mode |
 | `/pace auto <plan> [turns]`, `auto off`, `auto resume` | Auto mode |
@@ -113,7 +117,7 @@ The `/pace` window needs macOS and a Node that runs TypeScript directly (23.6 or
 | --- | --- | --- |
 | `placement` | `above` (band above the prompt) or `status` (a row in `~/.claude/pace-row.txt` for your status line) | `above` |
 | `cacheTtl` | `auto`, `1h`, `5m` | `auto` |
-| `terminal` | The macOS app `/pace` opens in | `Terminal` |
+| `terminal` | The macOS app `/pace window` opens in | `Terminal` |
 
 ## Where the numbers come from
 

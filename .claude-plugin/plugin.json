@@ -38,8 +38,8 @@
     },
     "terminal": {
       "type": "string",
-      "title": "Terminal app for /pace",
-      "description": "The macOS app /pace opens its window in (Terminal, iTerm, Ghostty…)",
+      "title": "Terminal app for /pace window",
+      "description": "The macOS app /pace window opens in (Terminal, iTerm, Ghostty…)",
       "default": "Terminal"
     }
   }

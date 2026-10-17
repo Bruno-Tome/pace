@@ -48,6 +48,19 @@ describe('auto mode', () => {
     expect(decide({ auto: AUTO, snap: snap(), answer: '', aborted: true }).kind).toBe('pause')
   })
 
+  test("paces only by the quotas the session's model draws on: another model's week neither holds it nor steers it", () => {
+    const fable = quota({ key: 'seven_day_fable', name: 'Week · Fable', status: 'over', rate: { ...quota().rate, level: 'fast', emptyIn: null } })
+    const withFable = snap({ quotas: [quota(), fable] })
+    const opus = decide({ auto: AUTO, snap: withFable, answer: '', aborted: false, model: 'claude-opus-5-5' })
+    expect(opus.kind).toBe('continue')
+    expect(opus.kind === 'continue' && opus.prompt).not.toContain('Pace:')
+    expect(decide({ auto: AUTO, snap: withFable, answer: '', aborted: false, model: 'claude-fable-5-1' }).kind).toBe('hold')
+    // Before the session's model is known, every quota counts
+    expect(decide({ auto: AUTO, snap: withFable, answer: '', aborted: false }).kind).toBe('hold')
+    const gassed = snap({ quotas: [quota(), { ...fable, status: 'gassedOut', resetsAt: NOW + 2 * H }] })
+    expect(decide({ auto: AUTO, snap: gassed, answer: '', aborted: false, model: 'claude-opus-5-5[1m]' }).kind).toBe('continue')
+  })
+
   test('holds until a gassed-out quota resets, and while the rate would gas one out before its reset', () => {
     const out = decide({ auto: AUTO, snap: snap({ gassedOut: true, quotas: [quota({ percent: 100, status: 'gassedOut' })] }), answer: '', aborted: false })
     expect(out).toMatchObject({ kind: 'hold', until: NOW + 2 * H + 60_000 })

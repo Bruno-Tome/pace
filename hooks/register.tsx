@@ -5,8 +5,9 @@
 //     quota can afford, then the prompt cache's timer with the next prompt's cost. The `placement` option draws it
 //     there, or writes one row of it in ANSI to ~/.claude/pace-row.txt for a status-line command to print.
 //   · A status-line entry with the same figures in a few words.
-//   · /pace opens a terminal window of its own (bin/viewer.ts) drawing every quota as a burn-up chart, the rate,
-//     the cache and suggestions, full-screen; /pace pane draws the same in a pane here.
+//   · /pace draws every quota as a burn-up chart, the rate, the cache and suggestions: inside tmux, the viewer
+//     (bin/viewer.ts) in a split beside Claude; elsewhere, a pane here, docked beside a fullscreen transcript.
+//     /pace window opens the viewer in a macOS terminal window of its own instead.
 //   · Warm mode (/pace warm compact | ping) keeps an idle cache from lapsing.
 //   Data: the session's own rate limits, context and cost (after every reply), Claude Code's usage cache in
 //   ~/.claude.json, and Anthropic's usage endpoint through Claude Code's own login for per-model quotas.
@@ -17,7 +18,7 @@ import type { Register } from 'claude-code'
 
 import type { Pace, PaceAuto, PaceCacheInfo, PaceCacheTtl, PaceSnapshot, PacePrefs, PaceReading, PaceSample, PaceSpend, PaceWarmMode } from '../types'
 import { alertsOf } from './alerts.ts'
-import { answerQuestions, continuePrompt, decide, protocol, startPrompt, upkeep, warmModeFor, type Decision } from './auto.ts'
+import { answerQuestions, continuePrompt, decide, forModel, protocol, startPrompt, upkeep, warmModeFor, type Decision } from './auto.ts'
 import { addPrice, priceOf, replyEquivalents, ttlSeconds, warmAction } from './cache.ts'
 import { snapshotOf, type Snapshot } from './model.ts'
 import * as Q from './quota.ts'
@@ -73,9 +74,22 @@ function drawBand($: any, e: any, s: Snapshot, now: number): any {
 
 const paneLayout = (cols: number, prefs: PacePrefs) => ({ cols, chartWidth: Math.max(16, Math.min(72, cols - 6)), chartHeight, prefs })
 
+/** Docked, the charts grow to share the rows the rest leaves, each between their usual height and 16 rows */
+function dockedLayout(s: Snapshot, now: number, cols: number, rows: number, prefs: PacePrefs) {
+  const at = (h: number) => paneLines(s, now, { ...paneLayout(cols, prefs), chartHeight: () => h }).length
+  const fixed = at(0)
+  const charts = at(1) - fixed
+  if (charts <= 0) return paneLayout(cols, prefs)
+  const h = Math.min(16, Math.floor((rows - fixed) / charts))
+  return { ...paneLayout(cols, prefs), chartHeight: (row: Parameters<typeof chartHeight>[0]) => Math.max(chartHeight(row), h) }
+}
+
 function drawPane($: any, e: any, s: Snapshot, prefs: PacePrefs, now: number): any {
   const { Box, Text } = $.ui.resolve(e)
-  const lines = paneLines(s, now, paneLayout(e.props.bodyColumns ?? 60, prefs))
+  const cols = e.props.bodyColumns ?? 60
+  const rows = e.props.scroll?.bodyRows
+  const layout = e.props.placement === 'dock' && rows ? dockedLayout(s, now, cols, rows, prefs) : paneLayout(cols, prefs)
+  const lines = paneLines(s, now, layout)
   return (
     <Box flexDirection="column">
       {lines.map((segs, i) => <Text key={`l-${i}`} wrap="truncate-end">{segs.length ? toText(Text, segs) : ' '}</Text>)}
@@ -168,10 +182,10 @@ async function writeState($: any, s: Snapshot, now: number): Promise<void> {
 
 const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
 
-/** Opens the viewer in a terminal window of its own; false where that cannot be done (not macOS, no node) */
-async function openWindow($: any): Promise<boolean> {
+/** Starts feeding the viewer and writes the script that runs it; undefined where that cannot be done (no node) */
+async function viewerScript($: any): Promise<string | undefined> {
   const home = await homeOf($)
-  if (!home) return false
+  if (!home) return undefined
   feeding = true
   lastState = undefined
   lastKey = await $.clock.now()
@@ -183,7 +197,7 @@ async function openWindow($: any): Promise<boolean> {
   await writeState($, await snapshot($), await $.clock.now())
   const which = await $.process.run(['/usr/bin/which', 'node'])
   const node = which.exitCode === 0 ? which.stdout.trim() : ''
-  if (!node) return false
+  if (!node) return undefined
   const script = `${home}/${VIEW_FILE}`
   await $.fs.write(script, [
     '#!/bin/sh',
@@ -191,8 +205,33 @@ async function openWindow($: any): Promise<boolean> {
     `exec ${shellQuote(node)} ${shellQuote(`${$.plugin.root}/bin/viewer.ts`)} ${shellQuote(`${home}/${STATE_FILE}`)} ${shellQuote(`${home}/${KEYS_FILE}`)}`,
     '',
   ].join('\n'))
-  if ((await $.process.run(['chmod', '+x', script])).exitCode !== 0) return false
-  return (await $.process.run(['open', '-a', terminalApp, script])).exitCode === 0
+  if ((await $.process.run(['chmod', '+x', script])).exitCode !== 0) return undefined
+  return script
+}
+
+/** Opens the viewer in a terminal window of its own; false where that cannot be done (not macOS, no node) */
+async function openWindow($: any): Promise<boolean> {
+  const script = await viewerScript($)
+  return !!script && (await $.process.run(['open', '-a', terminalApp, script])).exitCode === 0
+}
+
+/** The tmux pane the viewer runs in, while it lives */
+let splitPane: string | undefined
+
+/** Whether Claude runs inside tmux, which can split its window */
+const inTmux = async ($: any) => !!(await $.env.get('TMUX'))
+
+/** Opens the viewer in a tmux split beside Claude, or finds the one open; false outside tmux or where that fails */
+async function openSplit($: any): Promise<'opened' | 'open' | false> {
+  if (!(await inTmux($))) return false
+  if (splitPane && (await $.process.run(['tmux', 'display-message', '-p', '-t', splitPane, '#{pane_id}'])).exitCode === 0) return 'open'
+  const script = await viewerScript($)
+  if (!script) return false
+  const beside = await $.env.get('TMUX_PANE')
+  const r = await $.process.run(['tmux', 'split-window', '-h', '-d', '-l', '45%', ...(beside ? ['-t', beside] : []), '-P', '-F', '#{pane_id}', script])
+  if (r.exitCode !== 0) return false
+  splitPane = r.stdout.trim() || undefined
+  return 'opened'
 }
 
 /** A key pressed in the window: w steps warm mode, r refreshes the figures; each handled once */
@@ -430,6 +469,9 @@ async function startAuto($: any, plan: string, max: number): Promise<void> {
   await submitSoon($, startPrompt(plan))
 }
 
+/** The session's model, which auto mode paces by: only the quotas it draws on hold or steer it */
+const modelOf = async ($: any): Promise<string | undefined> => $.session.model().catch(() => undefined)
+
 /** Carries out what auto mode decided after a turn or a hold */
 async function act($: any, d: Decision): Promise<void> {
   const auto = await autoOf($)
@@ -468,7 +510,7 @@ async function endHold($: any): Promise<void> {
   if (!auto || auto.heldUntil == null || auto.paused) return
   await setAuto($, running(auto))
   await refreshAll($)
-  await act($, decide({ auto: running(auto), snap: published!, answer: '', aborted: false }))
+  await act($, decide({ auto: running(auto), snap: published!, answer: '', aborted: false, model: await modelOf($) }))
 }
 
 /** After a turn of the main loop: auto mode's next move, else on pace mode's upkeep */
@@ -477,7 +519,7 @@ async function afterTurn($: any, answer: string, aborted: boolean): Promise<void
   await refreshLine($)
   const auto = prefs.auto
   if (auto && !auto.paused) {
-    if (auto.heldUntil == null) await act($, decide({ auto, snap: published!, answer, aborted }))
+    if (auto.heldUntil == null) await act($, decide({ auto, snap: published!, answer, aborted, model: await modelOf($) }))
     return
   }
   if (prefs.onPace && upkeep(published!) === 'compact') {
@@ -539,7 +581,7 @@ async function modeCommand($: any, raw: string): Promise<string | null> {
     const auto = await autoOf($)
     if (!auto) return 'Auto mode is not running: /pace auto <plan file> starts it'
     await setAuto($, { ...running(auto), turns: auto.turns + 1, max: auto.turns >= auto.max ? auto.turns + AUTO_TURNS : auto.max })
-    await submitSoon($, continuePrompt(auto.plan, published ?? snapshotOf(await snapshot($), await $.clock.now())))
+    await submitSoon($, continuePrompt(auto.plan, forModel(published ?? snapshotOf(await snapshot($), await $.clock.now()), await modelOf($))))
     return `Auto mode resumed: ${auto.plan}`
   }
   const m = /^(\S+)(?:\s+(\d+))?$/.exec(rest)
@@ -565,7 +607,7 @@ function say($: any, text: string): {} {
   return {}
 }
 
-const USAGE = 'window | pane | refresh | on | off | auto <plan> [turns] | auto off | auto resume | hide | show | line on | line off | warm compact | warm ping | warm off'
+const USAGE = 'split | pane | window | refresh | on | off | auto <plan> [turns] | auto off | auto resume | hide | show | line on | line off | warm compact | warm ping | warm off'
 
 export const register: Register = (on, options) => {
   placement = options.placement === 'status' ? 'status' : 'above'
@@ -704,16 +746,22 @@ export const register: Register = (on, options) => {
       const ok = await refreshAll($)
       return say($, ok ? 'Pace figures refreshed' : 'Could not reach the usage endpoint; showing the latest local figures')
     }
-    if (arg && arg !== 'pane' && arg !== 'window') return say($, `Unknown argument "${arg}": use ${USAGE}`)
+    if (arg && arg !== 'pane' && arg !== 'window' && arg !== 'split') return say($, `Unknown argument "${arg}": use ${USAGE}`)
     await tick($)
-    if (arg !== 'pane') {
+    if (arg === 'window') {
       let opened = false
       try { opened = await openWindow($) } catch {}
       if (opened) return say($, 'Pace window opened; q closes it')
+    } else if (arg !== 'pane') {
+      let split: 'opened' | 'open' | false = false
+      try { split = await openSplit($) } catch {}
+      if (split === 'opened') return say($, 'Pace opened in a tmux split; q there closes it')
+      if (split === 'open') return say($, 'Pace is already open in a tmux split')
     }
     const lines = paneLines(await snapshot($), await $.clock.now(), paneLayout(Math.max(40, (e.presentation?.columns ?? 80) - 4), DEFAULT_PREFS))
-    await $.ui.open({ id: PANE, title: 'Pace', rows: lines.length + 4, focus: true, closeOnEscape: true })
-    return say($, arg === 'pane' ? 'Pace pane opened' : 'Could not open a terminal window; Pace pane opened here')
+    await $.ui.open({ id: PANE, title: 'Pace', rows: lines.length + 4, columns: 80, focus: true, closeOnEscape: true })
+    const why = arg === 'window' ? 'Could not open a terminal window; ' : arg === 'split' ? 'Not inside tmux; ' : ''
+    return say($, `${why}Pace pane opened${why ? ' here' : ''}`)
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -725,6 +773,15 @@ export const register: Register = (on, options) => {
     const below = await next(e)
     const { Box } = $.ui.resolve(e)
     return <Box flexDirection="column">{ours}{below ?? null}</Box>
+  })
+
+  // The split's viewer would show stale figures once the session that feeds it is gone
+  on('session.end', async ($, e, next) => {
+    if (splitPane) {
+      try { await $.process.run(['tmux', 'kill-pane', '-t', splitPane]) } catch {}
+      splitPane = undefined
+    }
+    return next(e)
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {

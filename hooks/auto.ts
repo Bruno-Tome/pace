@@ -42,11 +42,27 @@ export type Decision =
   | { kind: 'pause'; why: string }
   | { kind: 'stop'; why: string }
 
-export type DecideInput = { auto: PaceAuto; snap: PaceSnapshot; answer: string; aborted: boolean }
+/** The session's model, by id; undefined before its first request */
+export type DecideInput = { auto: PaceAuto; snap: PaceSnapshot; answer: string; aborted: boolean; model?: string }
+
+/**
+ * Whether a session on `model` draws on a quota: the 5-hour window and the all-models week always, a model's own
+ * week (`seven_day_fable`) only when the model is that one; every quota while the model is not known yet
+ */
+export function drawsOn(key: string, model: string | undefined): boolean {
+  if (!model || !key.startsWith('seven_day_')) return true
+  const family = key.slice('seven_day_'.length).split('_')[0]!
+  return model.toLowerCase().includes(family)
+}
+
+/** The snapshot as a session on `model` sees it: only the quotas it draws on */
+export const forModel = (s: PaceSnapshot, model: string | undefined): PaceSnapshot =>
+  model ? { ...s, quotas: s.quotas.filter(q => drawsOn(q.key, model)) } : s
 
 /** What auto mode does after a turn, or after a hold */
 export function decide(i: DecideInput): Decision {
-  const { auto, snap } = i
+  const { auto } = i
+  const snap = forModel(i.snap, i.model)
   if (i.aborted) return { kind: 'pause', why: 'You interrupted: /pace auto resume picks the plan back up' }
   const marker = markerOf(i.answer)
   if (marker.kind === 'done') return { kind: 'stop', why: `Plan done: ${auto.plan}` }

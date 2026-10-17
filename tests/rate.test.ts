@@ -66,7 +66,7 @@ describe('rateVerdict', () => {
 describe('bar', () => {
   test('marks used, ahead-of-clock and the elapsed tick', () => {
     // 10 cells, 60% used, 40% elapsed: 4 on pace, 2 ahead, tick right after, rest empty
-    expect(bar(0.6, 0.4, 10).map(c => c.kind).join(',')).toBe('used,used,used,used,ahead,ahead,empty,empty,empty,empty')
+    expect(bar(0.6, 0.4, 10).map(c => c.kind).join(',')).toBe('used,used,used,used,tick,ahead,empty,empty,empty,empty')
     expect(bar(0.2, 0.5, 10).map(c => c.kind).join(',')).toBe('used,used,margin,margin,margin,tick,empty,empty,empty,empty')
   })
 })
