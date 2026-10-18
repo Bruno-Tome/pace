@@ -1,12 +1,13 @@
 // The plan's timeline as a sidebar: drawn in a narrow tmux split beside Claude from the feed the mod writes and
 // the plan file itself, animated with the pane's frames. Run by Node, which strips the types:
 // `node bin/plan-viewer.ts ~/.claude/pace-plan-<session>.json`.
-// Reads the feed and the plan every second, draws a frame every 80ms and on resize. q or Ctrl-C quits.
+// Reads the feed and the plan every second, draws a frame every 80ms and on resize. It follows the step under way
+// until you scroll: arrows or j/k, PgUp/PgDn or space, Home/End or g/G, the mouse wheel; f follows again. q or Ctrl-C quits.
 
 import { readFileSync } from 'node:fs'
 
 import { stepsOf } from '../hooks/plan.ts'
-import { FRAME_MS, planFrame, type PlanFeed } from '../hooks/timeline.ts'
+import { FRAME_MS, followOffset, planFrame, scrollBy, type PlanFeed } from '../hooks/timeline.ts'
 import { planLines, toAnsi, type Seg } from '../hooks/view.ts'
 
 const feedPath = process.argv[2]
@@ -20,6 +21,12 @@ let text = ''
 let f = 0
 let done: number | null = null
 let popAt: number | null = null
+/** The first line the window shows, and whether it follows the step under way rather than where you scrolled */
+let offset = 0
+let follow = true
+/** The lines and rows last drawn, which a key scrolls over */
+let total = 0
+let shown = 40
 
 function load(): void {
   try { feed = JSON.parse(readFileSync(feedPath!, 'utf8')) as PlanFeed } catch {}
@@ -49,24 +56,49 @@ function draw(): void {
     const now = steps.filter(s => s.state === 'done').length
     if (done != null && now > done) popAt = f
     done = now
-    const lines = planLines(steps, { plan: feed.plan, auto: feed.auto, cols: cols - 1, now: Date.now(), rows: rows - 1 })
-    body = ['', ...planFrame(lines, f, popAt).map(l => toAnsi(clip(l, cols - 1)))].join('\n')
+    // Every step, the window over them scrolled: folding steps away would hide what you scroll to
+    const lines = planLines(steps, { plan: feed.plan, auto: feed.auto, cols: cols - 1, now: Date.now(), rows: Infinity })
+    total = lines.length
+    shown = rows - 1
+    offset = follow ? followOffset(lines, shown) : Math.min(offset, Math.max(0, total - shown))
+    // The window's lines animated, so the steps come in from the top of what shows
+    body = ['', ...planFrame(lines.slice(offset, offset + shown), f, popAt).map(l => toAnsi(clip(l, cols - 1)))].join('\n')
   }
   // Home, each line cleared to its end, then the rest of the screen cleared: no flicker between frames
   process.stdout.write('\x1b[H' + body.split('\n').map(l => `${l}\x1b[K`).join('\n') + '\x1b[J')
 }
 
+/** A key or a wheel turn as a scroll: null for anything else */
+function keyOf(k: string): string | null {
+  const named: Record<string, string> = {
+    '\x1b[A': 'up', '\x1b[B': 'down', '\x1b[5~': 'pageup', '\x1b[6~': 'pagedown',
+    '\x1b[H': 'home', '\x1b[1~': 'home', '\x1b[F': 'end', '\x1b[4~': 'end',
+  }
+  if (named[k]) return named[k]!
+  // SGR mouse: button 64 is the wheel up, 65 down
+  const wheel = /^\x1b\[<(64|65);\d+;\d+M/.exec(k)
+  if (wheel) return wheel[1] === '64' ? 'up' : 'down'
+  return ['j', 'k', 'g', 'G', ' '].includes(k) ? k : null
+}
+
 function quit(): void {
-  process.stdout.write('\x1b[?25h\x1b[?1049l')
+  process.stdout.write('\x1b[?1000l\x1b[?1006l\x1b[?25h\x1b[?1049l')
   process.exit(0)
 }
 
-process.stdout.write('\x1b[?1049h\x1b[?25l')
+// The alternate screen, no cursor, and the mouse wheel reported in SGR form
+process.stdout.write('\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h')
 if (process.stdin.isTTY) {
   process.stdin.setRawMode(true)
   process.stdin.on('data', d => {
     const k = d.toString()
     if (k === 'q' || k === '\x03') quit()
+    if (k === 'f') follow = true
+    const key = keyOf(k)
+    if (!key) return
+    follow = false
+    offset = scrollBy(offset, key, total, shown)
+    draw()
   })
 }
 process.on('SIGINT', quit)

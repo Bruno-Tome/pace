@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { BAND, H, iso, NOW, reply, textOf, USAGE, world } from './world.ts'
+import { BAND, H, iso, NOW, pricedReply, reply, textOf, USAGE, world } from './world.ts'
 
 const start = ($: any) => $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
 const pace = ($: any, args: string) => $.command.run({ command: 'pace', args } as any)
@@ -87,6 +87,20 @@ test('auto mode asks first: the onboarding pane says what it does and that it sp
   expect(submitted[1]).toContain('PLAN.md')
 })
 
+test('auto mode\'s first prompt goes out only once /pace auto has returned, however long opening the sidebar takes', async ($, on) => {
+  const w = world(on, { TMUX: '/tmp/tmux-501/default,1,0', TMUX_PANE: '%3' })
+  // Opening the tmux sidebar takes real time, during which timers fire
+  w.slow.split = 5
+  w.stored.prefs = { band: true, line: true, onboarded: true }
+  await start($)
+  await pace($, 'auto ROADMAP.md')
+  expect(w.runs.some(r => r[1] === 'split-window')).toBe(true)
+  // Nothing sent while the command's hook still held the turn
+  expect(w.submitted).toEqual([])
+  await w.clock.advance(1)
+  expect(w.submitted[0]).toContain('ROADMAP.md')
+})
+
 test('auto mode works through the plan turn by turn, its instructions in the system prompt, and stops when done', async ($, on) => {
   const { submitted, notices, clock } = world(on)
   await start($)
@@ -168,6 +182,19 @@ test('auto mode stops and tells you when Claude ends a turn waiting on you', asy
   await clock.advance(60_000)
   expect(submitted.length).toBe(1)
   expect(notices.some(n => n.includes('waiting on you'))).toBe(true)
+})
+
+test('/pace auto burst lets a pacing hold go at once and keeps the run from holding for pace; off brings holds back', async ($, on) => {
+  const { submitted, stored, clock } = world(on)
+  stored['session:session-a'] = { at: NOW - H, onPace: true, auto: { plan: 'ROADMAP.md', turns: 5, max: 40, heldUntil: NOW + 15 * 60_000, why: 'Pacing: at this rate 5-hour window gasses out in 1h 26m' } }
+  await start($)
+  await pace($, 'auto burst')
+  await clock.advance(1)
+  expect((stored['session:session-a'] as any).auto).toMatchObject({ burst: true })
+  expect((stored['session:session-a'] as any).auto.heldUntil).toBeUndefined()
+  expect(submitted.length).toBe(1)
+  await pace($, 'auto burst off')
+  expect((stored['session:session-a'] as any).auto.burst).toBeUndefined()
 })
 
 test('an interrupt pauses auto mode until /pace auto resume', async ($, on) => {
@@ -292,6 +319,21 @@ test('/pace auto with no plan file works through ROADMAP.md', async ($, on) => {
 const PLAN_MD = '- [x] Set up the repo\n- [ ] Draw the timeline\n- [ ] Animate the steps\n'
 const planPane = ($: any) => $.ui.mount({ plugin: 'pace', surface: 'terminal', component: 'Pane', requestId: 'pace-plan', props: { bodyColumns: 80 } as any } as any)
 
+test('the plan pane draws every step, however few rows it has: the pane scrolls rather than folding steps away', async ($, on) => {
+  const { files, clock } = world(on)
+  // 30 steps, 20 done, in a pane with room for 12 rows
+  files['/tmp/PLAN.md'] = Array.from({ length: 30 }, (_, i) => `- [${i < 20 ? 'x' : ' '}] Step ${i + 1}`).join('\n')
+  await start($)
+  await pace($, 'auto PLAN.md')
+  await onboard($, clock)
+  await pace($, 'plan')
+  const pane: any = await $.ui.mount({ plugin: 'pace', surface: 'terminal', component: 'Pane', requestId: 'pace-plan', props: { bodyColumns: 80, scroll: { offset: 0, bodyRows: 12 } } as any } as any)
+  await pane.advance(5000)
+  const text = textOf(await pane.drawn({ in: 'pace-plan' }))
+  for (const n of [1, 21, 30]) expect(text).toContain(`Step ${n}`)
+  expect(text).not.toMatch(/earlier steps done|more steps/)
+})
+
 test('/pace plan opens the plan\'s timeline: the steps done, the one under way and the next', async ($, on) => {
   const { files, opens, clock } = world(on)
   files['/tmp/PLAN.md'] = PLAN_MD
@@ -381,4 +423,18 @@ test('inside tmux the plan\'s timeline opens as a sidebar: a narrow split on the
   // Asked again, the sidebar already open is kept
   await pace($, 'plan')
   expect(runs.filter(r => r[1] === 'split-window').length).toBe(1)
+})
+
+test('dollars a subagent on another model earned count toward that model, not the session\'s', async ($, on) => {
+  const { stored } = world(on)
+  on('turn.step', async function* (_$: unknown, e: { turnId: string; index: number; model: string }) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { input_tokens: 10, output_tokens: 1, model: e.model } } as any
+  })
+  await start($)
+  await pricedReply($, 100_000, 1)
+  // Only a subagent on haiku answered before the next cost reading
+  for await (const _ of $.turn.step({ turnId: 't', index: 0, model: 'claude-haiku-5-5', messageCount: 1, agentId: 'a1' } as any) as any) { /* drain */ }
+  await pricedReply($, 100_000, 1.5)
+  const spend = stored.spend as { usd: number; m?: string }[]
+  expect(spend.at(-1)).toMatchObject({ m: 'claude-haiku-5-5' })
 })

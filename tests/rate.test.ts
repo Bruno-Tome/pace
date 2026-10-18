@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { PaceReading } from '../types'
-import { bar, mergeModelPrompts, rateSince, sparkline } from '../hooks/rate.ts'
+import { bar, mergeModelPrompts, movedPerHour, rateSince, sparkline } from '../hooks/rate.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const MIN = 60_000
@@ -116,5 +116,25 @@ describe('mergeModelPrompts', () => {
     const a = { 'claude-opus-5-5': [NOW - 2 * MIN, NOW - 25 * H], 'claude-fable-5-1': [NOW - MIN] }
     const b = { 'claude-opus-5-5': [NOW - MIN, NOW - 2 * MIN], junk: 'x', 'claude-haiku-5-5': [] } as any
     expect(mergeModelPrompts(a, b, NOW)).toEqual({ 'claude-opus-5-5': [NOW - 2 * MIN, NOW - MIN], 'claude-fable-5-1': [NOW - MIN] })
+  })
+})
+
+describe('the rate in points an hour', () => {
+  test('is the slope of the quota\'s readings over the recent span, fitted through all of them', () => {
+    // 8% ten minutes ago, 9% five minutes ago, 10% three minutes ago: about 16 points an hour
+    const pts = [{ at: NOW - 10 * MIN, percent: 8 }, { at: NOW - 5 * MIN, percent: 9 }, { at: NOW - 3 * MIN, percent: 10 }]
+    const v = movedPerHour(pts, NOW, 20 * MIN)!
+    expect(v).toBeGreaterThan(16.1)
+    expect(v).toBeLessThan(16.2)
+  })
+
+  test('leaves out readings older than the span, and is 0 for a quota that has not moved', () => {
+    const pts = [{ at: NOW - 40 * MIN, percent: 0 }, { at: NOW - 15 * MIN, percent: 10 }, { at: NOW - 1 * MIN, percent: 10 }]
+    expect(movedPerHour(pts, NOW, 20 * MIN)).toBe(0)
+  })
+
+  test('says nothing from readings spanning too little time to measure', () => {
+    expect(movedPerHour([{ at: NOW - 2 * MIN, percent: 8 }, { at: NOW, percent: 9 }], NOW, 20 * MIN)).toBeNull()
+    expect(movedPerHour([{ at: NOW - 10 * MIN, percent: 8 }], NOW, 20 * MIN)).toBeNull()
   })
 })

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { PaceSample } from '../types'
 import { rateOf, rowsOf } from '../hooks/model.ts'
-import { addSpend, mergeSpend, quotaPerDollar, sessionsOf, spendIn, spendVerdict, usdPerPrompt } from '../hooks/spend.ts'
+import { addSpend, mergeSpend, quotaPerDollar, sessionsOf, spendIn, spendModel, spendVerdict, usdPerPrompt } from '../hooks/spend.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const MIN = 60_000
@@ -65,6 +65,18 @@ describe('quota per dollar', () => {
     s = addSpend(s, 'a', NOW - 30 * MIN, 20, NOW)
     near(quotaPerDollar(across, 'five_hour', s, NOW), 0.5)
   })
+
+  test('leaves out a span the quota moved in with nothing spent here: usage from claude.ai or another machine', () => {
+    const seen: PaceSample[] = [
+      { at: NOW - 3 * H, quotas: { five_hour: { percent: 10, resetsAt: NOW + H } } },
+      { at: NOW - 2 * H, quotas: { five_hour: { percent: 20, resetsAt: NOW + H } } },
+      // 30 points in the next hour, not a cent of it spent by any session here
+      { at: NOW - H, quotas: { five_hour: { percent: 50, resetsAt: NOW + H } } },
+    ]
+    // $20 moved it 10 points: half a point a dollar, not 2
+    const s = addSpend([], 'a', NOW - 2.5 * H, 20, NOW)
+    near(quotaPerDollar(seen, 'five_hour', s, NOW), 0.5)
+  })
 })
 
 describe('spend pacing', () => {
@@ -108,5 +120,16 @@ describe('the rate against an over-pace quota', () => {
     const s = { samples, prompts, cache: null, spend }
     const [five] = rowsOf(samples, NOW)
     expect(rateOf(s, five!, NOW).level).toBe('idle')
+  })
+})
+
+describe('whose spend it is', () => {
+  test('dollars go to the one model that answered since the last cost reading, else the session\'s', () => {
+    expect(spendModel(['claude-haiku-5-5', 'claude-haiku-5-5'], 'claude-opus-5-5')).toBe('claude-haiku-5-5')
+    expect(spendModel([], 'claude-opus-5-5')).toBe('claude-opus-5-5')
+  })
+
+  test('dollars several models earned go to none, so they count against every quota', () => {
+    expect(spendModel(['claude-opus-5-5', 'claude-haiku-5-5'], 'claude-opus-5-5')).toBeUndefined()
   })
 })

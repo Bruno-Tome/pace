@@ -22,6 +22,7 @@ sessions, and modes that keep a long run on pace with no one at the keyboard.
 - [Pacing across parallel sessions](#pacing-across-parallel-sessions)
 - [On pace mode](#on-pace-mode)
 - [Auto mode](#auto-mode)
+- [Ultra pace](#ultra-pace)
 - [Commands](#commands)
 - [Options](#options)
 - [For other mods](#for-other-mods)
@@ -106,6 +107,12 @@ of them against what each quota has left, so five sessions at once read as one b
 how much of a quota a dollar uses (learned from the last week of readings) times recent dollars per prompt, so it
 is there from the first prompt.
 
+Once a quota's own readings measure it, they set the rate instead: the points an hour its percentage moved, fitted
+through its readings over the last 15 minutes for the 5-hour window and the last 3 hours for a week. Where it
+lands at the reset, when it runs out, and burst or too fast all follow from that, so a heavy stretch that has
+ended stops counting within a quarter of an hour. The estimate from dollars and prompts fills in until there are
+readings enough.
+
 pace warns once per window, in a toast and a notification: at 80% and 95% of a quota, when the rate would get it
 gassed out before it resets, and when it is gassed out.
 
@@ -141,6 +148,8 @@ pane says what it does and that it spends quota on its own; it starts when you p
   turn when the work reports, and pace checks in after 15 minutes in case it hung. Two turns in a row that change
   neither the plan nor `.pace/handoff.md` count as no progress: pace stops prompting and waits 5 minutes, then 10,
   20 and 30, until a turn moves the plan again.
+- `/pace auto burst` is for when you would rather spend the quota now: auto mode stops holding for pacing (a hold
+  under way ends at once) and only waits out a quota that is already gassed out. `/pace auto burst off` undoes it.
 - It answers Claude's questions with the recommended option.
 - It has Claude hand searches and routine edits to subagents on lighter models, and keep `.pace/handoff.md` up to
   date. When the context gets heavy, or is cold and large, pace clears it and resumes from that file.
@@ -163,8 +172,10 @@ opens it too. Inside tmux it is a narrow split on the right of Claude (Node 23.6
 closes it); elsewhere it is a pane, docked beside the transcript in fullscreen from 110 columns. It shows the steps done (`✔`), the step under way (`◉`) and the step up next (`○`), read from the
 plan's checklist (`- [ ]` and `- [x]` items) each time a turn ends. The header gives how many steps are done, a
 progress bar and what auto mode is doing: its turn, a hold, a wait or a pause. A long step wraps under its own text,
-the timeline's line running on beside it, so each step reads whole in a narrow sidebar. A long plan folds the steps done long
-ago and the ones far ahead to fit the pane.
+the timeline's line running on beside it, so each step reads whole in a narrow sidebar. A long plan scrolls, and opens
+on the step under way. The pane scrolls with the mouse wheel, or the arrows once it has focus. The tmux sidebar
+follows the step under way until you scroll it: the arrows or j/k, PgUp/PgDn or space, Home/End or g/G, the mouse
+wheel; f follows again.
 
 It is animated: the steps come in from the top, a dot runs down the line into the step under way while its marker
 spins, and a step that gets ticked off pops into a check.
@@ -185,6 +196,64 @@ ROADMAP.md  ·  12 of 20 steps done
   ○  6 more steps
 ```
 
+## Ultra pace
+
+Auto mode works through a checklist you wrote. Ultra pace is given a **goal** and owns the plan: Claude writes the
+steps, works them, reviews them against the goal, and stops only once the goal is verified. On top of that it spends
+the quota at the pace the quota allows.
+
+```md
+## Goal
+pace ships 1.0 with CI green.
+Done when:
+- CI runs tsc, validate and test on every push
+- CHANGELOG has a 1.0.0 section
+Check: `tsc -p . && claude plugin validate . && claude plugin test .`
+
+## Steps
+- [x] Write the CI workflow
+- [ ] Bump plugin.json (parallel)
+- [ ] Move Unreleased under 1.0.0 (parallel)
+
+## Revisions
+- turn 7 · added "Pin Node in CI": the workflow failed on Node 20
+```
+
+`/pace ultra PLAN.md` starts it; a plan with no `## Goal` does not start. The first turn writes the steps; after that
+each turn is one step of work (red first), a review of the plan (every 5 steps, after a failed check, a stalled turn
+or a `PACE: REPLAN <why>`), or a turn integrating subagents' work.
+
+- **The check.** When Claude ends a turn with `PACE: GOAL`, pace runs the `Check:` command itself, as it read it when
+  the run started: editing the line later changes nothing, and pace says so. A pass stops the run with a closing
+  report; a failure becomes a review carrying the last 40 lines of its output. With no `Check:` line, Claude verifies
+  each *Done when* line against the code, and a second claim stops the run.
+- **The lock.** A ticked step stays ticked. Unticking, rewording or dropping one needs a line under `## Revisions`, or
+  the next turn is a review that restores it or logs why.
+- **It stops** after 3 failed checks in a row, 3 reviews in a row with no new step done, a turn waiting on you, or 80
+  turns (`/pace ultra resume` gives it more).
+- **The throttle.** The tightest quota the session's model draws on sets the gear:
+
+  | Room | When | Gear |
+  | --- | --- | --- |
+  | push | under pace at a steady rate | the ceiling model at `xhigh` effort, 3 subagents on sonnet, `(parallel)` steps fanned out |
+  | cruise | on pace, or a brisk rate | your model and effort, 2 subagents on sonnet |
+  | ease | over pace, or a burst | the floor model, one effort lighter, 1 subagent on haiku |
+  | hold | too fast, or gassed out | auto mode holds |
+
+  It drops a gear at once but climbs one gear at a time, after two decisions in a row. The main model changes only on
+  a cold cache, at a handoff, since a new model starts with the cache cold. `sonnet..opus` after the turn count sets
+  the floor and the ceiling; by default it ranges from sonnet up to the model you run.
+- **Subagents.** The Agent tool's subagents run on the gear's model when Claude names none or a heavier one, and no
+  more of them run at once than the gear allows. In push, `(parallel)` steps go to background subagents that write
+  a report to `.pace/fanout/<n>.md`; a turn then integrates them and ticks what holds.
+- **Where it shows.** Under the band and in the status-line entry, `ultra ▶ push · opus xhigh · 3 agents · turn
+  4/80`, in the warning color while it eases or after a failed check. The timeline gives the goal, the phase of the
+  step under way and the steps out on subagents.
+
+**What it costs.** Ultra pace spends quota on its own, and in push it spends it faster on purpose: a stronger model,
+more thinking, subagents in parallel. The point is to end each window close to its quota, not under it, and never
+gassed out. The onboarding pane says so before the first run.
+
 ## Commands
 
 | Command | Does |
@@ -195,6 +264,8 @@ ROADMAP.md  ·  12 of 20 steps done
 | `/pace refresh` | Reads every source again |
 | `/pace on`, `/pace off` | On pace mode |
 | `/pace auto [plan] [turns]`, `auto off`, `auto resume` | Auto mode; the plan defaults to `ROADMAP.md` |
+| `/pace auto burst`, `auto burst off` | Auto mode stops holding for pacing; only a gassed-out quota holds |
+| `/pace ultra [plan] [turns] [floor..ceiling]`, `ultra off`, `ultra resume` | Ultra pace: works toward the plan's goal until its check passes |
 | `/pace plan [file]` | The plan's timeline in a sidebar (a tmux split, or a pane): auto mode's plan, the file named, or `ROADMAP.md` |
 | `/pace warm ping \| compact \| off` | Keeps an idle cache warm |
 | `/pace hide`, `/pace show` | The band |
@@ -219,7 +290,7 @@ snap.quotas        // [{ key, name, percent, status, resetsAt, runOutAt, rate: {
 snap.cache         // { tokens, secondsLeft, nextWarm, nextCold, nextWarmUsd, … } or null
 snap.spend         // { usdPerHour, sessions, usdPerPrompt }
 snap.gassedOut     // a quota is spent
-snap.modes         // { onPace, auto }
+snap.modes         // { onPace, auto }; auto.ultra while ultra pace runs: goal, phase, gear, …
 snap.advice        // [{ level, text }]
 ```
 

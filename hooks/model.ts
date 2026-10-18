@@ -4,7 +4,7 @@
 import type { PaceAuto, PaceCacheInfo, PaceQuota, PaceReading, PaceSample, PaceSnapshot, PaceSpend, PaceWarmMode } from '../types'
 import { cacheLeft, nextCost, suggestions, type Suggestion } from './cache.ts'
 import * as Q from './quota.ts'
-import { budgetText, rateSince, type RateVerdict } from './rate.ts'
+import { budgetText, judgedOnMovement, movedPerHour, rateSince, type RateVerdict } from './rate.ts'
 import { quotaPerDollar, sessionsOf, spendVerdict, usdPerHour, usdPerPrompt } from './spend.ts'
 
 const MIN = 60_000
@@ -70,19 +70,43 @@ function baselineOf(samples: readonly PaceSample[], row: Row, now: number): { at
  * The prompting rate against one quota: in dollars an hour across every session once the shared spend says what
  * a dollar of it costs, else in prompts an hour against what it moved since a baseline reading. A rate that
  * empties it before the reset is `fast` only when the quota is over pace or its average alone runs it out;
- * otherwise it is a `burst`. With no per-prompt cost yet, a quota over pace is `fast` at any rate. With no prompt
- * in the last 15 minutes it is `idle`, however the quota stands or what a running turn still spends: a warning is
- * for prompting, never for the quota alone.
+ * otherwise it is a `burst`. Where the quota's readings measure its movement, that sets the rate and `idle` means it
+ * has not moved. Otherwise, with no per-prompt cost yet, a quota over pace is `fast` at any rate, and with no
+ * prompt in the last 15 minutes it is `idle`.
  */
 export function rateOf(s: Snapshot, row: Row, now: number): RateVerdict {
   const { samples } = s
   const prompts = promptsFor(s, row.key)
   if (row.view.kind !== 'pace') return rateSince(prompts, undefined, null, now)
-  const v = spentRate(s, row, now) ?? rateSince(prompts, row.reading, baselineOf(samples, row, now), now)
+  const priced = spentRate(s, row, now) ?? rateSince(prompts, row.reading, baselineOf(samples, row, now), now)
+  // The quota's own movement, where its recent readings measure it, outranks any estimate from dollars or prompts.
+  // Idle then means it is not moving, whoever moves it: a subagent on its model, another session, claude.ai.
+  const moved = row.reading ? movedPerHour(readingsOf(samples, row), now, recentSpan(row)) : null
+  if (moved != null && row.reading) {
+    const m = judgedOnMovement(priced, row.reading, moved)
+    if (moved === 0) return { ...m, level: 'idle' }
+    return m.level === 'fast' && !isOver(row) && row.view.pace.runOutAt == null ? { ...m, level: 'burst' } : m
+  }
+  const v = priced
   if (v.last15 === 0) return { ...v, level: 'idle' }
   if (v.level === 'fast') return isOver(row) || row.view.pace.runOutAt != null ? v : { ...v, level: 'burst' }
   if (v.level === 'idle' || v.costPerPrompt != null) return v
   return isOver(row) ? { ...v, level: 'fast' } : v
+}
+
+/**
+ * How far back a quota's readings measure its movement: 15 minutes for the 5-hour window, short enough to forget a
+ * burst that ended; 3 hours for a week, whose whole points move slowly
+ */
+const recentSpan = (row: Row) => Math.max(15 * MIN, (row.window * 1000) / 56)
+
+/** The quota's readings in its current window, oldest first */
+function readingsOf(samples: readonly PaceSample[], row: Row): { at: number; percent: number }[] {
+  const r = row.reading?.resetsAt
+  return samples.flatMap(s => {
+    const q = s.quotas[row.key]
+    return q && (r == null || q.resetsAt == null || Math.abs(q.resetsAt - r) <= 90_000) ? [{ at: s.at, percent: q.percent }] : []
+  })
 }
 
 /** The rate judged in dollars, where the shared spend prices both the quota and a prompt */

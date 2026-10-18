@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { H, iso, NOW, textOf, world } from './world.ts'
+import { H, iso, NOW, reply, textOf, world } from './world.ts'
 
 const start = ($: any) => $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
 const pace = ($: any, args: string) => $.command.run({ command: 'pace', args } as any)
@@ -180,4 +180,52 @@ test('once every subagent out on the fan-out has reported, a turn integrates the
   await $.turn.complete({ answer: 'Moved.', durationMs: 1, isAborted: false, turnId: 's2', reason: 'answer', agentId: 'agent-2' } as any)
   expect(w.submitted.at(-1)).toMatch(/Integrate the subagents' work on "Bump plugin.json", "Move Unreleased"/)
   expect(runOf(w).ultra.phase).toBe('integrate')
+})
+
+const EASE = { model: 'sonnet', effort: 'medium', subagents: 1, subagentModel: 'haiku', fanout: false }
+
+test('the main thread runs at the gear\'s effort, and on the gear\'s model once the cache is cold, as after a handoff', async ($, on) => {
+  const w = world(on)
+  const asked: { model: string; effort?: unknown }[] = []
+  on('turn.step', async function* (_$: unknown, e: { turnId: string; index: number; model: string; effort?: unknown }) {
+    asked.push({ model: e.model, effort: e.effort })
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null } as any
+  })
+  w.files['/tmp/PLAN.md'] = PLAN
+  w.stored['session:session-a'] = stored({ gear: EASE })
+  await start($)
+  const step = async () => {
+    for await (const _ of $.turn.step({ turnId: 't', index: 0, model: 'claude-opus-5-5', effort: 'high', messageCount: 1 } as any) as any) { /* drain the stream */ }
+  }
+  await reply($, 100_000)
+  await step()
+  // On pace mode keeps the idle cache warm: the model holds
+  await w.clock.advance(61 * 60_000)
+  await step()
+  // A handoff clears the context, and the cache with it
+  await $.session.measure({ context: { window: 1_000_000 }, changed: ['context'] } as any)
+  await step()
+  // A reply on the new model warms the cache again
+  await reply($, 30_000)
+  await step()
+  const opus = { model: 'claude-opus-5-5', effort: 'medium' }
+  const sonnet = { model: 'sonnet', effort: 'medium' }
+  // Once switched, it stays switched
+  expect(asked).toEqual([opus, opus, sonnet, sonnet])
+})
+
+test('the Agent tool\'s subagents run on the gear\'s model, and no more of them at once than it allows', async ($, on) => {
+  const w = world(on)
+  w.files['/tmp/PLAN.md'] = PLAN
+  w.stored['session:session-a'] = stored({ gear: EASE })
+  await start($)
+  const first: any = await $.agent.spawn({ prompt: 'Search the repo for the parser.', model: 'opus' } as any)
+  expect(w.spawns.at(-1)!.model).toBe('haiku')
+  const second: any = await $.agent.spawn({ prompt: 'Read the tests.' } as any)
+  expect(second.deny).toMatch(/1 subagent/)
+  expect(w.spawns.length).toBe(1)
+  // The first one's turn ends: room for another
+  await $.turn.complete({ answer: 'Found it.', durationMs: 1, isAborted: false, turnId: 's1', reason: 'answer', agentId: first.agentId } as any)
+  await $.agent.spawn({ prompt: 'Read the tests.' } as any)
+  expect(w.spawns.length).toBe(2)
 })

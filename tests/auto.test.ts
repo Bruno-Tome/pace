@@ -203,3 +203,12 @@ describe('a turn left waiting on the user', () => {
     expect(protocol()).toMatch(/hand the user a task or need their feedback[^\n]*PACE: BLOCKED/)
   })
 })
+
+describe('burst', () => {
+  test('a run in burst never holds for pacing, but still waits out a quota that is gassed out', () => {
+    const fast = snap({ quotas: [quota({ rate: { ...quota().rate, level: 'fast', emptyIn: 1800 } })] })
+    expect(decide({ auto: { ...AUTO, burst: true }, snap: fast, answer: '', aborted: false }).kind).toBe('continue')
+    const out = snap({ quotas: [quota({ status: 'gassedOut', percent: 100 })] })
+    expect(decide({ auto: { ...AUTO, burst: true }, snap: out, answer: '', aborted: false }).kind).toBe('hold')
+  })
+})

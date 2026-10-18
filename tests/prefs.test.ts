@@ -39,3 +39,8 @@ test('a fan-out or a review owed that does not parse is left out, the rest of th
   const { due: __, ...noDue } = ULTRA
   expect(prefsFrom({}, { at: 0, auto: { ...RUN, ultra: { ...ULTRA, due: { tail: 'x' } } } }).auto).toEqual({ ...RUN, ultra: noDue })
 })
+
+test('a run in burst reads back in burst; one stored without it is not', () => {
+  expect(prefsFrom({}, { at: 0, auto: { ...RUN, burst: true } }).auto).toEqual({ ...RUN, burst: true })
+  expect(prefsFrom({}, { at: 0, auto: { ...RUN, burst: 'yes' } }).auto).toEqual(RUN)
+})

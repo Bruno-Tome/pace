@@ -92,8 +92,12 @@ export function quotaPerDollar(samples: readonly PaceSample[], key: string, spen
     const r = s.quotas[key]
     if (!r || s.at < from || s.at > now) continue
     if (prev && r.resetsAt != null && prev.r.resetsAt != null && Math.abs(r.resetsAt - prev.r.resetsAt) <= 90_000 && r.percent >= prev.r.percent) {
-      points += r.percent - prev.r.percent
-      usd += spendIn(spend, prev.at, s.at)
+      const spent = spendIn(spend, prev.at, s.at)
+      // Moved with nothing spent here: usage pace cannot see (claude.ai, another machine) would make a dollar look dearer
+      if (spent > 0 || r.percent === prev.r.percent) {
+        points += r.percent - prev.r.percent
+        usd += spent
+      }
     }
     prev = { at: s.at, r }
   }
@@ -139,4 +143,14 @@ export function spendVerdict(i: SpendInput): RateVerdict {
     pctBudgetPerHour: pctBudget(i.reading, resetIn),
     pctAtReset: pctAt(i.reading, i.usdPerHour * i.perDollar, resetIn),
   }
+}
+
+/**
+ * Whose dollars a cost reading brings: the one model that answered since the last reading (a subagent's on haiku
+ * counts toward haiku, not the session's week), the session's when none was seen, and none when several answered:
+ * spend with no model counts against every quota, so it is never under-warned.
+ */
+export function spendModel(answered: readonly string[], session: string | undefined): string | undefined {
+  const models = new Set(answered)
+  return models.size === 0 ? session : models.size === 1 ? [...models][0] : undefined
 }

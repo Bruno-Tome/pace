@@ -2,8 +2,12 @@ import { expect, test } from 'claude-code/testing'
 
 import { BAND, H, iso, LIMITS, NOW, paceSnapshot, pricedReply, READER, reply, textOf, USAGE, world } from './world.ts'
 
+/** The usage endpoint reporting the Fable week alone: the 5-hour window keeps only the reading the session starts with */
+const FABLE_ONLY = { limits: USAGE.limits.filter(l => l.kind === 'weekly_scoped') }
+
 test('the band shows the 5-hour and Fable bars and calls a burst on an on-pace window a burst', async ($, on) => {
-  const { status, clock } = world(on)
+  // The 5-hour window's one reading is the session's at start: too few to measure its movement, so prompts price the rate
+  const { status, clock } = world(on, {}, FABLE_ONLY)
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
   // 20 prompts in the last 20 minutes on a window already at 60%
   for (let i = 0; i < 20; i++) {
@@ -105,7 +109,8 @@ test('the pane draws each quota as a chart of usage against the pace line, with 
 })
 
 test('each band row judges the prompting rate against its own quota', async ($, on) => {
-  const { clock } = world(on)
+  // As above: the prompts price the 5-hour window's rate, its readings too few to measure it
+  const { clock } = world(on, {}, FABLE_ONLY)
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
   for (let i = 0; i < 20; i++) {
     if (i) await clock.advance(60_000)
@@ -371,15 +376,19 @@ test('parallel sessions pace together: the rate is every session\'s dollars an h
 })
 
 test('a window over pace is not too fast once the prompting stops', async ($, on) => {
-  const { clock, status } = world(on)
+  // The 5-hour readings are this test's own: the endpoint reports the Fable week alone
+  const { clock, status } = world(on, {}, FABLE_ONLY)
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
   for (let i = 0; i < 20; i++) {
     if (i) await clock.advance(60_000)
     await $.prompt.submit({ text: `p${i}` } as any)
   }
-  // A window over pace, 90% used with about 70% of it gone, but the last prompt was 16 minutes ago
+  // A window over pace, 90% used with about 70% of it gone, but the last prompt was 16 minutes ago: at 90% when
+  // the prompting stopped, and at 90% still
+  const at90 = () => $.session.measure({ context: { window: 1_000_000 }, rateLimits: [{ kind: 'five_hour', percentUsed: 90, resetsAt: iso(NOW + 2 * H) }], changed: ['rateLimits'] } as any)
+  await at90()
   await clock.advance(16 * 60_000)
-  await $.session.measure({ context: { window: 1_000_000 }, rateLimits: [{ kind: 'five_hour', percentUsed: 90, resetsAt: iso(NOW + 2 * H) }], changed: ['rateLimits'] } as any)
+  await at90()
   const ui = await $.ui.mount({ plugin: 'pace', surface: 'terminal', component: 'AbovePrompt', props: BAND as any })
   const tree: any = await ui.drawn({ in: 'pace-band' })
   const five = textOf(tree.children[0])

@@ -35,3 +35,36 @@ export function planFrame(lines: readonly Line[], f: number, popAt: number | nul
   }
   return lines.map((segs, i) => (f >= i * REVEAL ? segs.map(frame) : []))
 }
+
+/**
+ * Where the sidebar's window over `total` lines starts after `key`: arrows and j/k a line, page keys and space a
+ * window less a line, Home/End and g/G either end; any other key leaves it. Kept so the window never runs past
+ * the plan.
+ */
+export function scrollBy(offset: number, key: string, total: number, rows: number): number {
+  const max = Math.max(0, total - rows)
+  const page = Math.max(1, rows - 1)
+  const to =
+    key === 'down' || key === 'j' ? offset + 1
+    : key === 'up' || key === 'k' ? offset - 1
+    : key === 'pagedown' || key === ' ' ? offset + page
+    : key === 'pageup' ? offset - page
+    : key === 'home' || key === 'g' ? 0
+    : key === 'end' || key === 'G' ? max
+    : offset
+  return Math.min(max, Math.max(0, to))
+}
+
+/** The row of the step under way (its spinning mark), else the first step ahead, else the last row */
+export function nowRow(lines: readonly Line[]): number {
+  const under = lines.findIndex(l => l.some(s => s.t === '◉'))
+  if (under >= 0) return under
+  const ahead = lines.findIndex(l => l.some(s => s.t === '○'))
+  return ahead >= 0 ? ahead : Math.max(0, lines.length - 1)
+}
+
+/** Where a window of `rows` starts to show the step under way, with a few rows of what is done above it */
+export function followOffset(lines: readonly Line[], rows: number): number {
+  const lead = Math.min(4, Math.floor(rows / 3))
+  return Math.min(Math.max(0, lines.length - rows), Math.max(0, nowRow(lines) - lead))
+}

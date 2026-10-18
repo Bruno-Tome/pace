@@ -11,6 +11,7 @@ import { adviceOf, bandRows, isFable, ratedOf, rowsOf, snapshotOf, verdictOf, wo
 import * as Q from './quota.ts'
 import { bar, budgetText, buckets, rateText, scoreText, sparkline, type Cell, type RateVerdict } from './rate.ts'
 import { sessionsOf, usdPerPrompt } from './spend.ts'
+import { gearText, notchName } from './throttle.ts'
 
 const MIN = 60_000
 
@@ -210,19 +211,34 @@ export function bandLines(s: Snapshot, now: number, cols: number): Line[] {
 function modesLine(s: Snapshot, now: number, extra: readonly Seg[] = []): Line | null {
   const a = s.auto
   const hint = (cmd: string): Seg => ({ t: ` · ${cmd}`, dim: true })
-  if (a?.paused) return [{ t: 'auto  ⏸ paused', color: 'warning', bold: true }, { t: ` · ${a.plan}`, dim: true }, ...extra, hint('/pace auto resume')]
+  const mode = a?.ultra ? 'ultra' : 'auto'
+  if (a?.paused) return [{ t: `${mode.padEnd(5)} ⏸ paused`, color: 'warning', bold: true }, { t: ` · ${a.plan}`, dim: true }, ...extra, hint(`/pace ${mode} resume`)]
   if (a?.heldUntil != null) {
     return [
-      { t: `auto  ⏸ held until ${Q.clockAt(a.heldUntil, a.heldUntil - now >= 86400_000)}`, color: 'warning', bold: true },
+      { t: `${mode.padEnd(5)} ⏸ held until ${Q.clockAt(a.heldUntil, a.heldUntil - now >= 86400_000)}`, color: 'warning', bold: true },
       { t: ` · ${a.why ?? ''}`, dim: true },
       ...extra,
-      hint('/pace auto off'),
+      hint(`/pace ${mode} off`),
+    ]
+  }
+  if (a?.ultra) {
+    const u = a.ultra
+    const tense = notchName(u.gear) === 'ease' || u.checkFails > 0
+    return [
+      { t: 'ultra ▶ ', color: tense ? 'warning' : 'success', bold: true },
+      { t: `${gearText(u.gear)} · turn ${a.turns}/${a.max}`, dim: true },
+      ...ultraCheck(a),
+      ...extra,
+      hint('/pace ultra off'),
     ]
   }
   if (a) return [{ t: 'auto  ▶ ', color: 'success', bold: true }, { t: `${a.plan} · turn ${a.turns}/${a.max}`, dim: true }, ...extra, hint('/pace auto off')]
   if (s.onPace) return [{ t: 'on pace ●', color: 'success' }, { t: ' compacts heavy contexts, keeps the cache warm', dim: true }, ...extra, hint('/pace off')]
   return null
 }
+
+/** An ultra run's failed checks in a row, in the warning color; nothing while none failed */
+const ultraCheck = (a: PaceAuto): Seg[] => (a.ultra?.checkFails ? [{ t: ` · check failed ${a.ultra.checkFails}×`, color: 'warning' }] : [])
 
 /** Rows of [figures, rate or suggestion], the figures padded to one width so the separators stack in a column */
 function columns(rows: readonly [Line, Line][]): Line[] {
@@ -248,11 +264,14 @@ const plainOf = (l: Line) => l.map(x => x.t).join('')
 export function lineText(s: Snapshot, now: number): string {
   const rows = rowsOf(s.samples, now)
   const rated = ratedOf(s, rows, now)
-  if (!rated.length) return plainOf(rateSegs(verdictOf(s, rows, now), false))
-  return rated.map(({ row, r }) => {
+  const a = s.auto
+  // An ultra run at work says its gear after the quotas
+  const ultra = a?.ultra && !a.paused && a.heldUntil == null ? [`ultra · ${gearText(a.ultra.gear)}${plainOf(ultraCheck(a))}`] : []
+  if (!rated.length) return [plainOf(rateSegs(verdictOf(s, rows, now), false)), ...ultra].join(' │ ')
+  return [...rated.map(({ row, r }) => {
     const u = Q.viewUsed(row.view)
     return u == null ? `${row.short} —` : `${row.short} ${pctOf(u)}% ${plainOf(rateSegs(r, false))}`
-  }).join(' │ ')
+  }), ...ultra].join(' │ ')
 }
 
 // ----------------------------------------------------------------------
@@ -467,8 +486,11 @@ function runText(a: PaceAuto | null, now: number): Seg {
 /** A run of steps drawn as one node: `count` steps folded away before or after the ones shown */
 type Fold = { fold: 'done' | 'next'; count: number }
 
+/** What an ultra run adds to its timeline: the phase of the step under way, and the steps out on subagents */
+type RunMarks = { phase?: string; out: ReadonlySet<string> }
+
 /** A node: its mark and its text */
-function nodeLine(e: Step | Fold, upNext: boolean, lastDone: boolean): Line {
+function nodeLine(e: Step | Fold, upNext: boolean, lastDone: boolean, marks: RunMarks = { out: new Set() }): Line {
   if ('fold' in e) {
     const s = e.count === 1 ? '' : 's'
     return e.fold === 'done'
@@ -476,7 +498,8 @@ function nodeLine(e: Step | Fold, upNext: boolean, lastDone: boolean): Line {
       : [{ t: '  ' }, { t: '○', color: 'subtle' }, { t: '  ' }, { t: `${e.count} more step${s}`, dim: true }]
   }
   if (e.state === 'done') return [{ t: '  ' }, { t: '✔', color: 'success', ...(lastDone ? { pop: true } : {}) }, { t: '  ' }, { t: e.text, dim: true }]
-  if (e.state === 'now') return [{ t: '  ' }, { t: '◉', color: 'suggestion', bold: true, spin: true }, { t: '  ' }, { t: e.text, bold: true }, { t: ' · under way', color: 'suggestion', whole: true }]
+  if (e.state === 'now') return [{ t: '  ' }, { t: '◉', color: 'suggestion', bold: true, spin: true }, { t: '  ' }, { t: e.text, bold: true }, { t: ` · ${marks.phase ?? 'under way'}`, color: 'suggestion', whole: true }]
+  if (marks.out.has(e.text)) return [{ t: '  ' }, { t: '◌', color: 'suggestion', spin: true }, { t: '  ' }, { t: e.text }, { t: ' · with a subagent', color: 'suggestion', whole: true }]
   return upNext
     ? [{ t: '  ' }, { t: '○', color: 'subtle' }, { t: '  ' }, { t: e.text }, { t: ' · up next', dim: true, whole: true }]
     : [{ t: '  ' }, { t: '○', color: 'subtle' }, { t: '  ' }, { t: e.text, dim: true }]
@@ -530,7 +553,7 @@ function wrapNode(line: Line, rail: Seg, cols: number): Line[] {
 }
 
 /** The steps from `lo` to `hi` drawn as a timeline, with folds for the steps either side of them */
-function timeline(steps: readonly Step[], lo: number, hi: number, cols: number): Line[] {
+function timeline(steps: readonly Step[], lo: number, hi: number, cols: number, marks?: RunMarks): Line[] {
   const entries: (Step | Fold)[] = [
     ...(lo > 0 ? [{ fold: 'done' as const, count: lo }] : []),
     ...steps.slice(lo, hi + 1),
@@ -543,7 +566,7 @@ function timeline(steps: readonly Step[], lo: number, hi: number, cols: number):
     const { flow: _, ...rail } = below ? linkLines(e, below)[0]![1]! : { t: ' ' }
     return [
       ...(i ? linkLines(entries[i - 1]!, e) : []),
-      ...wrapNode(nodeLine(e, e === steps[upNext], e === steps[lastDone]), rail, cols),
+      ...wrapNode(nodeLine(e, e === steps[upNext], e === steps[lastDone], marks), rail, cols),
     ]
   })
 }
@@ -571,9 +594,13 @@ export function planLines(steps: readonly Step[], o: PlanLayout): Line[] {
     { t: ` ${pctOf(done / steps.length)}%`, dim: true },
   ]
   const run = runText(o.auto, o.now)
+  const u = o.auto?.ultra
+  // The phase names the step under way where it is not plain work
+  const marks: RunMarks | undefined = u ? { phase: u.phase === 'work' ? undefined : u.phase, out: new Set(u.fanout?.steps ?? []) } : undefined
   // A narrow sidebar gives each its own rows
   const head: Line[] = [
     ...wrapSegs([title, { t: `  ·  ${done} of ${steps.length} steps done`, dim: true }], o.cols),
+    ...(u ? wrapSegs([{ t: 'goal  ', dim: true }, { t: u.goal }], o.cols) : []),
     ...(width(bar) + 5 + width([run]) <= o.cols ? [[...bar, { t: '  ·  ', dim: true }, run]] : [bar, ...wrapSegs([run], o.cols)]),
     [],
   ]
@@ -584,10 +611,10 @@ export function planLines(steps: readonly Step[], o: PlanLayout): Line[] {
   let hi = focus
   for (const i of byPriority(focus, steps.length).slice(1)) {
     const [nlo, nhi] = [Math.min(lo, i), Math.max(hi, i)]
-    if (timeline(steps, nlo, nhi, o.cols).length > room) break
+    if (timeline(steps, nlo, nhi, o.cols, marks).length > room) break
     ;[lo, hi] = [nlo, nhi]
   }
-  return [...head, ...timeline(steps, lo, hi, o.cols)]
+  return [...head, ...timeline(steps, lo, hi, o.cols, marks)]
 }
 
 /** The window's state: a snapshot, when the session wrote it, and the plan's steps; `plan` absent without a checklist */

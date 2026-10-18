@@ -8,7 +8,7 @@
 import type { PaceGear, PaceUltra } from '../types'
 import { decide, HANDOFF_FILE, markerOf, pacingNote, type Decision, type DecideInput } from './auto.ts'
 import type { Step } from './plan.ts'
-import { gearFor, headroomOf } from './throttle.ts'
+import { coldAt, gearFor, headroomOf } from './throttle.ts'
 
 /** Work turns between reviews of the plan against the goal */
 export const REVIEW_EVERY = 5
@@ -119,7 +119,7 @@ export function decideUltra(i: UltraInput): UltraDecision {
     prompt = workPrompt(plan)
   }
 
-  const cold = base.kind === 'handoff' || !i.snap.cache || i.snap.cache.secondsLeft === 0
+  const cold = base.kind === 'handoff' || coldAt(i.snap, i.snap.at)
   const bounds = { ...u.models, model: i.model ?? u.models.ceiling, effort: i.effort }
   const { gear, streak } = gearFor(headroomOf(i.snap, i.model), bounds, { gear: u.gear, streak: u.headroomStreak, cold })
   ultra = { ...ultra, phase, gear, headroomStreak: streak }

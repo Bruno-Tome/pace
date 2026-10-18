@@ -44,7 +44,7 @@ changelog updated, and the step ticked here. Steps marked **(needs you)** wait f
 
 ## 5. Next
 
-- [ ] **Spend pace can't see.** Usage from claude.ai or another machine moves quotas with no spend recorded,
+- [x] **Spend pace can't see.** Usage from claude.ai or another machine moves quotas with no spend recorded,
       which makes a dollar look dearer. Detect quota movement with no local spend and leave those spans out of
       the ratio.
 - [ ] **Auto mode in a live session.** Run it on a real plan, watch the handoffs and holds, and tune the
@@ -78,15 +78,28 @@ spends the quota at the pace it allows. The design, every rule and the contract 
       without a goal; the check captured at start; the onboarding pane's ultra lines; the system section swapped.
 - [x] **The shell: carry out decisions.** `check` through `$.process.run` with a timeout, `fanout` through
       `$.agent.spawn`, the handoff carrying goal, phase and gear. Extend `tests/world.ts` where it lacks a fake.
-- [ ] **The shell: apply the gear.** `turn.step` sets the main thread's model (cold cache only) and effort;
+- [x] **The shell: apply the gear.** `turn.step` sets the main thread's model (cold cache only) and effort;
       `agent.spawn` sets subagent models and denies spawns beyond the gear's count.
-- [ ] **Surfaces.** The goal and phase on the timeline, steps out on subagents marked; the band and status-line
+- [x] **Subagent work in the rate.** With the main thread waiting on a fan-out, no prompt in 15 minutes reads
+      `idle`, so the headroom said `push` while subagents spent. The headroom now judges an idle quota by its dollars
+      an hour against its budget. The band's `idle` is unchanged: its warnings stay about prompting.
+- [x] **A subagent's spend under its own model.** The session's cost sums every response, subagents' included, but
+      pace records it under the session's model: a haiku subagent's dollars count toward the Opus or Fable week.
+      Done: a cost reading's dollars go to the one model that answered since the last, to none when several did.
+- [x] **Surfaces.** The goal and phase on the timeline, steps out on subagents marked; the band and status-line
       entry (`ultra · push · opus xhigh · 3 agents`).
-- [ ] **Docs.** A README section on ultra pace (the goal block, the check, the throttle, what it costs) and the
+- [x] **Docs.** A README section on ultra pace (the goal block, the check, the throttle, what it costs) and the
       changelog.
 - [ ] **A live run.** Ultra pace on a small real goal over one 5-hour window: watch the gear move, the reviews, a
       failed check and a fan-out, then tune `REVIEW_EVERY`, the guard limits and the headroom thresholds.
       **(needs you)**
+
+## 7. The rate
+
+- [x] **A rate that forgets a burst that ended.** The dollar rate is the last hour's spend, so a heavy stretch that
+      already stopped keeps reading as the rate: auto mode held at 10% of a fresh window, "gasses out in 1h 26m",
+      while the quota moved 2 points in 7 minutes. Done: the rate is the quota's own movement in points an hour, a
+      least-squares fit over its last 15 minutes of readings (3 hours for a week), wherever they measure it.
 
 ## Later
 

@@ -16,9 +16,9 @@ export type PaceWarmMode = 'off' | 'compact' | 'ping'
 
 /**
  * Auto mode's run: the plan file, the turns taken and allowed; while it holds or waits, until when and why; and the
- * turns in a row that made no progress
+ * turns in a row that made no progress; `burst`: never hold for pacing, only for a quota gassed out
  */
-export type PaceAuto = { plan: string; turns: number; max: number; heldUntil?: number; waitingUntil?: number; why?: string; paused?: boolean; stalls?: number; ultra?: PaceUltra }
+export type PaceAuto = { plan: string; turns: number; max: number; heldUntil?: number; waitingUntil?: number; why?: string; paused?: boolean; stalls?: number; burst?: true; ultra?: PaceUltra }
 
 /** How hard ultra pace drives: the main thread's model and effort, how many subagents on which model, fan-out on */
 export type PaceGear = {

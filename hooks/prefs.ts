@@ -63,6 +63,7 @@ function autoOf(v: unknown): PaceAuto | null {
     ...num('heldUntil'), ...num('waitingUntil'), ...num('stalls'),
     ...(typeof v.why === 'string' ? { why: v.why } : {}),
     ...(v.paused === true ? { paused: true } : {}),
+    ...(v.burst === true ? { burst: true } : {}),
     ...(ultra ? { ultra } : {}),
   }
 }

@@ -86,7 +86,8 @@ export function decide(i: DecideInput): Decision {
   if (auto.turns >= auto.max) return { kind: 'stop', why: `Reached ${auto.max} turns: /pace auto resume for more` }
   const out = snap.quotas.find(q => q.status === 'gassedOut' && q.resetsAt != null)
   if (out) return { kind: 'hold', until: out.resetsAt! + MIN, why: `Gassed out: ${out.name} resets at ${clockAt(out.resetsAt!, out.resetsAt! - snap.at >= 86400_000)}` }
-  const fast = snap.quotas.find(q => q.rate.level === 'fast')
+  // In burst the rate is the person's call: only a quota already gassed out holds
+  const fast = auto.burst ? undefined : snap.quotas.find(q => q.rate.level === 'fast')
   if (fast) {
     const when = fast.rate.emptyIn != null ? ` gasses out in ${formatDuration(fast.rate.emptyIn)}` : ' runs out before it resets'
     return { kind: 'hold', until: snap.at + PACING_HOLD, why: `Pacing: at this rate ${fast.name}${when}` }

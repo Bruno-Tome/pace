@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { PaceGear, PaceQuota, PaceSnapshot } from '../types'
-import { gearFor, headroomOf, type GearBounds } from '../hooks/throttle.ts'
+import { coldAt, gearFor, headroomOf, mainModelFor, requestModel, spawnAllowed, subagentModelFor, type GearBounds } from '../hooks/throttle.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const H = 3600_000
@@ -30,6 +30,16 @@ test('on pace or a brisk rate cruises; over pace or a burst eases; too fast or g
   expect(headroomOf(snap([quota({ status: 'over' }, { level: 'fast' })]), undefined)).toBe('hold')
   expect(headroomOf(snap([quota({ status: 'gassedOut', percent: 100 })]), undefined)).toBe('hold')
 })
+
+test('a quota idle of prompts but spending, as subagents do while the main thread waits, is judged by its spend', () => {
+    // Under pace and no prompt in 15 minutes, but $40/h against a $30/h budget: subagents are spending
+    expect(headroomOf(snap([quota({ status: 'under' }, { level: 'idle', usdPerHour: 40, usdBudgetPerHour: 30 })]), undefined)).toBe('ease')
+    // Close to the budget: no room to push
+    expect(headroomOf(snap([quota({ status: 'under' }, { level: 'idle', usdPerHour: 27, usdBudgetPerHour: 30 })]), undefined)).toBe('cruise')
+    // Spending well under it, or with no dollar figures yet: the status decides as before
+    expect(headroomOf(snap([quota({ status: 'under' }, { level: 'idle', usdPerHour: 5, usdBudgetPerHour: 30 })]), undefined)).toBe('push')
+    expect(headroomOf(snap([quota({ status: 'under' }, { level: 'idle', usdPerHour: null, usdBudgetPerHour: null })]), undefined)).toBe('push')
+  })
 
 test('the tightest quota decides', () => {
   // The 5-hour window has room; the week is over pace
@@ -85,5 +95,42 @@ describe('the gear', () => {
 
   test('easing from the lightest effort stays at it', () => {
     expect(gearFor('ease', { ...BOUNDS, effort: 'low' }, { gear: CRUISE, streak: 0, cold: true }).gear.effort).toBe('low')
+  })
+})
+
+describe('applying the gear', () => {
+  const EASE: PaceGear = { model: 'sonnet', effort: 'medium', subagents: 1, subagentModel: 'haiku', fanout: false }
+
+  test('a subagent runs on the gear\'s model when the caller names none or a heavier one, its own when lighter', () => {
+    expect(subagentModelFor(EASE, undefined)).toBe('haiku')
+    expect(subagentModelFor(EASE, 'opus')).toBe('haiku')
+    expect(subagentModelFor({ ...EASE, subagentModel: 'sonnet' }, 'claude-haiku-5-5')).toBe('claude-haiku-5-5')
+    // A model pace does not rank is left as the caller named it
+    expect(subagentModelFor(EASE, 'custom-model')).toBe('custom-model')
+  })
+
+  test('spawns go through up to the gear\'s count running at once', () => {
+    expect(spawnAllowed(EASE, 0)).toBe(true)
+    expect(spawnAllowed(EASE, 1)).toBe(false)
+  })
+
+  test('the main thread switches to the gear\'s model only on a cold cache, and keeps it after', () => {
+    expect(mainModelFor(EASE, null, false)).toBeNull()
+    expect(mainModelFor(EASE, null, true)).toBe('sonnet')
+    expect(mainModelFor({ ...EASE, model: 'opus' }, 'sonnet', false)).toBe('sonnet')
+  })
+
+  test('a cache is cold at a moment once its time left, counted from the snapshot, has run out, or with none', () => {
+    const s = snap([quota()])
+    expect(coldAt(s, NOW)).toBe(true)
+    const warm = { ...s, cache: { tokens: 1, window: 2, ttl: '1h' as const, secondsLeft: 600, nextWarm: 0, nextCold: 0, nextWarmUsd: null, nextColdUsd: null } }
+    expect(coldAt(warm, NOW + 599_000)).toBe(false)
+    expect(coldAt(warm, NOW + 600_000)).toBe(true)
+  })
+
+  test('a request keeps its own model where the gear names the same family: a version is never traded for an alias', () => {
+    expect(requestModel('sonnet', 'claude-opus-5-5')).toBe('sonnet')
+    expect(requestModel('opus', 'claude-opus-5-5')).toBe('claude-opus-5-5')
+    expect(requestModel(null, 'claude-opus-5-5')).toBe('claude-opus-5-5')
   })
 })

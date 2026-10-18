@@ -150,3 +150,32 @@ export function mergeModelPrompts(a: Readonly<Record<string, readonly number[]>>
   }
   return out
 }
+
+/**
+ * How fast a quota's own percentage moved: the least-squares slope, in points an hour, through its readings in the
+ * last `span` ms. Readings are whole points, so a slope needs them to span a quarter of `span` at least; null
+ * where they do not, or with fewer than two. Every reading counts, so one rounding step moves it little.
+ */
+export function movedPerHour(pts: readonly { at: number; percent: number }[], now: number, span: number): number | null {
+  const recent = pts.filter(p => p.at > now - span && p.at <= now)
+  if (recent.length < 2 || recent[recent.length - 1]!.at - recent[0]!.at < span / 4) return null
+  const mt = recent.reduce((a, p) => a + p.at, 0) / recent.length
+  const mp = recent.reduce((a, p) => a + p.percent, 0) / recent.length
+  const cov = recent.reduce((a, p) => a + (p.at - mt) * (p.percent - mp), 0)
+  const v = recent.reduce((a, p) => a + (p.at - mt) ** 2, 0)
+  return Math.max(0, (cov / v) * 3_600_000)
+}
+
+/**
+ * A verdict re-judged on the quota's own movement in points an hour: how soon it runs out, where it lands at the
+ * reset, and too fast or brisk against the points an hour it has left. Prompt counts and costs stay for display.
+ */
+export function judgedOnMovement(v: RateVerdict, reading: PaceReading, pctPerHour: number): RateVerdict {
+  const left = Math.max(0, 100 - reading.percent)
+  const emptyIn = pctPerHour > 0 ? (left / pctPerHour) * 3600 : null
+  const budget = pctBudget(reading, v.resetIn)
+  let level: RateLevel = 'ok'
+  if (emptyIn != null && v.resetIn != null && emptyIn < v.resetIn) level = 'fast'
+  else if (budget != null && pctPerHour > 0.75 * budget) level = 'brisk'
+  return { ...v, emptyIn, level, pctPerHour, pctBudgetPerHour: budget, pctAtReset: pctAt(reading, pctPerHour, v.resetIn) }
+}

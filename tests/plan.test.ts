@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { PaceAuto } from '../types'
 import { goalOf, lockBroken, planChanges, revisionsOf, stepsOf } from '../hooks/plan.ts'
-import { planFrame } from '../hooks/timeline.ts'
+import { followOffset, planFrame, scrollBy } from '../hooks/timeline.ts'
 import { planLines, type Line } from '../hooks/view.ts'
 import { NOW } from './world.ts'
 
@@ -183,5 +183,49 @@ describe('the timeline\'s animation', () => {
     const at = (f: number) => glyphs(planFrame(lines, 100 + f, 100))
     expect(Array.from({ length: 12 }, (_, f) => at(f)).some(t => /✱ +Write the parser/.test(t))).toBe(true)
     expect(at(40)).toMatch(/✔ +Write the parser/)
+  })
+})
+
+describe('the timeline of an ultra run', () => {
+  const RUN_U: PaceAuto = {
+    plan: 'PLAN.md', turns: 4, max: 80,
+    ultra: {
+      goal: 'pace ships 1.0 with CI green.', check: null, phase: 'review', sinceReview: 0, quietReviews: 0, checkFails: 0,
+      models: { floor: 'sonnet', ceiling: 'opus' }, headroomStreak: 0,
+      gear: { model: 'opus', effort: 'xhigh', subagents: 3, subagentModel: 'sonnet', fanout: true },
+      fanout: { agentIds: ['a1'], steps: ['Move Unreleased'] },
+    },
+  }
+  const md = '## Steps\n- [x] Write CI\n- [ ] Bump plugin.json\n- [ ] Move Unreleased (parallel)\n- [ ] Tag it'
+
+  test('says the goal under the title, the phase on the step under way, and marks the steps out on subagents', () => {
+    const text = textOfLines(planLines(stepsOf(md, true), { plan: 'PLAN.md', auto: RUN_U, cols: 80, now: NOW }))
+    expect(text).toContain('goal  pace ships 1.0 with CI green.')
+    expect(text).toMatch(/◉ +Bump plugin.json · review/)
+    expect(text).toMatch(/Move Unreleased · with a subagent/)
+  })
+})
+
+describe('scrolling the sidebar', () => {
+  test('arrows and j/k move a row, page keys a screen less a row, Home and End to either end, kept within the plan', () => {
+    // 50 lines in 20 rows: the window can start anywhere from 0 to 30
+    expect(scrollBy(10, 'down', 50, 20)).toBe(11)
+    expect(scrollBy(10, 'k', 50, 20)).toBe(9)
+    expect(scrollBy(10, 'pagedown', 50, 20)).toBe(29)
+    expect(scrollBy(25, 'pagedown', 50, 20)).toBe(30)
+    expect(scrollBy(3, 'pageup', 50, 20)).toBe(0)
+    expect(scrollBy(10, 'end', 50, 20)).toBe(30)
+    expect(scrollBy(10, 'home', 50, 20)).toBe(0)
+    // A plan that fits never moves
+    expect(scrollBy(0, 'down', 10, 20)).toBe(0)
+  })
+
+  test('the window starts where the step under way shows, a few rows of what is done above it', () => {
+    const md = Array.from({ length: 30 }, (_, i) => `- [${i < 20 ? 'x' : ' '}] Step ${i + 1}`).join('\n')
+    const lines = planLines(stepsOf(md, true), { plan: 'PLAN.md', auto: RUN, cols: 80, now: NOW, rows: Infinity })
+    const at = followOffset(lines, 12)
+    const shown = textOfLines(lines.slice(at, at + 12))
+    expect(shown).toContain('Step 21 · under way')
+    expect(shown).toContain('Step 20')
   })
 })

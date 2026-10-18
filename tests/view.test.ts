@@ -142,3 +142,28 @@ test('the split\'s status row puts the lighter effort with the mode\'s figures, 
   const onPace = plain(screen({ ...STATE, prompts, onPace: true }, NOW, 100, 60)).split('\n')[1]
   expect(onPace).toBe('on pace ● compacts heavy contexts, keeps the cache warm · effort a level lighter · /pace off')
 })
+
+const ULTRA_RUN = {
+  plan: 'PLAN.md', turns: 4, max: 80,
+  ultra: {
+    goal: 'pace ships 1.0 with CI green.', check: 'claude plugin test .', phase: 'work' as const, sinceReview: 1, quietReviews: 0, checkFails: 0,
+    models: { floor: 'sonnet', ceiling: 'claude-opus-5-5' }, headroomStreak: 0,
+    gear: { model: 'claude-opus-5-5', effort: 'xhigh' as const, subagents: 3, subagentModel: 'sonnet', fanout: true },
+  },
+}
+const plainLine = (l: Line | undefined) => (l ?? []).map(s => s.t).join('')
+
+test('an ultra run shows under the band and in the status-line entry: its gear and its turn', () => {
+  const s = { ...STATE, auto: ULTRA_RUN }
+  const modes = plainLine(bandLines(s, NOW, 120).at(-1))
+  expect(modes).toContain('ultra ▶ push · opus xhigh · 3 agents · turn 4/80')
+  expect(lineText(s, NOW)).toContain('│ ultra · push · opus xhigh · 3 agents')
+})
+
+test('an ultra run easing, or after failed checks, says so in the warning color', () => {
+  const ease = { ...ULTRA_RUN, ultra: { ...ULTRA_RUN.ultra, checkFails: 2, gear: { model: 'sonnet', effort: 'medium' as const, subagents: 1, subagentModel: 'haiku', fanout: false } } }
+  const modes = bandLines({ ...STATE, auto: ease }, NOW, 120).at(-1)!
+  expect(plainLine(modes)).toContain('ultra ▶ ease · sonnet medium · 1 agent')
+  expect(plainLine(modes)).toContain('check failed 2×')
+  expect(modes.some(s => s.color === 'warning')).toBe(true)
+})

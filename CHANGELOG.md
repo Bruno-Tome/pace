@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- A quota pace sees no prompt for is no longer idle while it moves: where its readings measure its movement, idle
+  means it has not moved, whoever moved it. A Fable subagent in a session prompting Opus, another session or
+  claude.ai now shows on the Fable week's rate in every session, instead of `idle`. Prompt counts decide idle only
+  until there are readings enough.
+- Ultra pace (`/pace ultra [plan] [turns] [floor..ceiling]`, `ultra off`, `ultra resume`): auto mode given a goal
+  instead of a checklist. The plan's `## Goal` holds the goal, its *Done when* lines and a `Check:` command, run by pace
+  as it was when the run started. Claude plans, works one step a turn red first, reviews the plan every 5 steps or on
+  `PACE: REPLAN`, and claims the goal with `PACE: GOAL`. Ticked steps are locked unless a revision line says why. It
+  stops on a passing check, 3 failed checks or 3 quiet reviews in a row, or 80 turns. A gear set by the tightest
+  quota (push, cruise, ease) picks the main thread's model (on a cold cache) and effort, the subagents' model and
+  how many run at once, and fans `(parallel)` steps out to background subagents in push. It shows under the band,
+  in the status-line entry and on the plan's timeline.
+- The plan's timeline scrolls instead of folding steps away. The pane draws every step, opens on the step under
+  way, and scrolls with the wheel or the arrows. The tmux sidebar follows the step under way until you scroll it:
+  arrows or j/k, PgUp/PgDn or space, Home/End or g/G, the mouse wheel; f follows again.
+- Usage pace cannot see (claude.ai, another machine) no longer makes a dollar look dearer: a span in which a quota
+  moved while no session here spent anything is left out of how much of it a dollar uses.
+- The rate is the quota's own movement in points an hour wherever its readings measure it: a least-squares fit
+  through the last 15 minutes of readings for the 5-hour window, the last 3 hours for a week. Burst, too fast,
+  `out in`, `→ % at reset` and auto mode's holds follow it. Before, the rate was the last hour's dollars (or
+  prompts) times an estimated cost, so a burst that had ended kept the rate high: auto mode held a fresh window at
+  10% as "gasses out in 1h 26m" while it moved 2 points in 7 minutes. The estimate from dollars and prompts still
+  fills in until there are readings enough.
+- `/pace auto burst` keeps auto mode going at full speed: it no longer holds while the rate would gas a quota out,
+  and a pacing hold under way ends at once. A quota already gassed out still holds until its reset. `/pace auto
+  burst off` brings the holds back. `PaceAuto` gains an optional `burst: true`.
+- Dollars a subagent earns on another model count toward that model's week, not the session's: the spend a cost
+  reading brings goes to the one model that answered since the last reading, and to none (every quota) when
+  several did.
+- `/pace auto` inside tmux sends its first prompt again. Opening the plan's sidebar ran after the prompt was
+  scheduled, so the prompt fired while the command still held the turn, was refused, and auto mode sat on turn 1.
 - Auto mode stops when Claude is waiting on you. Its instructions have Claude end with `PACE: BLOCKED <what it
   needs>` when it hands you a task or needs your feedback, and a turn that ends on a question with no `PACE:` line
   reads as blocked too, the question as its reason. Before, such a turn read as `PACE: NEXT` and pace prompted on
