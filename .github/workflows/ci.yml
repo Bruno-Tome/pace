@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The engine the tests run against. Bump it on purpose, so a change in the test kit shows up as its own commit.
+  CLAUDE_CODE_VERSION: 2.1.302
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install Claude Code
+        run: npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+      - name: Validate the plugin
+        run: claude plugin validate .
+      - name: Run the tests
+        run: claude plugin test .
+      # `tsc -p .` needs the engine's types in .claude-plugin/types, which Claude Code lays only when a session loads
+      # the plugin from this folder: it runs locally, before every change is called done.

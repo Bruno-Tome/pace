@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { PaceAuto } from '../types'
-import { stepsOf } from '../hooks/plan.ts'
+import { goalOf, lockBroken, planChanges, revisionsOf, stepsOf } from '../hooks/plan.ts'
 import { planFrame } from '../hooks/timeline.ts'
 import { planLines, type Line } from '../hooks/view.ts'
 import { NOW } from './world.ts'
@@ -35,6 +35,35 @@ describe('the plan timeline', () => {
 
   test('with auto mode not running no step is under way', () => {
     expect(stepsOf(PLAN, false).map(s => s.state)).toEqual(['done', 'done', 'next', 'next', 'next'])
+  })
+
+  test('the goal block reads as the goal, its criteria and its check, and none of it as steps', () => {
+    const md = [
+      '## Goal',
+      'pace ships 1.0 with CI green.',
+      'Done when:',
+      '- CI runs tsc, validate and test on every push',
+      '- CHANGELOG has a 1.0.0 section',
+      'Check: `tsc -p . && claude plugin test .`',
+      '## Steps',
+      '- [x] Write the CI workflow',
+      '- [ ] Bump plugin.json (parallel)',
+      '## Revisions',
+      '- [ ] not a step: the log is prose',
+    ].join('\n')
+    expect(goalOf(md)).toEqual({
+      text: 'pace ships 1.0 with CI green.',
+      criteria: ['CI runs tsc, validate and test on every push', 'CHANGELOG has a 1.0.0 section'],
+      check: 'tsc -p . && claude plugin test .',
+    })
+    const steps = stepsOf(md, true)
+    expect(steps.map(s => s.text)).toEqual(['Write the CI workflow', 'Bump plugin.json'])
+    expect(steps.map(s => s.parallel === true)).toEqual([false, true])
+  })
+
+  test('a plan with no goal block has no goal, and a goal with no check has a null check', () => {
+    expect(goalOf(PLAN)).toBeNull()
+    expect(goalOf('## Goal\nShip it.\n## Steps\n- [ ] one')).toEqual({ text: 'Ship it.', criteria: [], check: null })
   })
 
   test('a plan with no checklist has no steps', () => {
@@ -95,6 +124,41 @@ describe('the plan timeline', () => {
 
   test('a plan with no checklist says how to write one', () => {
     expect(draw('# Notes', null)).toContain('- [ ]')
+  })
+})
+
+describe('the plan\'s lock', () => {
+  const BEFORE = '## Steps\n- [x] Write the CI workflow\n- [x] Pin Node\n- [ ] Bump plugin.json\n- [ ] Tag it\n## Revisions\n- turn 3 · added "Pin Node"'
+
+  test('names the steps added, dropped, reopened, and done ones rewritten or removed', () => {
+    // CI workflow unticked, Pin Node reworded, Tag it dropped, Push it added
+    const after = '## Steps\n- [ ] Write the CI workflow\n- [x] Pin Node 22\n- [ ] Bump plugin.json\n- [ ] Push it\n## Revisions\n- turn 3 · added "Pin Node"'
+    expect(planChanges(BEFORE, after)).toEqual({
+      added: ['Pin Node 22', 'Push it'],
+      dropped: ['Tag it'],
+      reopened: ['Write the CI workflow'],
+      rewrittenDone: ['Pin Node'],
+    })
+  })
+
+  test('ticking a step and adding one keep the lock', () => {
+    const after = BEFORE.replace('- [ ] Bump plugin.json', '- [x] Bump plugin.json\n- [ ] Push it')
+    const changes = planChanges(BEFORE, after)
+    expect(changes).toEqual({ added: ['Push it'], dropped: [], reopened: [], rewrittenDone: [] })
+    expect(lockBroken(changes, false)).toEqual([])
+  })
+
+  test('a ticked step unticked, rewritten or removed breaks the lock unless a revision line logs it', () => {
+    const after = BEFORE.replace('- [x] Write the CI workflow', '- [ ] Write the CI workflow').replace('- [x] Pin Node\n', '')
+    const changes = planChanges(BEFORE, after)
+    expect(lockBroken(changes, false)).toEqual(['Write the CI workflow', 'Pin Node'])
+    expect(lockBroken(changes, true)).toEqual([])
+  })
+
+  test('counts the revision log\'s lines, so the shell can tell whether it grew', () => {
+    expect(revisionsOf(BEFORE)).toBe(1)
+    expect(revisionsOf(`${BEFORE}\n- turn 9 · reopened "Write the CI workflow": the check failed`)).toBe(2)
+    expect(revisionsOf(PLAN)).toBe(0)
   })
 })
 

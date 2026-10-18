@@ -55,6 +55,17 @@ test('on pace mode keeps an idle cache warm with no warm mode of your own', asyn
   expect(forks.length).toBe(1)
 })
 
+test('a subagent starting a turn of its own does not keep the cache from being kept warm', async ($, on) => {
+  const { clock, forks } = world(on)
+  await start($)
+  await pace($, 'on')
+  await reply($, 100_000)
+  // A background subagent starts after the main turn ended; its turn ends without pace hearing of the main thread
+  await $.turn.start({ turnId: 'sub', agentId: 'a1', prompt: 'search' } as any)
+  await clock.advance(51 * 60_000)
+  expect(forks.length).toBe(1)
+})
+
 test('auto mode asks first: the onboarding pane says what it does and that it spends quota on its own', async ($, on) => {
   const { opens, submitted, clock } = world(on)
   await start($)
@@ -129,6 +140,34 @@ test('auto mode holds while a quota is gassed out and picks the plan back up aft
   await usage($, 0, NOW + 6 * H)
   await clock.advance(32 * 60_000)
   expect(submitted.length).toBe(2)
+})
+
+test('a hold that ends during a turn of your own sends nothing on top of it: the turn\'s end decides', async ($, on) => {
+  const { submitted, clock } = world(on)
+  await start($)
+  await pace($, 'auto ROADMAP.md')
+  await onboard($, clock)
+  await usage($, 100, NOW + H)
+  await turnEnds($, 'PACE: NEXT')
+  expect(submitted.length).toBe(1)
+  await usage($, 0, NOW + 6 * H)
+  // You type a prompt while auto mode holds; the hold ends while that turn runs
+  await $.turn.start({ turnId: 'mine', prompt: 'how is it going?' } as any)
+  await clock.advance(62 * 60_000)
+  expect(submitted.length).toBe(1)
+  await turnEnds($, 'It is going well.')
+  expect(submitted.length).toBe(2)
+})
+
+test('auto mode stops and tells you when Claude ends a turn waiting on you', async ($, on) => {
+  const { submitted, notices, clock } = world(on)
+  await start($)
+  await pace($, 'auto ROADMAP.md')
+  await onboard($, clock)
+  await turnEnds($, 'The deploy needs a token.\nCan you add DEPLOY_TOKEN to .env?')
+  await clock.advance(60_000)
+  expect(submitted.length).toBe(1)
+  expect(notices.some(n => n.includes('waiting on you'))).toBe(true)
 })
 
 test('an interrupt pauses auto mode until /pace auto resume', async ($, on) => {
@@ -218,6 +257,17 @@ test('a resumed session picks its own run back up', async ($, on) => {
   stored['session:session-a'] = { at: NOW - H, onPace: true, auto: { plan: 'ROADMAP.md', turns: 5, max: 40 } }
   await start($)
   await turnEnds($, 'step five\nPACE: NEXT')
+  expect(submitted.length).toBe(1)
+  expect(submitted[0]).toContain('ROADMAP.md')
+})
+
+test('a resumed session whose run was holding picks the plan back up when the hold ends', async ($, on) => {
+  const { submitted, stored, clock } = world(on)
+  // Held for 10 more minutes when the session was resumed
+  stored['session:session-a'] = { at: NOW - H, onPace: true, auto: { plan: 'ROADMAP.md', turns: 5, max: 40, heldUntil: NOW + 10 * 60_000, why: 'Pacing' } }
+  await start($)
+  expect(submitted).toEqual([])
+  await clock.advance(11 * 60_000)
   expect(submitted.length).toBe(1)
   expect(submitted[0]).toContain('ROADMAP.md')
 })

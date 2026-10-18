@@ -297,10 +297,10 @@ export function appendSample(list: readonly PaceSample[], s: PaceSample): PaceSa
 /** A stored reading in the shape pace writes, its malformed quotas left out; null when nothing of it is */
 function wellFormed(s: unknown): PaceSample | null {
   const x = s as { at?: unknown; quotas?: unknown } | null
-  if (!x || typeof x.at !== 'number' || !x.quotas || typeof x.quotas !== 'object') return null
+  if (!x || typeof x.at !== 'number' || !Number.isFinite(x.at) || !x.quotas || typeof x.quotas !== 'object') return null
   const quotas: Record<string, PaceReading> = {}
   for (const [k, r] of Object.entries(x.quotas as Record<string, PaceReading | null>)) {
-    if (r && typeof r.percent === 'number' && (r.resetsAt == null || typeof r.resetsAt === 'number')) quotas[k] = r
+    if (r && Number.isFinite(r.percent) && (r.resetsAt == null || Number.isFinite(r.resetsAt))) quotas[k] = r
   }
   return Object.keys(quotas).length ? { at: x.at, quotas } : null
 }

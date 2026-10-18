@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Auto mode stops when Claude is waiting on you. Its instructions have Claude end with `PACE: BLOCKED <what it
+  needs>` when it hands you a task or needs your feedback, and a turn that ends on a question with no `PACE:` line
+  reads as blocked too, the question as its reason. Before, such a turn read as `PACE: NEXT` and pace prompted on
+  while you were away.
+- The contract adds ultra pace's shapes, ahead of the mode itself: `PaceAuto` gains an optional `ultra: PaceUltra`
+  (the goal, its check, the phase, the counters for its guards, the model bounds, the gear, any subagents out on
+  a fan-out and a review owed through a hold) and `PaceGear` (model, effort, subagents, their model, fan-out). A run stored without it, or with one
+  that does not parse, reads as plain auto mode.
+- The plan's timeline reads no steps from a `## Goal` or `## Revisions` section, and drops a step's `(parallel)`
+  mark from its text. A step in the window's state file (`~/.claude/pace-state.json`) adds an optional
+  `parallel: true` when it carries the mark.
 - The `/pace` split shows the new modes and the roadmap: auto mode's run or on pace mode under its title, with
   `effort a level lighter` while the rate would run a quota out, and the plan's timeline (auto mode's plan, the one
   `/pace plan` named, or `ROADMAP.md`) under the charts when it has a checklist. The window's state file
@@ -40,6 +51,13 @@
 - Auto mode no longer prompts turns that only wait. Claude ends a turn with `PACE: WAITING <what>` while background
   work runs, and pace sends nothing until a turn of its own starts or 15 minutes pass. Two turns in a row that move
   neither the plan nor the handoff file stop the prompting, with waits of 5, 10, 20 and 30 minutes.
+- A context whose window is not known reads its size alone (`context 180k`) instead of `Infinity%`, and no longer
+  reads as heavy: auto mode stops handing off on every turn and on pace mode stops compacting it.
+- A rate limit reported without a percent, or a stored reading of `NaN` or `Infinity`, is dropped instead of read
+  as on pace.
+- Auto mode's hold ending during a turn of your own sends nothing on top of it: that turn's end decides. A
+  resumed session whose run was holding picks the plan back up when the hold ends.
+- A subagent starting a turn of its own no longer keeps warm mode and on pace mode from keeping the cache warm.
 - `/pace line off` clears the status-line entry after a hot reload too: a freshly loaded module says its entry
   once instead of assuming none is shown.
 - Each quota shows where your rate takes it: the percent it lands at by its reset (`→ 71% at reset`), or when it

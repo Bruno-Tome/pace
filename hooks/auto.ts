@@ -28,21 +28,29 @@ const STALL_LIMIT = 2
 const STALL_WAIT = 5 * MIN
 const STALL_WAIT_MAX = 30 * MIN
 
-export type Marker = { kind: 'next' | 'done' | 'blocked' | 'waiting'; reason?: string }
+/** `goal` and `replan` are ultra pace's: the goal claimed, a review asked for; auto mode reads them as `next` */
+export type Marker = { kind: 'next' | 'done' | 'blocked' | 'waiting' | 'goal' | 'replan'; reason?: string }
 
-/** How the turn says it ended: its last `PACE:` line, `next` when it has none */
+/**
+ * How the turn says it ended: its last `PACE:` line. With none, a turn that ends on a question is waiting on the
+ * user, who is away: blocked, the question its reason. Any other is `next`.
+ */
 export function markerOf(answer: string): Marker {
-  const lines = [...answer.matchAll(/^PACE: (NEXT|DONE|BLOCKED|WAITING)\b[ \t]*(.*)$/gm)]
+  const lines = [...answer.matchAll(/^PACE: (NEXT|DONE|BLOCKED|WAITING|GOAL|REPLAN)\b[ \t]*(.*)$/gm)]
   const m = lines[lines.length - 1]
-  if (!m) return { kind: 'next' }
+  if (!m) {
+    const last = answer.trim().split('\n').pop()!.trim()
+    return last.endsWith('?') ? { kind: 'blocked', reason: `Claude is waiting on you: ${last}` } : { kind: 'next' }
+  }
   const kind = m[1]!.toLowerCase() as Marker['kind']
-  return (kind === 'blocked' || kind === 'waiting') && m[2] ? { kind, reason: m[2].trim() } : { kind }
+  return (kind === 'blocked' || kind === 'waiting' || kind === 'replan') && m[2] ? { kind, reason: m[2].trim() } : { kind }
 }
 
 /** How long to wait after `stalls` turns in a row without progress: 5 minutes, doubling, at most half an hour */
 const stallWait = (stalls: number) => Math.min(STALL_WAIT_MAX, STALL_WAIT * 2 ** (stalls - STALL_LIMIT))
 
-const fill = (s: PaceSnapshot) => (s.cache ? s.cache.tokens / s.cache.window : 0)
+/** How full the context is, 0–1; 0 when its window is not known, which would read as full */
+const fill = (s: PaceSnapshot) => (s.cache && s.cache.window > 0 ? s.cache.tokens / s.cache.window : 0)
 
 /** `stalls`: turns in a row without progress, carried to the next decision */
 export type Decision =
@@ -116,6 +124,7 @@ export function protocol(): string {
     'You are working through a plan with no one at the keyboard. pace sends the next prompt after each turn.',
     '- Do one step of the plan per turn, then stop. Tick it off in the plan file when it is done.',
     '- Never wait for the user. Where you would ask, take the recommended option and say which you took.',
+    '- When you hand the user a task or need their feedback (a decision only they can make, a credential, an action on their machine or an account), end the turn with `PACE: BLOCKED <what you need>`: pace stops and tells them. Never end a turn on a question.',
     `- Before ending each turn, update ${HANDOFF_FILE}: what is done, what is next, and the facts a fresh session needs (files, commands, decisions). pace may clear the context and resume from it.`,
     '- Use subagents for work that does not need the main thread: searches, reading many files, mechanical edits, test runs. Give them a lighter model (haiku for search and reads, sonnet for routine edits) and keep the main thread for decisions.',
     '- Never poll background work (a shell, a subagent, CI). When the next step waits on it, end the turn with `PACE: WAITING <what>`: pace sends nothing, and Claude Code starts your next turn when it reports.',

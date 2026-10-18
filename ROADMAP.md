@@ -28,19 +28,19 @@ changelog updated, and the step ticked here. Steps marked **(needs you)** wait f
 - [x] **File paths in one place.** One constants block for `pace-row.txt`, `pace-state.json`, `pace-keys.json`
       and `pace-view.command`, shared with `bin/viewer.ts`.
 
-## 3. Docs
+## 3. Release
+
+- [x] **CI.** A GitHub Actions workflow running `tsc -p .`, and `claude plugin validate .` and
+      `claude plugin test .` if the CLI runs headless there. Write the workflow; pushing it is **(needs you)**.
+      Done as validate and test on a pinned Claude Code; `tsc` stays local, since the engine lays its types only
+      when a session loads the plugin.
+- [ ] **1.0.0.** Bump `plugin.json`, move *Unreleased* in `CHANGELOG.md` under `1.0.0`, tag `v1.0.0`.
+      **(needs you)** for the tag and the push.
+
+## 4. Docs
 
 - [x] **Platform table** in both READMEs: the band, the status line and the pane work anywhere Claude Code runs;
       the tmux split needs tmux and Node 23.6+; `/pace window` is macOS-only.
-- [ ] **Screenshots or an asciinema clip** of the band, the window in two columns, a focused chart and auto
-      mode's pane. **(needs you)**
-
-## 4. Release
-
-- [ ] **CI.** A GitHub Actions workflow running `tsc -p .`, and `claude plugin validate .` and
-      `claude plugin test .` if the CLI runs headless there. Write the workflow; pushing it is **(needs you)**.
-- [ ] **1.0.0.** Bump `plugin.json`, move *Unreleased* in `CHANGELOG.md` under `1.0.0`, tag `v1.0.0`.
-      **(needs you)** for the tag and the push.
 
 ## 5. Next
 
@@ -49,6 +49,44 @@ changelog updated, and the step ticked here. Steps marked **(needs you)** wait f
       the ratio.
 - [ ] **Auto mode in a live session.** Run it on a real plan, watch the handoffs and holds, and tune the
       thresholds (heavy at 60%, cold-and-large at 100k tokens, 15-minute pacing holds). **(needs you)** to watch.
+
+## 6. Ultra pace
+
+Auto mode given a goal instead of a checklist: the agent owns the plan, works until the goal's check passes, and
+spends the quota at the pace it allows. The design, every rule and the contract are in
+[`.agents/ultra-pace.md`](.agents/ultra-pace.md); read it before any step here.
+
+- [x] **The goal block.** `goalOf(markdown)` in `plan.ts` answers `{ text, criteria, check } | null` from `## Goal`;
+      `stepsOf` skips `Goal` and `Revisions`, and reads `(parallel)` on a step.
+- [x] **Plan changes and the lock.** `planChanges(before, after)` and `lockBroken(changes, revisionsGrew)` in
+      `plan.ts`: a ticked step unticked, rewritten or dropped with no new revision line breaks the lock.
+- [x] **Two new markers.** `PACE: GOAL` and `PACE: REPLAN <why>` in `markerOf`.
+- [x] **The contract.** `PaceUltra` and `PaceGear` in `types/index.d.ts`, additive, read back safely from prefs
+      without them; the changelog under *Unreleased*.
+- [x] **Headroom.** `headroomOf(snap, model)` in a new `throttle.ts`: `push`, `cruise`, `ease` or `hold` from the
+      tightest quota the model draws on, read from the existing status and rate verdicts.
+- [x] **The gear.** `gearFor(headroom, bounds, current)`: model, effort, subagents, subagent model and fan-out per
+      headroom, inside the user's floor and ceiling, with hysteresis (2 decisions to go up, one notch at a time; down
+      at once), and the model held until the cache is cold.
+- [x] **The ultra decision.** `decideUltra` in a new `ultra.ts`: defers to `decide()`, then the phases (`plan`, `work`,
+      `review`, `verify`), the review triggers, `check` and its result, the three guards, the gear carried forward.
+- [x] **Fan-out in the decision.** `fanout` for `(parallel)` steps in `push`, `wait` until every subagent reported,
+      then `integrate`.
+- [x] **Prompts and protocol.** `planPrompt`, `reviewPrompt(reason, tail)`, `verifyPrompt`, `integratePrompt`,
+      `fanoutPrompt(goal, step)`, the gear line beside `pacingNote`, and `ultraProtocol()` as fixed text.
+- [x] **The shell: start and stop.** `/pace ultra [plan] [turns] [floor..ceiling]` and `/pace ultra resume`; no start
+      without a goal; the check captured at start; the onboarding pane's ultra lines; the system section swapped.
+- [ ] **The shell: carry out decisions.** `check` through `$.process.run` with a timeout, `fanout` through
+      `$.agent.spawn`, the handoff carrying goal, phase and gear. Extend `tests/world.ts` where it lacks a fake.
+- [ ] **The shell: apply the gear.** `turn.step` sets the main thread's model (cold cache only) and effort;
+      `agent.spawn` sets subagent models and denies spawns beyond the gear's count.
+- [ ] **Surfaces.** The goal and phase on the timeline, steps out on subagents marked; the band and status-line
+      entry (`ultra · push · opus xhigh · 3 agents`).
+- [ ] **Docs.** A README section on ultra pace (the goal block, the check, the throttle, what it costs) and the
+      changelog.
+- [ ] **A live run.** Ultra pace on a small real goal over one 5-hour window: watch the gear move, the reviews, a
+      failed check and a fan-out, then tune `REVIEW_EVERY`, the guard limits and the headroom thresholds.
+      **(needs you)**
 
 ## Later
 

@@ -67,6 +67,8 @@ rate.ts         the prompting rate; bar and sparkline primitives
 spend.ts        the shared spend; pacing in dollars an hour
 cache.ts        the prompt cache's timer and the next prompt's cost
 auto.ts         auto mode and on pace mode, as decisions the shell carries out
+throttle.ts     ultra pace's headroom and the gear it allows
+ultra.ts        ultra pace, as decisions on top of auto mode's
 alerts.ts       warnings, keyed so each is said once per window
 files.ts        the files pace writes in ~/.claude, shared with bin/viewer.ts
 view.ts         every drawing as lines of styled segments

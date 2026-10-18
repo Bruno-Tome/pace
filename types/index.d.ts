@@ -18,7 +18,37 @@ export type PaceWarmMode = 'off' | 'compact' | 'ping'
  * Auto mode's run: the plan file, the turns taken and allowed; while it holds or waits, until when and why; and the
  * turns in a row that made no progress
  */
-export type PaceAuto = { plan: string; turns: number; max: number; heldUntil?: number; waitingUntil?: number; why?: string; paused?: boolean; stalls?: number }
+export type PaceAuto = { plan: string; turns: number; max: number; heldUntil?: number; waitingUntil?: number; why?: string; paused?: boolean; stalls?: number; ultra?: PaceUltra }
+
+/** How hard ultra pace drives: the main thread's model and effort, how many subagents on which model, fan-out on */
+export type PaceGear = {
+  model: string
+  effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+  subagents: number
+  subagentModel: string
+  fanout: boolean
+}
+
+/**
+ * Ultra pace on top of an auto mode run: a goal instead of a checklist, worked until `check` passes (or, with no
+ * check, until the goal is verified). `sinceReview`: work turns since the last review; `quietReviews`: reviews in a
+ * row with no new tick; `checkFails`: failed checks in a row; `models`: the user's bounds on the gear's model;
+ * `headroomStreak`: decisions in a row the headroom has pointed away from the gear; `fanout`: subagents out on
+ * `(parallel)` steps; `due`: a review owed while auto mode holds or waits, with the check's output when it failed
+ */
+export type PaceUltra = {
+  goal: string
+  check: string | null
+  phase: 'plan' | 'work' | 'fanout' | 'integrate' | 'review' | 'verify'
+  sinceReview: number
+  quietReviews: number
+  checkFails: number
+  models: { floor: string; ceiling: string }
+  gear: PaceGear
+  headroomStreak: number
+  fanout?: { agentIds: string[]; steps: string[] }
+  due?: { reason: string; tail?: string }
+}
 
 /**
  * What is shown (the band above the prompt, the status-line entry), warm mode, on pace mode (keeps a long-running

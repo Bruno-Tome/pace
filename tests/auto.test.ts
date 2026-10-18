@@ -34,6 +34,12 @@ describe('auto mode', () => {
     expect(markerOf('no marker at all')).toEqual({ kind: 'next' })
   })
 
+  test('reads ultra pace\'s markers: a turn that claims the goal, and one that asks for a review with its reason', () => {
+    expect(markerOf('Every criterion holds.\nPACE: GOAL')).toEqual({ kind: 'goal' })
+    expect(markerOf('PACE: REPLAN the parser needs splitting first')).toEqual({ kind: 'replan', reason: 'the parser needs splitting first' })
+    expect(markerOf('PACE: REPLAN')).toEqual({ kind: 'replan' })
+  })
+
   test('reads a turn that waits on background work', () => {
     expect(markerOf('Started the suite.\nPACE: WAITING the test run')).toEqual({ kind: 'waiting', reason: 'the test run' })
   })
@@ -107,6 +113,15 @@ describe('auto mode', () => {
     expect(decide({ auto: AUTO, snap: cold, answer: '', aborted: false }).kind).toBe('handoff')
   })
 
+  test('a context with no known window is not heavy: no handoff on every turn, no compaction', () => {
+    // A warm context of 20k tokens whose window came through as 0, or not at all
+    for (const window of [0, undefined as unknown as number]) {
+      const s = snap({ cache: { ...snap().cache!, tokens: 20_000, window } })
+      expect(decide({ auto: AUTO, snap: s, answer: '', aborted: false }).kind).toBe('continue')
+      expect(upkeep(s)).toBeNull()
+    }
+  })
+
   test('its instructions are fixed text, so the system prompt stays cached', () => {
     expect(protocol()).toBe(protocol())
     expect(protocol()).toMatch(/PACE: NEXT/)
@@ -167,5 +182,24 @@ describe('effort in a burst', () => {
 
   test('leaves the effort alone when too fast has no run-out behind it yet', () => {
     expect(effortFor(snap({ quotas: [quota({ status: 'over', rate: { ...quota().rate, level: 'fast', emptyIn: null } })] }), 'high')).toBe('high')
+  })
+})
+
+describe('a turn left waiting on the user', () => {
+  test('a turn that ends on a question with no PACE line is blocked on you, with the question as its reason', () => {
+    expect(markerOf('I found two options.\nShould I use Postgres or SQLite?')).toEqual({ kind: 'blocked', reason: 'Claude is waiting on you: Should I use Postgres or SQLite?' })
+    // A statement with no marker still goes on, and a marker after a question wins
+    expect(markerOf('Did step 2.')).toEqual({ kind: 'next' })
+    expect(markerOf('Should I add docs? I added them.\nPACE: NEXT')).toEqual({ kind: 'next' })
+  })
+
+  test('auto mode stops there rather than prompting on', () => {
+    const d = decide({ auto: AUTO, snap: snap(), answer: 'Can you add the API key to .env?', aborted: false })
+    expect(d.kind).toBe('stop')
+    expect('why' in d && d.why).toContain('waiting on you')
+  })
+
+  test('its instructions say to end with PACE: BLOCKED when it hands you a task or needs your feedback', () => {
+    expect(protocol()).toMatch(/hand the user a task or need their feedback[^\n]*PACE: BLOCKED/)
   })
 })

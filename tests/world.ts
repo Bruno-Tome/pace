@@ -53,6 +53,7 @@ export function world(on: any, env: Record<string, string> = {}, usage: unknown 
   on('command.run', { command: 'clear' }, () => { commands.push('clear'); return { text: '' } as any })
   const notices: string[] = []
   on('ui.notify', (_$: unknown, e: { text: string }) => { notices.push(e.text); return { value: { isSent: true, channel: 'terminal_bell' } } })
+  on('turn.start', (_$: unknown, e: unknown) => e as any)
   on('turn.complete', (_$: unknown, e: { answer: string }) => ({ text: e.answer }))
   on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are Claude.', scope: 'shared' }] }) as any)
   const forks: string[] = []

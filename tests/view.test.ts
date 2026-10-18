@@ -34,6 +34,12 @@ test('the window says how old its figures are', () => {
   expect(plain(screen(STATE, NOW + 3 * 60_000, 100, 40))).toContain('updated 3m ago')
 })
 
+test('a context whose window is not known says its size alone, never Infinity%', () => {
+  const text = plain(screen({ ...STATE, cache: { ...STATE.cache!, window: 0 } }, NOW, 100, 40))
+  expect(text).toContain('context 180k ·')
+  expect(text).not.toMatch(/Infinity|NaN/)
+})
+
 const braille = (lines: string[]) => lines.filter(l => /[⠁-⣿]/.test(l)).length
 
 test('a terminal over 180 columns puts the 5-hour and weekly charts side by side', () => {

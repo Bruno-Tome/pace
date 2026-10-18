@@ -141,7 +141,7 @@ export function adviceOf(s: Snapshot, now: number): Suggestion[] {
     cache: s.cache,
     now,
     warm: s.warm,
-    contextPercent: s.cache ? Math.round((s.cache.tokens / s.cache.window) * 100) : undefined,
+    contextPercent: s.cache && s.cache.window > 0 ? Math.round((s.cache.tokens / s.cache.window) * 100) : undefined,
     fast: priced && worst.r.level === 'fast' ? { name: Q.theName(worst.row.name), emptyIn: worst.r.emptyIn, slowTo: budgetText(worst.r) } : undefined,
     burst: priced && worst.r.level === 'burst' ? { name: Q.theName(worst.row.name), emptyIn: worst.r.emptyIn } : undefined,
     weeklyOverPace: over ? Q.modelName(over.key, over.reading?.name) : undefined,

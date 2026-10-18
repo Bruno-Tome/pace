@@ -16,15 +16,17 @@
 import { atom, read, update } from 'claude-code'
 import type { ElementConstructor, EngineInterface as Engine, Register, RenderElement, RenderInput, TextProps } from 'claude-code'
 
-import type { Pace, PaceAuto, PaceCacheInfo, PaceCacheTtl, PaceSnapshot, PacePrefs, PaceReading, PaceSample, PaceSpend, PaceWarmMode } from '../types'
+import type { Pace, PaceAuto, PaceCacheInfo, PaceCacheTtl, PaceGear, PaceSnapshot, PacePrefs, PaceReading, PaceSample, PaceSpend, PaceUltra, PaceWarmMode } from '../types'
 import { alertsOf } from './alerts.ts'
 import { KEYS_FILE, planFeedFile, ROW_FILE, STATE_FILE, VIEW_FILE } from './files.ts'
 import { isSessionKey, isStale, prefsFrom, sessionKey, sessionOf, sharedOf } from './prefs.ts'
-import { answerQuestions, continuePrompt, decide, effortFor, forModel, HANDOFF_FILE, protocol, startPrompt, upkeep, warmModeFor, type Decision } from './auto.ts'
+import { answerQuestions, continuePrompt, decide, effortFor, forModel, HANDOFF_FILE, pacingNote, protocol, startPrompt, upkeep, warmModeFor, type Decision } from './auto.ts'
 import { addPrice, priceOf, replyEquivalents, ttlSeconds, warmAction } from './cache.ts'
 import { snapshotOf, type Snapshot } from './model.ts'
 import * as Q from './quota.ts'
-import { stepsOf } from './plan.ts'
+import { goalOf, stepsOf } from './plan.ts'
+import { startingGear } from './throttle.ts'
+import { gearNote, planPrompt, ultraProtocol, workPrompt } from './ultra.ts'
 import type { PlanFeed } from './timeline.ts'
 import { mergeModelPrompts, mergePrompts } from './rate.ts'
 import { addSpend, mergeSpend } from './spend.ts'
@@ -299,7 +301,7 @@ async function addSample($: Engine, s: PaceSample): Promise<void> {
 async function recordRateLimits($: Engine, list: readonly RateLimitLike[] | undefined): Promise<void> {
   const quotas: Record<string, PaceReading> = {}
   for (const rl of list ?? []) {
-    if (rl.kind !== 'five_hour' && rl.kind !== 'seven_day') continue
+    if ((rl.kind !== 'five_hour' && rl.kind !== 'seven_day') || !Number.isFinite(rl.percentUsed)) continue
     const r = rl.resetsAt ? Date.parse(rl.resetsAt) : NaN
     quotas[rl.kind] = { percent: Math.min(Math.max(rl.percentUsed, 0), 100), ...(Number.isFinite(r) ? { resetsAt: r } : {}) }
   }
@@ -485,8 +487,14 @@ const PLAN_PANE = 'pace-plan'
 const SIDEBAR_COLUMNS = 46
 /** Turns auto mode takes before it stops to let the person look */
 const AUTO_TURNS = 40
-/** A plan waiting on the onboarding pane's Start */
-let pendingPlan: { plan: string; max: number } | null = null
+/** Turns ultra pace takes before it stops: more than auto mode, since it plans and reviews as well as works */
+const ULTRA_TURNS = 80
+/** The model ultra pace drops to at its lightest, unless told otherwise */
+const ULTRA_FLOOR = 'sonnet'
+/** A plan waiting on the onboarding pane's Start, and ultra pace's run on it */
+let pendingPlan: { plan: string; max: number; ultra?: PaceUltra } | null = null
+/** The effort the main loop last asked for: the user's, which ultra pace's cruise gear keeps */
+let lastEffort: PaceGear['effort'] = 'high'
 /** The pending end of a hold or a wait: one at a time */
 let holdTimer: { cancel: () => void } | undefined
 /** The session's working directory, where a plan's relative path starts */
@@ -506,7 +514,7 @@ async function setAuto($: Engine, auto: PaceAuto | null): Promise<void> {
 }
 
 /** Auto mode's run, without a hold, a wait or a pause */
-const running = (a: PaceAuto): PaceAuto => ({ plan: a.plan, turns: a.turns, max: a.max, ...(a.stalls ? { stalls: a.stalls } : {}) })
+const running = (a: PaceAuto): PaceAuto => ({ plan: a.plan, turns: a.turns, max: a.max, ...(a.stalls ? { stalls: a.stalls } : {}), ...(a.ultra ? { ultra: a.ultra } : {}) })
 
 /** A file's text, its path relative to the session's working directory; empty when it is not there */
 async function fileText($: Engine, path: string): Promise<string> {
@@ -532,11 +540,13 @@ async function submitSoon($: Engine, text: string): Promise<void> {
   timers.push($.clock.after(0, () => { void $.prompt.submit({ text }).catch(() => {}) }))
 }
 
-async function startAuto($: Engine, plan: string, max: number): Promise<void> {
-  await setPrefs($, p => ({ ...p, onPace: true, auto: { plan, turns: 1, max } }))
+async function startAuto($: Engine, plan: string, max: number, ultra?: PaceUltra): Promise<void> {
+  await setPrefs($, p => ({ ...p, onPace: true, auto: { plan, turns: 1, max, ...(ultra ? { ultra } : {}) } }))
   progressMark = await progressText($, plan).catch(() => null)
-  await tell($, `Auto mode on: works through ${plan} on its own and spends quota while you are away. /pace auto off stops it.`)
-  await submitSoon($, startPrompt(plan))
+  await tell($, ultra
+    ? `Ultra pace on: works toward the goal in ${plan} on its own and spends quota while you are away. /pace ultra off stops it.`
+    : `Auto mode on: works through ${plan} on its own and spends quota while you are away. /pace auto off stops it.`)
+  await submitSoon($, ultra ? planPrompt(plan) : startPrompt(plan))
   planShown = null
   try { await openPlan($) } catch {}
 }
@@ -647,6 +657,8 @@ async function endHold($: Engine): Promise<void> {
   const auto = await autoOf($)
   if (!auto || (auto.heldUntil == null && auto.waitingUntil == null) || auto.paused) return
   await setAuto($, running(auto))
+  // A turn under way ends by deciding: prompting now would land on top of it
+  if (working) return
   await refreshAll($)
   await act($, decide({ auto: running(auto), snap: published!, answer: '', aborted: false, model: await modelOf($) }))
 }
@@ -670,9 +682,16 @@ async function afterTurn($: Engine, answer: string, aborted: boolean): Promise<v
 function drawOnboarding($: Engine, e: RenderInput<'Pane'>): RenderElement {
   const { Box, Text, Button } = $.ui.resolve(e)
   const plan = pendingPlan?.plan ?? 'the plan'
-  const lines = [
+  const u = pendingPlan?.ultra
+  const lines = u ? [
+    `Ultra pace works toward the goal in ${plan} with no one at the keyboard: ${u.goal}`,
+    '• Claude writes the steps, works them red first, reviews the plan every few steps and revises it, logging each change',
+    u.check ? `• it stops once the goal's check passes: ${u.check}, run by pace as it is now` : '• with no Check: line, Claude verifies each Done when line against the code before it stops',
+    `• it spends faster while a quota is under pace: a stronger model (up to ${u.models.ceiling}), more thinking, subagents in parallel; lighter (down to ${u.models.floor}) while one is over`,
+    `• it holds while a quota is gassed out or the rate would gas one out, and stops after ${pendingPlan?.max ?? ULTRA_TURNS} turns, 3 failed checks or 3 reviews in a row with nothing done`,
+  ] : [
     `Auto mode works through ${plan} with no one at the keyboard:`,
-    `• after each turn pace sends the next prompt, until Claude says PACE: DONE or BLOCKED, or after ${pendingPlan?.max ?? AUTO_TURNS} turns`,
+    `• after each turn pace sends the next prompt, until Claude says PACE: DONE or BLOCKED, ends a turn waiting on you, or after ${pendingPlan?.max ?? AUTO_TURNS} turns`,
     "• it answers Claude's questions with the recommended option",
     '• it has Claude hand searches and routine edits to subagents on lighter models, and hands a heavy context off to a fresh one through .pace/handoff.md',
     '• it holds while the rate would get a quota gassed out, and while one is gassed out, until it resets',
@@ -681,14 +700,14 @@ function drawOnboarding($: Engine, e: RenderInput<'Pane'>): RenderElement {
   return (
     <Box flexDirection="column">
       {lines.map((l, i) => <Text key={`pace-auto-${i}`}>{l}</Text>)}
-      <Text key="pace-auto-cost" color="warning" bold>It spends quota on its own while you are away. Watch the band; /pace auto off stops it.</Text>
+      <Text key="pace-auto-cost" color="warning" bold>{`It spends quota on its own while you are away. Watch the band; /pace ${u ? 'ultra' : 'auto'} off stops it.`}</Text>
       <Box key="pace-auto-buttons">
         <Button key="pace-auto-start" label="Start" hotkey="s" variant="primary" onPress={async () => {
           const p = pendingPlan
           pendingPlan = null
           await setPrefs($, x => ({ ...x, onboarded: true }))
           await $.ui.close({ id: AUTO_PANE })
-          if (p) await startAuto($, p.plan, p.max)
+          if (p) await startAuto($, p.plan, p.max, p.ultra)
         }} />
         <Button key="pace-auto-cancel" label="Cancel" hotkey="c" onPress={async () => {
           pendingPlan = null
@@ -708,6 +727,7 @@ async function modeCommand($: Engine, raw: string): Promise<string | null> {
       ? 'On pace mode on: compacts a heavy context while its cache is warm, keeps an idle cache warm, and warns before a quota gasses out'
       : 'On pace mode off'
   }
+  if (arg === 'ultra' || arg.startsWith('ultra ')) return ultraCommand($, raw.slice(5).trim())
   if (arg !== 'auto' && !arg.startsWith('auto ')) return null
   const rest = raw.slice(4).trim()
   if (rest.toLowerCase() === 'off') {
@@ -715,13 +735,7 @@ async function modeCommand($: Engine, raw: string): Promise<string | null> {
     await setAuto($, null)
     return 'Auto mode off'
   }
-  if (rest.toLowerCase() === 'resume') {
-    const auto = await autoOf($)
-    if (!auto) return 'Auto mode is not running: /pace auto <plan file> starts it'
-    await setAuto($, { ...running(auto), turns: auto.turns + 1, max: auto.turns >= auto.max ? auto.turns + AUTO_TURNS : auto.max })
-    await submitSoon($, continuePrompt(auto.plan, forModel(published ?? snapshotOf(await snapshot($), await $.clock.now()), await modelOf($))))
-    return `Auto mode resumed: ${auto.plan}`
-  }
+  if (rest.toLowerCase() === 'resume') return resumeAuto($)
   const m = /^(\S+)(?:\s+(\d+))?$/.exec(rest || DEFAULT_PLAN)
   if (!m) return 'Use /pace auto [plan file] [turns], /pace auto off or /pace auto resume'
   const plan = m[1]!
@@ -735,6 +749,46 @@ async function modeCommand($: Engine, raw: string): Promise<string | null> {
   return `Auto mode on: ${plan}`
 }
 
+/** `/pace auto resume` and `/pace ultra resume`: a paused or finished run picks back up, with more turns if it ran out */
+async function resumeAuto($: Engine): Promise<string> {
+  const auto = await autoOf($)
+  if (!auto) return 'Auto mode is not running: /pace auto <plan file> starts it'
+  const more = auto.ultra ? ULTRA_TURNS : AUTO_TURNS
+  await setAuto($, { ...running(auto), turns: auto.turns + 1, max: auto.turns >= auto.max ? auto.turns + more : auto.max })
+  const snap = forModel(published ?? snapshotOf(await snapshot($), await $.clock.now()), await modelOf($))
+  await submitSoon($, auto.ultra ? `${workPrompt(auto.plan)}${pacingNote(snap)}${gearNote(auto.ultra.gear)}` : continuePrompt(auto.plan, snap))
+  return `${auto.ultra ? 'Ultra pace' : 'Auto mode'} resumed: ${auto.plan}`
+}
+
+/** `/pace ultra [plan] [turns] [floor..ceiling] | off | resume` */
+async function ultraCommand($: Engine, rest: string): Promise<string> {
+  if (rest.toLowerCase() === 'off') {
+    holdTimer?.cancel()
+    await setAuto($, null)
+    return 'Ultra pace off'
+  }
+  if (rest.toLowerCase() === 'resume') return resumeAuto($)
+  const m = /^(\S+)?(?:\s+(\d+))?(?:\s+([\w.-]+)\.\.([\w.-]+))?$/.exec(rest)
+  if (!m) return 'Use /pace ultra [plan file] [turns] [floor..ceiling], /pace ultra off or /pace ultra resume'
+  const plan = m[1] ?? DEFAULT_PLAN
+  const max = m[2] ? Math.max(1, Number(m[2])) : ULTRA_TURNS
+  const goal = goalOf(await fileText($, plan).catch(() => ''))
+  if (!goal) return `${plan} has no ## Goal: ultra pace works toward one. Add the goal, its Done when lines and a Check: command`
+  const ceiling = m[4] ?? (await modelOf($)) ?? ULTRA_FLOOR
+  const models = { floor: m[3] ?? ULTRA_FLOOR, ceiling }
+  const ultra: PaceUltra = {
+    goal: goal.text, check: goal.check, phase: 'plan', sinceReview: 0, quietReviews: 0, checkFails: 0, models,
+    gear: startingGear({ ...models, model: ceiling, effort: lastEffort }), headroomStreak: 0,
+  }
+  if (!((await read($, prefsA)) ?? DEFAULT_PREFS).onboarded) {
+    pendingPlan = { plan, max, ultra }
+    await $.ui.open({ id: AUTO_PANE, title: 'Pace · ultra pace', rows: 12, focus: true, closeOnEscape: true })
+    return 'Ultra pace: read what it does and press Start'
+  }
+  await startAuto($, plan, max, ultra)
+  return `Ultra pace on: ${plan}`
+}
+
 // ======================================================================
 // Hooks
 // ======================================================================
@@ -745,7 +799,7 @@ function say($: Engine, text: string): {} {
   return {}
 }
 
-const USAGE = 'split | pane | window | refresh | on | off | auto [plan] [turns] | auto off | auto resume | plan [file] | hide | show | line on | line off | warm compact | warm ping | warm off'
+const USAGE = 'split | pane | window | refresh | on | off | auto [plan] [turns] | auto off | auto resume | ultra [plan] [turns] [floor..ceiling] | ultra off | ultra resume | plan [file] | hide | show | line on | line off | warm compact | warm ping | warm off'
 
 export const register: Register = (on, options) => {
   placement = options.placement === 'status' ? 'status' : 'above'
@@ -763,14 +817,7 @@ export const register: Register = (on, options) => {
     cwd = e.cwd ?? ''
     spendId = await $.session.id().catch(() => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`)
     await $.command.register({ name: 'pace', description: 'Rate-limit pace, prompting rate and the prompt cache, charted', argumentHint: USAGE, immediate: true })
-    try { await load($) } catch {}
-    try {
-      const usage = await $.session.usage()
-      lastUsd = usage.cost?.usd ?? null
-      await recordRateLimits($, usage.rateLimits)
-    } catch {}
-    try { await sampleCache($) } catch {}
-    try { await sampleUsageApi($) } catch {}
+    // A fresh set of timers before `load`, which re-arms a resumed run's hold among them
     for (const t of timers) t.cancel()
     keysTimer = undefined
     timers = [
@@ -788,6 +835,14 @@ export const register: Register = (on, options) => {
         })().catch(() => {})
       }),
     ]
+    try { await load($) } catch {}
+    try {
+      const usage = await $.session.usage()
+      lastUsd = usage.cost?.usd ?? null
+      await recordRateLimits($, usage.rateLimits)
+    } catch {}
+    try { await sampleCache($) } catch {}
+    try { await sampleUsageApi($) } catch {}
     return next(e)
   })
 
@@ -819,6 +874,8 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.start', async (_$, e, next) => {
+    // A subagent's turn is not the session's: its end is never heard as one
+    if (e.agentId !== undefined) return next(e)
     working = true
     return next(e)
   })
@@ -834,6 +891,7 @@ export const register: Register = (on, options) => {
   // On pace mode in a burst: each request thinks one effort level lighter, back as soon as the rate is steady
   on('turn.step', async function* ($, e, next) {
     const onPace = ((await read($, prefsA)) ?? DEFAULT_PREFS).onPace
+    if (e.agentId === undefined && typeof e.effort === 'string') lastEffort = e.effort
     if (!onPace || !published || e.effort == null) return yield* next(e)
     return yield* next({ ...e, effort: effortFor(forModel(published, e.model), e.effort) })
   })
@@ -843,7 +901,8 @@ export const register: Register = (on, options) => {
     const r = await next(e)
     const auto = ((await read($, prefsA)) ?? DEFAULT_PREFS).auto
     if (!auto || auto.paused) return r
-    return { sections: [...r.sections, { id: 'pace:auto', text: protocol(), scope: 'session' as const }] }
+    const section = auto.ultra ? { id: 'pace:ultra', text: ultraProtocol() } : { id: 'pace:auto', text: protocol() }
+    return { sections: [...r.sections, { ...section, scope: 'session' as const }] }
   })
 
   // No one is at the keyboard in auto mode: take the recommended answer

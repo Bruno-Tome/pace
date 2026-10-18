@@ -123,3 +123,11 @@ test('a malformed reading in a stored history is dropped, not thrown over', () =
   const junk = [{ t: NOW - H, w: { five_hour: { u: 5 } } }, null, { at: 'x', quotas: {} }, { at: NOW - 2 * H, quotas: { five_hour: { percent: 'a' } } }] as any[]
   expect(mergeSamples(junk, [good])).toEqual([good])
 })
+
+test('a reading that is not a number, NaN or Infinity, is dropped rather than read as on pace', () => {
+  const good: PaceSample = { at: NOW, quotas: { five_hour: { percent: 10, resetsAt: NOW + H } } }
+  // What `Math.min(Math.max(undefined, 0), 100)` makes of a rate limit reported without its percent
+  const nan: PaceSample = { at: NOW - H, quotas: { five_hour: { percent: NaN, resetsAt: NOW + H } } }
+  const endless: PaceSample = { at: NOW - 2 * H, quotas: { seven_day: { percent: 20, resetsAt: Infinity } } }
+  expect(mergeSamples([nan, endless], [good])).toEqual([good])
+})

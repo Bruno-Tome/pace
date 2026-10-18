@@ -130,6 +130,9 @@ pane says what it does and that it spends quota on its own; it starts when you p
 
 - After each turn pace sends the next prompt, until Claude ends a turn with `PACE: DONE` or `PACE: BLOCKED`, or the
   turn cap (40 by default) is reached.
+- It stops when Claude is waiting on you. Claude ends a turn with `PACE: BLOCKED <what it needs>` when it hands you a
+  task or needs your feedback, and a turn that ends on a question with no `PACE:` line reads the same way: pace
+  stops prompting and notifies you with the question.
 - Its last turn, done or blocked, ends with a report for when you are back: what got done, why it stopped, what
   needs you (each with its reason and urgency, most urgent first) and how to do it, and the plan's checklist as it
   now stands.

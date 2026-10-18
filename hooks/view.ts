@@ -412,14 +412,14 @@ function restLines(s: Snapshot, now: number, o: PaneLayout): Line[] {
   if (c) {
     const left = cacheLeft(c, now)
     const cost = nextCost(c.tokens, c.ttl)
-    const pct = Math.round((c.tokens / c.window) * 100)
+    const size = c.window > 0 ? `${formatTokens(c.tokens)} of ${formatTokens(c.window)} (${Math.round((c.tokens / c.window) * 100)}%)` : formatTokens(c.tokens)
     const barWidth = Math.max(10, Math.min(40, o.cols - 34))
     out.push([
       ...cacheLine(c, now, 5, barWidth, false),
       { t: left ? ` left of ${c.ttl}` : ` · lapsed ${Q.formatDuration((now - c.at) / 1000 - ttlSeconds(c.ttl))} ago`, dim: true },
     ])
     const usd = (tokens: number) => (s.price != null ? ` (${formatUsd(tokens * s.price)})` : '')
-    out.push([{ t: `context ${formatTokens(c.tokens)} of ${formatTokens(c.window)} (${pct}%) · next prompt ≈${formatTokens(cost.warm)} tk${usd(cost.warm)} warm, ≈${formatTokens(cost.cold)}${usd(cost.cold)} cold (${Math.round(cost.cold / Math.max(1, cost.warm))}×)`, dim: true }])
+    out.push([{ t: `context ${size} · next prompt ≈${formatTokens(cost.warm)} tk${usd(cost.warm)} warm, ≈${formatTokens(cost.cold)}${usd(cost.cold)} cold (${Math.round(cost.cold / Math.max(1, cost.warm))}×)`, dim: true }])
   } else out.push([{ t: 'The cache timer starts with the next reply.', dim: true }])
   const warm = s.warm ?? 'off'
   out.push([{ t: 'warm mode ', dim: true }, warm === 'off' ? { t: 'off', dim: true } : { t: warm, color: 'success', bold: true }, { t: warm === 'off' ? '  · /pace warm compact | ping' : '  · acts under 10m left, while idle · /pace warm off', dim: true }])
