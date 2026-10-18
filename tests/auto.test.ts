@@ -114,6 +114,12 @@ describe('auto mode', () => {
     expect(protocol()).toMatch(/\.pace\/handoff\.md/)
   })
 
+  test('its instructions ask for a closing report before DONE or BLOCKED', () => {
+    const p = protocol()
+    expect(p).toMatch(/before .*PACE: DONE.*PACE: BLOCKED|before .*PACE: BLOCKED.*PACE: DONE/i)
+    for (const part of ['What got done', 'Why it stopped', 'What needs you', 'urgency', 'How to do it', 'The plan now']) expect(p).toContain(part)
+  })
+
   test('its instructions say to wait for background work, never poll it', () => {
     expect(protocol()).toContain('PACE: WAITING')
   })

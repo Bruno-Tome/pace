@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- The `/pace` split shows the new modes and the roadmap: auto mode's run or on pace mode under its title, with
+  `effort a level lighter` while the rate would run a quota out, and the plan's timeline (auto mode's plan, the one
+  `/pace plan` named, or `ROADMAP.md`) under the charts when it has a checklist. The window's state file
+  (`~/.claude/pace-state.json`) adds an optional `plan` with the plan's name and steps.
+- The modes row puts what a mode is doing before the command that turns it off, and on pace mode's row says
+  `compacts heavy contexts, keeps the cache warm · /pace off`.
+- The Chinese README is gone; the README is in English only.
+- `/pace plan [file]` opens the plan's timeline in a sidebar, and starting auto mode opens it too: inside tmux a
+  narrow split on the right of Claude, elsewhere a pane, docked beside the transcript in fullscreen. It shows the steps
+  done, the step under way and the step up next, read from the plan's checklist each time a turn ends, under a
+  header with the count done, a progress bar and what auto mode is doing. A long step wraps under its own text with
+  the timeline's line beside it, its `· under way` or `· up next` kept on one row. A long plan folds the steps far behind and
+  far ahead. It is animated: the steps come in from the top, a dot runs into the step under way, and a step ticked
+  off pops into a check.
+- `/pace auto` with no plan file works through `ROADMAP.md`.
+- Auto mode's last turn, done or blocked, ends with a report: what got done, why it stopped, what needs you with
+  its reason and urgency, how to do it, and the plan's checklist as it now stands.
 - The status-line entry is built from the band's own rate cell, so the two always agree:
   `5h 60% ▲ burst · out in 20m at this rate │ Fable wk 68% ● → —`. Quotas are now separated by `│`.
 - On pace mode, and so auto mode, thinks one effort level lighter while the rate would run a quota out before its

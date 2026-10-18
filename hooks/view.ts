@@ -2,18 +2,24 @@
 // full-screen window. The hooks module turns a line into Text elements, the window and the status line into ANSI.
 // Pure; times in ms.
 
-import type { PaceCacheInfo, PacePrefs } from '../types'
+import type { PaceAuto, PaceCacheInfo, PacePrefs } from '../types'
 import { cacheLeft, formatTokens, formatUsd, nextCost, ttlSeconds, type Suggestion } from './cache.ts'
 import { chart, type Layer } from './chart.ts'
-import { adviceOf, bandRows, isFable, ratedOf, rowsOf, verdictOf, worstOf, type Row, type Snapshot } from './model.ts'
+import type { Step } from './plan.ts'
+import { runsOut } from './auto.ts'
+import { adviceOf, bandRows, isFable, ratedOf, rowsOf, snapshotOf, verdictOf, worstOf, type Row, type Snapshot } from './model.ts'
 import * as Q from './quota.ts'
 import { bar, budgetText, buckets, rateText, scoreText, sparkline, type Cell, type RateVerdict } from './rate.ts'
 import { sessionsOf, usdPerPrompt } from './spend.ts'
 
 const MIN = 60_000
 
-/** A run of styled text; `bar` marks a bar's cells for the band's animation, `pulse` a warning that blinks there */
-export type Seg = { t: string; color?: string; dim?: boolean; bold?: boolean; bar?: boolean; pulse?: boolean }
+/**
+ * A run of styled text. For the band's animation, `bar` marks a bar's cells and `pulse` a warning that blinks; for
+ * the plan's, `spin` marks the node of the step under way, `flow` the line into it and `pop` the step done last.
+ * `whole` keeps a run on one row when its line wraps.
+ */
+export type Seg = { t: string; color?: string; dim?: boolean; bold?: boolean; bar?: boolean; pulse?: boolean; spin?: boolean; flow?: boolean; pop?: boolean; whole?: boolean }
 export type Line = Seg[]
 
 const compact = (seconds: number) => Q.formatDuration(seconds).replace(/ /g, '')
@@ -197,18 +203,24 @@ export function bandLines(s: Snapshot, now: number, cols: number): Line[] {
   return [...columns(lay(room >= 8 ? Math.min(48, room) : 0)), ...(modes ? [modes] : [])]
 }
 
-/** Auto mode's run or on pace mode, in a row under the band; none while both are off */
-function modesLine(s: Snapshot, now: number): Line | null {
+/**
+ * Auto mode's run or on pace mode, in a row under the band; none while both are off. `extra` goes after the mode's
+ * own figures, before the command that turns it off.
+ */
+function modesLine(s: Snapshot, now: number, extra: readonly Seg[] = []): Line | null {
   const a = s.auto
-  if (a?.paused) return [{ t: 'auto  ⏸ paused', color: 'warning', bold: true }, { t: ` · ${a.plan} · /pace auto resume`, dim: true }]
+  const hint = (cmd: string): Seg => ({ t: ` · ${cmd}`, dim: true })
+  if (a?.paused) return [{ t: 'auto  ⏸ paused', color: 'warning', bold: true }, { t: ` · ${a.plan}`, dim: true }, ...extra, hint('/pace auto resume')]
   if (a?.heldUntil != null) {
     return [
       { t: `auto  ⏸ held until ${Q.clockAt(a.heldUntil, a.heldUntil - now >= 86400_000)}`, color: 'warning', bold: true },
-      { t: ` · ${a.why ?? ''} · /pace auto off`, dim: true },
+      { t: ` · ${a.why ?? ''}`, dim: true },
+      ...extra,
+      hint('/pace auto off'),
     ]
   }
-  if (a) return [{ t: 'auto  ▶ ', color: 'success', bold: true }, { t: `${a.plan} · turn ${a.turns}/${a.max} · /pace auto off`, dim: true }]
-  if (s.onPace) return [{ t: 'on pace ●', color: 'success' }, { t: ' compacts heavy contexts while warm, keeps the cache warm', dim: true }]
+  if (a) return [{ t: 'auto  ▶ ', color: 'success', bold: true }, { t: `${a.plan} · turn ${a.turns}/${a.max}`, dim: true }, ...extra, hint('/pace auto off')]
+  if (s.onPace) return [{ t: 'on pace ●', color: 'success' }, { t: ' compacts heavy contexts, keeps the cache warm', dim: true }, ...extra, hint('/pace off')]
   return null
 }
 
@@ -425,8 +437,161 @@ function restLines(s: Snapshot, now: number, o: PaneLayout): Line[] {
   return out
 }
 
-/** The window's state: a snapshot and when the session wrote it */
-export type Feed = Snapshot & { at: number }
+// ----------------------------------------------------------------------
+// The plan's timeline
+// ----------------------------------------------------------------------
+
+export type PlanLayout = {
+  /** The plan file, as named */
+  plan: string
+  /** Auto mode's run on this plan; null when it is not running one */
+  auto: PaceAuto | null
+  /** Columns the lines may take */
+  cols: number
+  now: number
+  /** Rows the lines may take; 30 when not said */
+  rows?: number
+}
+
+const NO_STEPS = 'No checklist in this plan yet: write its steps as - [ ] items and auto mode ticks them off as it goes.'
+
+/** What auto mode is doing on the plan, in a few words */
+function runText(a: PaceAuto | null, now: number): Seg {
+  if (!a) return { t: 'auto mode off', dim: true }
+  if (a.paused) return { t: `paused · ${a.why ?? '/pace auto resume picks it back up'}`, color: 'warning' }
+  if (a.heldUntil != null) return { t: `holding until ${Q.clockAt(a.heldUntil, a.heldUntil - now >= 86400_000)} · ${a.why ?? ''}`, color: 'warning' }
+  if (a.waitingUntil != null) return { t: `${a.why ?? 'Waiting'} · until ${Q.clockAt(a.waitingUntil, false)}`, color: 'subtle' }
+  return { t: `turn ${a.turns} of ${a.max}`, color: 'success' }
+}
+
+/** A run of steps drawn as one node: `count` steps folded away before or after the ones shown */
+type Fold = { fold: 'done' | 'next'; count: number }
+
+/** A node: its mark and its text */
+function nodeLine(e: Step | Fold, upNext: boolean, lastDone: boolean): Line {
+  if ('fold' in e) {
+    const s = e.count === 1 ? '' : 's'
+    return e.fold === 'done'
+      ? [{ t: '  ' }, { t: '✔', color: 'success', dim: true }, { t: '  ' }, { t: `${e.count} earlier step${s} done`, dim: true }]
+      : [{ t: '  ' }, { t: '○', color: 'subtle' }, { t: '  ' }, { t: `${e.count} more step${s}`, dim: true }]
+  }
+  if (e.state === 'done') return [{ t: '  ' }, { t: '✔', color: 'success', ...(lastDone ? { pop: true } : {}) }, { t: '  ' }, { t: e.text, dim: true }]
+  if (e.state === 'now') return [{ t: '  ' }, { t: '◉', color: 'suggestion', bold: true, spin: true }, { t: '  ' }, { t: e.text, bold: true }, { t: ' · under way', color: 'suggestion', whole: true }]
+  return upNext
+    ? [{ t: '  ' }, { t: '○', color: 'subtle' }, { t: '  ' }, { t: e.text }, { t: ' · up next', dim: true, whole: true }]
+    : [{ t: '  ' }, { t: '○', color: 'subtle' }, { t: '  ' }, { t: e.text, dim: true }]
+}
+
+/** The line between two nodes: solid behind the work, two flowing rows into the step under way, dotted ahead */
+function linkLines(from: Step | Fold, to: Step | Fold): Line[] {
+  const done = (e: Step | Fold) => ('fold' in e ? e.fold === 'done' : e.state === 'done')
+  if (!('fold' in to) && to.state === 'now') return [[{ t: '  ' }, { t: '│', color: 'success', flow: true }], [{ t: '  ' }, { t: '│', color: 'success', flow: true }]]
+  if (done(from) && done(to)) return [[{ t: '  ' }, { t: '│', color: 'success', dim: true }]]
+  if (done(from)) return [[{ t: '  ' }, { t: '│', color: 'success' }]]
+  return [[{ t: '  ' }, { t: '┆', color: 'subtle' }]]
+}
+
+/**
+ * Styled segments in lines of at most `room` columns, broken between words (a `whole` run is one word, its leading
+ * spaces dropped at a break); a word longer than a line is cut, and no line starts with a space
+ */
+function wrapSegs(segs: readonly Seg[], room: number): Line[] {
+  const out: Line[] = [[]]
+  let used = 0
+  const pieces = (s: Seg) => (s.whole ? (/^\s/.test(s.t) ? [s.t.match(/^\s+/)![0], s.t.trimStart()] : [s.t]) : s.t.split(/(\s+)/).filter(Boolean))
+  for (const s of segs) {
+    for (const piece of pieces(s)) {
+      const space = /^\s/.test(piece)
+      let chars = [...piece]
+      if (space && (used === 0 || used + chars.length >= room)) continue
+      if (!space && used > 0 && used + chars.length > room) {
+        const last = out[out.length - 1]!
+        if (last.length && /^\s+$/.test(last[last.length - 1]!.t)) last.pop()
+        out.push([])
+        used = 0
+      }
+      while (chars.length) {
+        if (used >= room) { out.push([]); used = 0 }
+        const take = chars.slice(0, room - used)
+        out[out.length - 1]!.push({ ...s, t: take.join('') })
+        used += take.length
+        chars = chars.slice(take.length)
+      }
+    }
+  }
+  return out
+}
+
+/** A node's line wrapped to `cols`: its text's later rows under its first, on `rail`, the line down to the next node */
+function wrapNode(line: Line, rail: Seg, cols: number): Line[] {
+  const [indent, mark, gap, ...body] = line
+  const rows = wrapSegs(body, Math.max(8, cols - 5))
+  return rows.map((r, i) => (i ? [{ t: '  ' }, rail, { t: '  ' }, ...r] : [indent!, mark!, gap ?? { t: '  ' }, ...r]))
+}
+
+/** The steps from `lo` to `hi` drawn as a timeline, with folds for the steps either side of them */
+function timeline(steps: readonly Step[], lo: number, hi: number, cols: number): Line[] {
+  const entries: (Step | Fold)[] = [
+    ...(lo > 0 ? [{ fold: 'done' as const, count: lo }] : []),
+    ...steps.slice(lo, hi + 1),
+    ...(hi < steps.length - 1 ? [{ fold: 'next' as const, count: steps.length - 1 - hi }] : []),
+  ]
+  const upNext = steps.findIndex(s => s.state === 'next')
+  const lastDone = steps.map(s => s.state).lastIndexOf('done')
+  return entries.flatMap((e, i) => {
+    const below = entries[i + 1]
+    const { flow: _, ...rail } = below ? linkLines(e, below)[0]![1]! : { t: ' ' }
+    return [
+      ...(i ? linkLines(entries[i - 1]!, e) : []),
+      ...wrapNode(nodeLine(e, e === steps[upNext], e === steps[lastDone]), rail, cols),
+    ]
+  })
+}
+
+/** The order steps join the timeline: the focus, the step after it, two before, then onward, then further back */
+function byPriority(focus: number, n: number): number[] {
+  const order = [focus, focus + 1, focus - 1, focus - 2]
+  for (let i = 2; focus + i < n || focus - i - 1 >= 0; i++) order.push(focus + i, focus - i - 1)
+  return order.filter(i => i >= 0 && i < n)
+}
+
+/**
+ * The plan's timeline: its name and the steps done, a progress bar and what auto mode is doing, then the steps
+ * around the one under way (or the next one up), with the rest folded away to fit the rows.
+ */
+export function planLines(steps: readonly Step[], o: PlanLayout): Line[] {
+  const title: Seg = { t: o.plan, bold: true }
+  if (!steps.length) return [[title, { t: '  ·  ', dim: true }, runText(o.auto, o.now)], [], [{ t: NO_STEPS, dim: true }]]
+  const done = steps.filter(s => s.state === 'done').length
+  const barWidth = Math.max(10, Math.min(40, o.cols - 30, o.cols - 5))
+  const filled = Math.round((done / steps.length) * barWidth)
+  const bar: Line = [
+    { t: '━'.repeat(filled), color: 'success' },
+    { t: '─'.repeat(barWidth - filled), color: 'subtle' },
+    { t: ` ${pctOf(done / steps.length)}%`, dim: true },
+  ]
+  const run = runText(o.auto, o.now)
+  // A narrow sidebar gives each its own rows
+  const head: Line[] = [
+    ...wrapSegs([title, { t: `  ·  ${done} of ${steps.length} steps done`, dim: true }], o.cols),
+    ...(width(bar) + 5 + width([run]) <= o.cols ? [[...bar, { t: '  ·  ', dim: true }, run]] : [bar, ...wrapSegs([run], o.cols)]),
+    [],
+  ]
+  const room = (o.rows ?? 30) - head.length
+  const unfinished = steps.findIndex(s => s.state !== 'done')
+  const focus = unfinished < 0 ? steps.length - 1 : unfinished
+  let lo = focus
+  let hi = focus
+  for (const i of byPriority(focus, steps.length).slice(1)) {
+    const [nlo, nhi] = [Math.min(lo, i), Math.max(hi, i)]
+    if (timeline(steps, nlo, nhi, o.cols).length > room) break
+    ;[lo, hi] = [nlo, nhi]
+  }
+  return [...head, ...timeline(steps, lo, hi, o.cols)]
+}
+
+/** The window's state: a snapshot, when the session wrote it, and the plan's steps; `plan` absent without a checklist */
+export type Feed = Snapshot & { at: number; plan?: { name: string; steps: readonly Step[] } }
 
 /** What the window's keys chose: `focus` is the 1-based quota drawn alone */
 export type ScreenOptions = { focus?: number }
@@ -448,8 +613,9 @@ export function screen(f: Feed, now: number, cols: number, rows: number, opts: S
     { t: 'Pace', bold: true },
     { t: `  · updated ${age < MIN ? 'just now' : `${compact(age / 1000)} ago`} · q quits · w warm · r refresh${keys ? ` · ${keys}` : ''}`, dim: true },
   ]
+  const modes = splitModes(f, now)
   const layout = (w: number, h: number): PaneLayout => ({ cols: w, chartWidth: Math.max(16, w - 6), chartHeight: () => h })
-  const fit = (lines: Line[]) => [title, [], ...lines].slice(0, rows).map(l => toAnsi(clip(l, cols))).join('\n')
+  const fit = (lines: Line[]) => [title, ...(modes ? [modes] : []), [], ...lines].slice(0, rows).map(l => toAnsi(clip(l, cols))).join('\n')
 
   if (focused) {
     const fixed = quotaBlock(f, focused, layout(cols, 0)).length + 2
@@ -462,10 +628,27 @@ export function screen(f: Feed, now: number, cols: number, rows: number, opts: S
   const body = (h: number): Line[] => {
     const blocks = rowsOf(f.samples, now).map(row => quotaBlock(f, row, layout(colW, h)))
     const top = two ? pairs(blocks, colW) : blocks.flat()
-    return [...(blocks.length ? top : NO_USAGE), ...restLines(f, now, layout(cols, h))]
+    return [...(blocks.length ? top : NO_USAGE), ...planBlock(f, now, cols), ...restLines(f, now, layout(cols, h))]
   }
-  const fixed = body(0).length + 2
+  const fixed = body(0).length + 2 + (modes ? 1 : 0)
   return fit(body(Math.max(4, Math.min(16, Math.floor((rows - fixed) / Math.max(1, chartRows))))))
+}
+
+/** The modes row under the window's title, saying so while on pace mode thinks one effort level lighter */
+function splitModes(f: Feed, now: number): Line | null {
+  const lighter = f.onPace && runsOut(snapshotOf(f, now))
+  return modesLine(f, now, lighter ? [{ t: ' · effort a level lighter', color: 'warning' }] : [])
+}
+
+/** Rows the window gives the plan's timeline */
+const PLAN_ROWS = 12
+
+/** The plan's timeline in the window, under the charts; nothing without a checklist */
+function planBlock(f: Feed, now: number, cols: number): Line[] {
+  const steps = Array.isArray(f.plan?.steps) ? f.plan.steps : []
+  if (!f.plan || !steps.length) return []
+  const auto = f.auto?.plan === f.plan.name ? f.auto : null
+  return [[{ t: 'Plan', bold: true }], ...planLines(steps, { plan: f.plan.name, auto, cols, now, rows: PLAN_ROWS }), []]
 }
 
 /** Blocks two to a row, the left one padded to `colW` columns */

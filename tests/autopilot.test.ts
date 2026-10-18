@@ -230,3 +230,105 @@ test('a session\'s own modes are forgotten a month after it was last used', asyn
   expect(stored['session:old']).toBeUndefined()
   expect(stored['session:recent']).toBeDefined()
 })
+
+test('/pace auto with no plan file works through ROADMAP.md', async ($, on) => {
+  const { submitted, clock } = world(on)
+  await start($)
+  await pace($, 'auto')
+  await onboard($, clock)
+  expect(submitted[0]).toContain('ROADMAP.md')
+})
+
+const PLAN_MD = '- [x] Set up the repo\n- [ ] Draw the timeline\n- [ ] Animate the steps\n'
+const planPane = ($: any) => $.ui.mount({ plugin: 'pace', surface: 'terminal', component: 'Pane', requestId: 'pace-plan', props: { bodyColumns: 80 } as any } as any)
+
+test('/pace plan opens the plan\'s timeline: the steps done, the one under way and the next', async ($, on) => {
+  const { files, opens, clock } = world(on)
+  files['/tmp/PLAN.md'] = PLAN_MD
+  await start($)
+  await pace($, 'auto PLAN.md')
+  await onboard($, clock)
+  await pace($, 'plan')
+  expect(opens.map(o => o.id)).toContain('pace-plan')
+  const pane = await planPane($)
+  // The steps come in from the top, one a frame
+  await pane.advance(2000)
+  const text = textOf(await pane.drawn({ in: 'pace-plan' }))
+  expect(text).toContain('PLAN.md')
+  expect(text).toContain('1 of 3 steps done')
+  expect(text).toContain('Draw the timeline · under way')
+  expect(text).toContain('Animate the steps · up next')
+})
+
+test('the timeline moves on when a turn ticks a step off', async ($, on) => {
+  const { files, clock } = world(on)
+  files['/tmp/PLAN.md'] = PLAN_MD
+  await start($)
+  await pace($, 'auto PLAN.md')
+  await onboard($, clock)
+  const pane = await planPane($)
+  await pane.advance(2000)
+  files['/tmp/PLAN.md'] = PLAN_MD.replace('- [ ] Draw', '- [x] Draw')
+  await turnEnds($, 'drew it\nPACE: NEXT')
+  // The step just ticked off pops into its check
+  const pops: string[] = []
+  for (let i = 0; i < 12; i++) {
+    await pane.advance(80)
+    pops.push(JSON.stringify(await pane.drawn({ in: 'pace-plan' })))
+  }
+  expect(pops.some(f => f.includes('✱'))).toBe(true)
+  expect(pops[pops.length - 1]).not.toContain('✱')
+  const text = textOf(await pane.drawn({ in: 'pace-plan' }))
+  expect(text).toContain('2 of 3 steps done')
+  expect(text).toContain('Animate the steps · under way')
+})
+
+test('the timeline animates while its text stays the same', async ($, on) => {
+  const { files, clock } = world(on)
+  files['/tmp/PLAN.md'] = PLAN_MD
+  await start($)
+  await pace($, 'auto PLAN.md')
+  await onboard($, clock)
+  const pane = await planPane($)
+  await pane.advance(2000)
+  const frames = new Set<string>()
+  for (let i = 0; i < 20; i++) {
+    await pane.advance(80)
+    const t = await pane.drawn({ in: 'pace-plan' })
+    frames.add(JSON.stringify(t))
+    expect(textOf(t)).toContain('Draw the timeline')
+  }
+  expect(frames.size).toBeGreaterThan(3)
+})
+
+test('starting auto mode opens the plan\'s timeline', async ($, on) => {
+  const { opens, clock } = world(on)
+  await start($)
+  await pace($, 'auto PLAN.md')
+  await onboard($, clock)
+  expect(opens.map(o => o.id)).toContain('pace-plan')
+})
+
+const TMUX = { TMUX: '/tmp/tmux-501/default,1,0', TMUX_PANE: '%1' }
+
+test('inside tmux the plan\'s timeline opens as a sidebar: a narrow split on the right, fed the plan and the run', async ($, on) => {
+  const { files, runs, opens, clock } = world(on, TMUX)
+  files['/tmp/PLAN.md'] = PLAN_MD
+  await start($)
+  await pace($, 'auto PLAN.md')
+  await onboard($, clock)
+  const split = runs.find(r => r[1] === 'split-window')!
+  expect(split).toBeDefined()
+  expect(split).toContain('-h')
+  expect(split.join(' ')).toContain('plan-viewer.ts')
+  expect(opens.map(o => o.id)).not.toContain('pace-plan')
+  const feed = JSON.parse(files['/home/u/.claude/pace-plan-session-a.json']!)
+  expect(feed.path).toBe('/tmp/PLAN.md')
+  expect(feed.auto.turns).toBe(1)
+  // Each turn the sidebar hears of the run
+  await turnEnds($, 'step\nPACE: NEXT')
+  expect(JSON.parse(files['/home/u/.claude/pace-plan-session-a.json']!).auto.turns).toBe(2)
+  // Asked again, the sidebar already open is kept
+  await pace($, 'plan')
+  expect(runs.filter(r => r[1] === 'split-window').length).toBe(1)
+})

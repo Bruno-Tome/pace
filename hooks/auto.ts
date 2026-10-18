@@ -119,6 +119,7 @@ export function protocol(): string {
     `- Before ending each turn, update ${HANDOFF_FILE}: what is done, what is next, and the facts a fresh session needs (files, commands, decisions). pace may clear the context and resume from it.`,
     '- Use subagents for work that does not need the main thread: searches, reading many files, mechanical edits, test runs. Give them a lighter model (haiku for search and reads, sonnet for routine edits) and keep the main thread for decisions.',
     '- Never poll background work (a shell, a subagent, CI). When the next step waits on it, end the turn with `PACE: WAITING <what>`: pace sends nothing, and Claude Code starts your next turn when it reports.',
+    '- Before ending a turn with `PACE: DONE` or `PACE: BLOCKED`, write a closing report for the user, who was away, under these headings: **What got done** (each step finished this run, one line each); **Why it stopped** (the plan is finished, or what blocks it); **What needs you** (each thing only the user can do, with its reason and its urgency: blocking, soon or whenever, most urgent first; "Nothing" when there is none); **How to do it** (the exact steps or commands for each); **The plan now** (the plan file\'s checklist as it stands after this run, ticked and unticked).',
     '- End every turn with exactly one line: `PACE: NEXT` when steps remain, `PACE: WAITING <what>` while background work runs, `PACE: DONE` when the plan is finished, or `PACE: BLOCKED <reason>` when you cannot go on without the user.',
   ].join('\n')
 }
@@ -140,7 +141,7 @@ export function answerQuestions(questions: readonly Question[]): Record<string, 
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 
 /** A rate known to run a quota out before its reset: a burst, or too fast with a run-out behind it */
-const runsOut = (s: PaceSnapshot) => s.quotas.some(q => (q.rate.level === 'burst' || q.rate.level === 'fast') && q.rate.emptyIn != null)
+export const runsOut = (s: PaceSnapshot) => s.quotas.some(q => (q.rate.level === 'burst' || q.rate.level === 'fast') && q.rate.emptyIn != null)
 
 /**
  * On pace mode's effort for a request: one level lighter than asked while the rate would run a quota out before

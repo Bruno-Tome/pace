@@ -18,17 +18,21 @@ import type { ElementConstructor, EngineInterface as Engine, Register, RenderEle
 
 import type { Pace, PaceAuto, PaceCacheInfo, PaceCacheTtl, PaceSnapshot, PacePrefs, PaceReading, PaceSample, PaceSpend, PaceWarmMode } from '../types'
 import { alertsOf } from './alerts.ts'
-import { KEYS_FILE, ROW_FILE, STATE_FILE, VIEW_FILE } from './files.ts'
+import { KEYS_FILE, planFeedFile, ROW_FILE, STATE_FILE, VIEW_FILE } from './files.ts'
 import { isSessionKey, isStale, prefsFrom, sessionKey, sessionOf, sharedOf } from './prefs.ts'
 import { answerQuestions, continuePrompt, decide, effortFor, forModel, HANDOFF_FILE, protocol, startPrompt, upkeep, warmModeFor, type Decision } from './auto.ts'
 import { addPrice, priceOf, replyEquivalents, ttlSeconds, warmAction } from './cache.ts'
 import { snapshotOf, type Snapshot } from './model.ts'
 import * as Q from './quota.ts'
+import { stepsOf } from './plan.ts'
+import type { PlanFeed } from './timeline.ts'
 import { mergeModelPrompts, mergePrompts } from './rate.ts'
 import { addSpend, mergeSpend } from './spend.ts'
-import { bandLines, chartHeight, lineText, paneLines, statusRow, toAnsi, type Seg } from './view.ts'
+import { bandLines, chartHeight, lineText, paneLines, planLines, statusRow, toAnsi, type Feed, type Seg } from './view.ts'
 
 const PANE = 'pace'
+/** The plan `/pace auto` works through when it is given none */
+const DEFAULT_PLAN = 'ROADMAP.md'
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
 const MIN = 60_000
 const DEFAULT_PREFS: PacePrefs = { band: true, line: true, warm: 'off' }
@@ -171,10 +175,13 @@ async function refreshRow($: Engine, s: Snapshot, prefs: PacePrefs, now: number)
   lastRow = text
 }
 
-/** What the window draws: the snapshot, its samples cut to the last week, and when it was taken */
+/** What the window draws: the snapshot, its samples cut to the last week, when it was taken, and the plan's steps */
 async function writeState($: Engine, s: Snapshot, now: number): Promise<void> {
   if (!feeding) return
-  const text = JSON.stringify({ ...s, samples: s.samples.filter(x => x.at >= now - STATE_SPAN), at: now })
+  const { plan, auto } = await shownPlan($)
+  const steps = stepsOf(await fileText($, plan).catch(() => ''), auto != null && !auto.paused)
+  const feed: Feed = { ...s, samples: s.samples.filter(x => x.at >= now - STATE_SPAN), at: now, ...(steps.length ? { plan: { name: plan, steps } } : {}) }
+  const text = JSON.stringify(feed)
   if (text === lastState) return
   const home = await homeOf($)
   if (!home) return
@@ -183,6 +190,12 @@ async function writeState($: Engine, s: Snapshot, now: number): Promise<void> {
 }
 
 const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
+
+/** Node on the PATH, which runs the viewers; empty when there is none */
+async function nodeOf($: Engine): Promise<string> {
+  const which = await $.process.run(['/usr/bin/which', 'node'])
+  return which.exitCode === 0 ? which.stdout.trim() : ''
+}
 
 /** Starts feeding the viewer and writes the script that runs it; undefined where that cannot be done (no node) */
 async function viewerScript($: Engine): Promise<string | undefined> {
@@ -197,8 +210,7 @@ async function viewerScript($: Engine): Promise<string | undefined> {
     timers.push(t)
   }
   await writeState($, await snapshot($), await $.clock.now())
-  const which = await $.process.run(['/usr/bin/which', 'node'])
-  const node = which.exitCode === 0 ? which.stdout.trim() : ''
+  const node = await nodeOf($)
   if (!node) return undefined
   const script = `${home}/${VIEW_FILE}`
   await $.fs.write(script, [
@@ -468,6 +480,9 @@ async function tell($: Engine, text: string): Promise<void> {
 }
 
 const AUTO_PANE = 'pace-auto'
+const PLAN_PANE = 'pace-plan'
+/** Columns the plan sidebar takes in tmux */
+const SIDEBAR_COLUMNS = 46
 /** Turns auto mode takes before it stops to let the person look */
 const AUTO_TURNS = 40
 /** A plan waiting on the onboarding pane's Start */
@@ -478,6 +493,8 @@ let holdTimer: { cancel: () => void } | undefined
 let cwd = ''
 /** The plan and the handoff file as the last turn left them; null before one was read */
 let progressMark: string | null = null
+/** The plan the timeline shows; null for auto mode's, else ROADMAP.md */
+let planShown: string | null = null
 
 async function autoOf($: Engine): Promise<PaceAuto | null> {
   return ((await read($, prefsA)) ?? DEFAULT_PREFS).auto ?? null
@@ -485,16 +502,21 @@ async function autoOf($: Engine): Promise<PaceAuto | null> {
 
 async function setAuto($: Engine, auto: PaceAuto | null): Promise<void> {
   await setPrefs($, p => ({ ...p, auto }))
+  if (planSplit) await writePlanFeed($).catch(() => {})
 }
 
 /** Auto mode's run, without a hold, a wait or a pause */
 const running = (a: PaceAuto): PaceAuto => ({ plan: a.plan, turns: a.turns, max: a.max, ...(a.stalls ? { stalls: a.stalls } : {}) })
 
+/** A file's text, its path relative to the session's working directory; empty when it is not there */
+async function fileText($: Engine, path: string): Promise<string> {
+  const at = path.startsWith('/') ? path : `${cwd}/${path}`
+  return (await $.fs.exists(at)) ? String(await $.fs.read(at)) : ''
+}
+
 /** The plan and the handoff file's text: a turn that changed neither made no progress */
 async function progressText($: Engine, plan: string): Promise<string> {
-  const at = (p: string) => (p.startsWith('/') ? p : `${cwd}/${p}`)
-  const text = async (p: string) => ((await $.fs.exists(at(p))) ? String(await $.fs.read(at(p))) : '')
-  return `${await text(plan)}\u0000${await text(HANDOFF_FILE)}`
+  return `${await fileText($, plan)}\u0000${await fileText($, HANDOFF_FILE)}`
 }
 
 /** Whether the turn just ended moved the plan or the handoff file; undefined when there is nothing to compare with */
@@ -515,6 +537,68 @@ async function startAuto($: Engine, plan: string, max: number): Promise<void> {
   progressMark = await progressText($, plan).catch(() => null)
   await tell($, `Auto mode on: works through ${plan} on its own and spends quota while you are away. /pace auto off stops it.`)
   await submitSoon($, startPrompt(plan))
+  planShown = null
+  try { await openPlan($) } catch {}
+}
+
+/** The plan the timeline shows, its full path, and auto mode's run when it is on that plan */
+async function shownPlan($: Engine): Promise<{ plan: string; path: string; auto: PaceAuto | null }> {
+  const run = await autoOf($)
+  const plan = planShown ?? run?.plan ?? DEFAULT_PLAN
+  return { plan, path: plan.startsWith('/') ? plan : `${cwd}/${plan}`, auto: run?.plan === plan ? run : null }
+}
+
+/** The tmux pane the plan sidebar runs in, while it lives */
+let planSplit: string | undefined
+
+/** Writes what the plan sidebar draws from */
+async function writePlanFeed($: Engine): Promise<void> {
+  const home = await homeOf($)
+  if (!home) return
+  const feed: PlanFeed = { ...(await shownPlan($)), at: await $.clock.now() }
+  await $.fs.write(`${home}/${planFeedFile(spendId)}`, JSON.stringify(feed))
+}
+
+/** Opens the plan sidebar in a narrow tmux split on the right, or finds the one open; false outside tmux or where that fails */
+async function openPlanSplit($: Engine): Promise<boolean> {
+  if (!(await inTmux($))) return false
+  const home = await homeOf($)
+  if (!home) return false
+  await writePlanFeed($)
+  if (planSplit && (await $.process.run(['tmux', 'display-message', '-p', '-t', planSplit, '#{pane_id}'])).exitCode === 0) return true
+  const node = await nodeOf($)
+  if (!node) return false
+  const beside = await $.env.get('TMUX_PANE')
+  const run = `exec ${shellQuote(node)} ${shellQuote(`${$.plugin.root}/bin/plan-viewer.ts`)} ${shellQuote(`${home}/${planFeedFile(spendId)}`)}`
+  const r = await $.process.run(['tmux', 'split-window', '-h', '-d', '-l', String(SIDEBAR_COLUMNS), ...(beside ? ['-t', beside] : []), '-P', '-F', '#{pane_id}', run])
+  if (r.exitCode !== 0) return false
+  planSplit = r.stdout.trim() || undefined
+  return true
+}
+
+/** Opens the plan's timeline as a sidebar: a tmux split inside tmux, else a pane, docked beside a fullscreen transcript */
+async function openPlan($: Engine): Promise<'split' | 'pane'> {
+  if (await openPlanSplit($).catch(() => false)) return 'split'
+  await $.ui.open({ id: PLAN_PANE, title: 'Pace · plan', rows: 24, columns: 72, closeOnEscape: true })
+  return 'pane'
+}
+
+/** The plan's timeline: its checklist from the file as it stands, animated where the surface runs surface modules */
+async function drawPlan($: Engine, e: RenderInput<'Pane'>): Promise<RenderElement> {
+  const els = $.ui.resolve(e)
+  const { Box, Text } = els
+  const Client = 'Client' in els ? els.Client : undefined
+  const { plan, auto } = await shownPlan($)
+  const now = (await read($, nowA)) || (await $.clock.now())
+  const steps = stepsOf(await fileText($, plan).catch(() => ''), auto != null && !auto.paused)
+  const lines = planLines(steps, { plan, auto, cols: e.props.bodyColumns ?? 60, now, rows: e.props.scroll?.bodyRows })
+  const done = steps.filter(s => s.state === 'done').length
+  if (Client) return <Client key="pace-plan" module="./plan-client.tsx" props={{ lines, done }} />
+  return (
+    <Box flexDirection="column">
+      {lines.map((segs, i) => <Text key={`pace-plan-${i}`} wrap="truncate-end">{segs.length ? toText(Text, segs) : ' '}</Text>)}
+    </Box>
+  )
 }
 
 /** The session's model, which auto mode paces by: only the quotas it draws on hold or steer it */
@@ -638,8 +722,8 @@ async function modeCommand($: Engine, raw: string): Promise<string | null> {
     await submitSoon($, continuePrompt(auto.plan, forModel(published ?? snapshotOf(await snapshot($), await $.clock.now()), await modelOf($))))
     return `Auto mode resumed: ${auto.plan}`
   }
-  const m = /^(\S+)(?:\s+(\d+))?$/.exec(rest)
-  if (!m) return 'Use /pace auto <plan file> [turns], /pace auto off or /pace auto resume'
+  const m = /^(\S+)(?:\s+(\d+))?$/.exec(rest || DEFAULT_PLAN)
+  if (!m) return 'Use /pace auto [plan file] [turns], /pace auto off or /pace auto resume'
   const plan = m[1]!
   const max = m[2] ? Math.max(1, Number(m[2])) : AUTO_TURNS
   if (!((await read($, prefsA)) ?? DEFAULT_PREFS).onboarded) {
@@ -661,7 +745,7 @@ function say($: Engine, text: string): {} {
   return {}
 }
 
-const USAGE = 'split | pane | window | refresh | on | off | auto <plan> [turns] | auto off | auto resume | hide | show | line on | line off | warm compact | warm ping | warm off'
+const USAGE = 'split | pane | window | refresh | on | off | auto [plan] [turns] | auto off | auto resume | plan [file] | hide | show | line on | line off | warm compact | warm ping | warm off'
 
 export const register: Register = (on, options) => {
   placement = options.placement === 'status' ? 'status' : 'above'
@@ -770,6 +854,7 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: AUTO_PANE }, async ($, e) => drawOnboarding($, e))
+  on('ui.render', { component: 'Pane', requestId: PLAN_PANE }, async ($, e) => drawPlan($, e))
 
   on('prompt.submit', async ($, e, next) => {
     if (!e.command && !e.isMeta) {
@@ -808,6 +893,11 @@ export const register: Register = (on, options) => {
       const ok = await refreshAll($)
       return say($, ok ? 'Pace figures refreshed' : 'Could not reach the usage endpoint; showing the latest local figures')
     }
+    if (arg === 'plan' || arg.startsWith('plan ')) {
+      planShown = raw.slice(4).trim() || null
+      const where = await openPlan($)
+      return say($, `Plan timeline opened ${where === 'split' ? 'in a tmux sidebar' : 'in a pane'}: ${(await shownPlan($)).plan}`)
+    }
     if (arg && arg !== 'pane' && arg !== 'window' && arg !== 'split') return say($, `Unknown argument "${arg}": use ${USAGE}`)
     await tick($)
     if (arg === 'window') {
@@ -839,10 +929,11 @@ export const register: Register = (on, options) => {
 
   // The split's viewer would show stale figures once the session that feeds it is gone
   on('session.end', async ($, e, next) => {
-    if (splitPane) {
-      try { await $.process.run(['tmux', 'kill-pane', '-t', splitPane]) } catch {}
-      splitPane = undefined
+    for (const pane of [splitPane, planSplit]) {
+      if (pane) try { await $.process.run(['tmux', 'kill-pane', '-t', pane]) } catch {}
     }
+    splitPane = undefined
+    planSplit = undefined
     return next(e)
   })
 

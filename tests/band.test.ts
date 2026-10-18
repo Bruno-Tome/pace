@@ -225,6 +225,21 @@ test('/pace inside tmux opens the viewer in a split beside Claude, once, and clo
   expect(runs).toContainEqual(['tmux', 'kill-pane', '-t', '%7'])
 })
 
+test('/pace split feeds the viewer the plan\'s steps, read from ROADMAP.md', async ($, on) => {
+  const { files } = world(on, { TMUX: '/tmp/tmux-501/default,1,0', TMUX_PANE: '%3' })
+  files['/tmp/ROADMAP.md'] = '# Roadmap\n\n- [x] Fix the reset\n- [ ] Write CI\n'
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  await $.command.run({ command: 'pace', args: 'split' } as any)
+  const state = JSON.parse(files['/home/u/.claude/pace-state.json'] ?? 'null')
+  expect(state.plan).toEqual({
+    name: 'ROADMAP.md',
+    steps: [
+      { text: 'Fix the reset', state: 'done', section: 'Roadmap' },
+      { text: 'Write CI', state: 'next', section: 'Roadmap' },
+    ],
+  })
+})
+
 test('/pace outside tmux opens a pane here, docked wide beside a fullscreen transcript', async ($, on) => {
   const { runs, opens } = world(on)
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)

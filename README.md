@@ -1,7 +1,5 @@
 # pace
 
-[中文](README.zh-CN.md)
-
 **Rate-limit pacing for Claude Code, in the terminal.** pace sets your 5-hour and weekly quotas against the clock
 while you work, prices each prompt, and keeps long-running sessions from getting **gassed out**: hitting a spent
 quota and stalling until it resets.
@@ -61,6 +59,8 @@ Outside tmux, `/pace` opens the pane instead.
 - **A status-line entry,** or with `placement: status`, a full row your status line prints.
 - **`/pace`:** burn-up charts for every quota. Inside tmux it opens full-screen in a split beside Claude (two
   columns on wide splits; keys: `1`–`9` shows one quota alone, `w` cycles warm mode, `r` refreshes, `q` quits).
+  The split also shows auto mode's run or on pace mode under its title, with `effort a level lighter` while the
+  rate would run a quota out, and the plan's timeline under the charts when the plan has a checklist.
   Outside tmux it opens a pane inside Claude Code, docked full-height beside the transcript in fullscreen mode.
   `/pace pane` always opens the pane; `/pace window` opens the full-screen view in a macOS terminal window.
 
@@ -124,11 +124,15 @@ gassed out before it resets, and when it is gassed out.
 
 ## Auto mode
 
-`/pace auto <plan file> [turns]` works through a plan or roadmap with no one at the keyboard. The first time, a
+`/pace auto [plan file] [turns]` works through a plan or roadmap with no one at the keyboard, `ROADMAP.md` when no
+file is given. The first time, a
 pane says what it does and that it spends quota on its own; it starts when you press Start.
 
 - After each turn pace sends the next prompt, until Claude ends a turn with `PACE: DONE` or `PACE: BLOCKED`, or the
   turn cap (40 by default) is reached.
+- Its last turn, done or blocked, ends with a report for when you are back: what got done, why it stopped, what
+  needs you (each with its reason and urgency, most urgent first) and how to do it, and the plan's checklist as it
+  now stands.
 - It never prompts a turn that would only wait. When Claude is waiting on background work (a test run, a
   subagent, CI), it ends the turn with `PACE: WAITING <what>` and pace sends nothing: Claude Code starts the next
   turn when the work reports, and pace checks in after 15 minutes in case it hung. Two turns in a row that change
@@ -149,16 +153,46 @@ quotas, prompts and spend are shared, so every session paces against the same bu
 Its instructions are a fixed system-prompt section, so the prompt cache keeps them. Live pacing notes ride in each
 prompt instead. `/pace auto off` stops it; an interrupt pauses it until `/pace auto resume`.
 
+### The plan's timeline
+
+`/pace plan [file]` opens the plan as a timeline in a sidebar, so a long run reads at a glance. Starting auto mode
+opens it too. Inside tmux it is a narrow split on the right of Claude (Node 23.6 or later on your `PATH`; q there
+closes it); elsewhere it is a pane, docked beside the transcript in fullscreen from 110 columns. It shows the steps done (`✔`), the step under way (`◉`) and the step up next (`○`), read from the
+plan's checklist (`- [ ]` and `- [x]` items) each time a turn ends. The header gives how many steps are done, a
+progress bar and what auto mode is doing: its turn, a hold, a wait or a pause. A long step wraps under its own text,
+the timeline's line running on beside it, so each step reads whole in a narrow sidebar. A long plan folds the steps done long
+ago and the ones far ahead to fit the pane.
+
+It is animated: the steps come in from the top, a dot runs down the line into the step under way while its marker
+spins, and a step that gets ticked off pops into a check.
+
+```
+ROADMAP.md  ·  12 of 20 steps done
+━━━━━━━━━━━━━━━━━━━━━━━━──────────────── 60%  ·  turn 14 of 40
+
+  ✔  10 earlier steps done
+  │
+  ✔  Draw the timeline
+  │
+  │
+  ◉  Animate the steps · under way
+  ┆
+  ○  Ship it · up next
+  ┆
+  ○  6 more steps
+```
+
 ## Commands
 
 | Command | Does |
 | --- | --- |
-| `/pace` | The charts in a tmux split beside Claude, or a pane outside tmux |
+| `/pace` | The charts, the modes and the plan's timeline in a tmux split beside Claude, or a pane outside tmux |
 | `/pace pane` | The charts in a pane |
 | `/pace window` | The charts in a macOS terminal window of their own |
 | `/pace refresh` | Reads every source again |
 | `/pace on`, `/pace off` | On pace mode |
-| `/pace auto <plan> [turns]`, `auto off`, `auto resume` | Auto mode |
+| `/pace auto [plan] [turns]`, `auto off`, `auto resume` | Auto mode; the plan defaults to `ROADMAP.md` |
+| `/pace plan [file]` | The plan's timeline in a sidebar (a tmux split, or a pane): auto mode's plan, the file named, or `ROADMAP.md` |
 | `/pace warm ping \| compact \| off` | Keeps an idle cache warm |
 | `/pace hide`, `/pace show` | The band |
 | `/pace line on \| off` | The status-line entry |
@@ -223,8 +257,12 @@ hooks/model.ts         what is drawn: each quota's row, the rate against it, adv
 hooks/view.ts          every drawing as lines of styled segments: band, status line, pane, window
    ├─ chart.ts         braille burn-up charts
    ├─ band-client.tsx  the band's animation on the surface's frame clock
+   ├─ timeline.ts      the plan timeline's animation, as frames
+   ├─ plan-client.tsx  the timeline in a pane, on the surface's frame clock
+   ├─ bin/plan-viewer.ts the timeline as a tmux sidebar, run by Node
    └─ bin/viewer.ts    the full-screen window, run by Node in a tmux split or a terminal window
 hooks/auto.ts          auto mode and on pace mode, as decisions
+hooks/plan.ts          the plan's checklist as steps: done, under way, next
 hooks/alerts.ts        the once-per-window warnings
 hooks/files.ts         the files pace writes in ~/.claude, shared with the viewer
 types/index.d.ts       the public contract: stored shapes and $.pace

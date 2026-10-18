@@ -90,3 +90,49 @@ test('the band, the status-line row and the status-line entry say the same rate 
     }
   }
 })
+
+const PLAN: Feed['plan'] = {
+  name: 'ROADMAP.md',
+  steps: [
+    { text: 'Platform table', state: 'done', section: 'Docs' },
+    { text: 'CI', state: 'now', section: 'Release' },
+    { text: '1.0.0', state: 'next', section: 'Release' },
+  ],
+}
+
+test('the split shows auto mode\'s run under its title and the plan\'s timeline under the charts', () => {
+  const auto = { plan: 'ROADMAP.md', turns: 3, max: 20 }
+  const lines = plain(screen({ ...STATE, onPace: true, auto, plan: PLAN }, NOW, 100, 60)).split('\n')
+  expect(lines.length).toBeLessThanOrEqual(60)
+  const text = lines.join('\n')
+  expect(lines[1]).toContain('auto  ▶ ROADMAP.md · turn 3/20')
+  expect(text).toContain('1 of 3 steps done')
+  expect(text).toContain('CI · under way')
+  expect(text).toContain('1.0.0 · up next')
+  const at = (s: string) => lines.findIndex(l => l.includes(s))
+  expect(at('Plan')).toBeGreaterThan(at('5-hour window'))
+  expect(at('Plan')).toBeLessThan(at('Prompting'))
+})
+
+test('the split without a plan or a mode draws no plan and no modes row', () => {
+  const text = plain(screen(STATE, NOW, 100, 60))
+  expect(text).not.toContain('steps done')
+  expect(text).not.toContain('auto  ')
+  expect(text).not.toContain('on pace ●')
+})
+
+test('on pace mode in the split says the effort is a level lighter while the rate runs a quota out', () => {
+  // 20 prompts in 20 minutes on a window at 60%: a burst that runs it out before its reset
+  const burst: Feed = { ...STATE, onPace: true, prompts: Array.from({ length: 20 }, (_, i) => NOW - i * 60_000) }
+  expect(plain(screen(burst, NOW, 100, 60))).toContain('effort a level lighter')
+  // One prompt in the last hour: steady, the effort as set
+  expect(plain(screen({ ...STATE, onPace: true }, NOW, 100, 60))).not.toContain('effort a level lighter')
+})
+
+test('the split\'s status row puts the lighter effort with the mode\'s figures, the command to turn it off last', () => {
+  const prompts = Array.from({ length: 20 }, (_, i) => NOW - i * 60_000)
+  const auto = plain(screen({ ...STATE, prompts, onPace: true, auto: { plan: 'ROADMAP.md', turns: 3, max: 20 } }, NOW, 100, 60)).split('\n')[1]
+  expect(auto).toBe('auto  ▶ ROADMAP.md · turn 3/20 · effort a level lighter · /pace auto off')
+  const onPace = plain(screen({ ...STATE, prompts, onPace: true }, NOW, 100, 60)).split('\n')[1]
+  expect(onPace).toBe('on pace ● compacts heavy contexts, keeps the cache warm · effort a level lighter · /pace off')
+})

@@ -8,3 +8,5 @@ export const STATE_FILE = '.claude/pace-state.json'
 export const VIEW_FILE = '.claude/pace-view.command'
 /** The window's keys for the session, `{ id, cmd }`: the viewer writes it, the mod polls it while feeding */
 export const KEYS_FILE = '.claude/pace-keys.json'
+/** The plan sidebar's feed for one session, a `PlanFeed`: the mod writes it, bin/plan-viewer.ts reads it */
+export const planFeedFile = (session: string) => `.claude/pace-plan-${session}.json`

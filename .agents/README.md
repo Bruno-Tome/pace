@@ -72,7 +72,11 @@ files.ts        the files pace writes in ~/.claude, shared with bin/viewer.ts
 view.ts         every drawing as lines of styled segments
 chart.ts        braille burn-up charts
 band-client.tsx the band's animation, on the client's frame clock
+plan.ts         the plan's checklist as steps on a timeline
+timeline.ts     the plan timeline's animation as frames, shared by the pane and the sidebar
+plan-client.tsx the timeline in a pane, on the client's frame clock
 bin/viewer.ts   the full-screen window, a Node process fed through a state file
+bin/plan-viewer.ts the plan's timeline as a tmux sidebar, fed through a file per session
 types/index.d.ts the public contract: stored shapes and `$.pace`
 ```
 
@@ -121,8 +125,8 @@ Write code that reads like the code around it.
   reason and the user's agreement.
 - **UI text is short and plain.** Sentence case, no jargon, numbers with their unit (`26 of 17%/h`, `out in
   1h04m`). Red and flashing are for the one thing that needs action now; everything else is calm.
-- **Docs move with the code.** A change the user can see updates the README (both languages where it says the
-  same thing) and the changelog in the same change.
+- **Docs move with the code.** A change the user can see updates the README and the changelog in the same
+  change.
 
 ## Definition of done
 
