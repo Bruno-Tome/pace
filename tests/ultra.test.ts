@@ -177,6 +177,7 @@ describe('ultra pace defers to auto mode', () => {
     expect(d.kind).toBe('handoff')
     expect(d.ultra.phase).toBe('review')
     expect(prompt(d)).toContain('.pace/handoff.md')
+    expect(prompt(d)).toContain('The goal: pace ships 1.0 with CI green.')
   })
 })
 

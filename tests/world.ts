@@ -43,10 +43,18 @@ export function world(on: any, env: Record<string, string> = {}, usage: unknown 
   const registered: any[] = []
   on('command.register', (_$: unknown, e: { name: string }) => { registered.push(e); return { value: { command: e.name } } })
   const runs: string[][] = []
+  /** What a command run through `sh -c` (ultra pace's goal check) answers */
+  const shell = { exitCode: 0, stdout: '', stderr: '' }
   on('process.run', (_$: unknown, e: { argv: string[] }) => {
     runs.push(e.argv)
+    if (e.argv[0] === 'sh') return { value: { ...shell } }
     const stdout = e.argv[0] === '/usr/bin/which' ? '/opt/node/bin/node\n' : e.argv[1] === 'split-window' ? '%7\n' : ''
     return { value: { exitCode: 0, stdout, stderr: '' } }
+  })
+  const spawns: { prompt: string; description?: string; model?: string }[] = []
+  on('agent.spawn', (_$: unknown, e: { prompt: string; description?: string; model?: string }) => {
+    spawns.push(e)
+    return { model: e.model ?? 'm', agentId: `agent-${spawns.length}` }
   })
   const commands: string[] = []
   on('command.run', { command: 'compact' }, () => { commands.push('compact'); return { text: '' } as any })
@@ -68,7 +76,7 @@ export function world(on: any, env: Record<string, string> = {}, usage: unknown 
   on('ui.open', (_$: unknown, e: unknown) => { opens.push(e); return { value: { isPlaced: true } } })
   on('ui.close', () => ({ value: undefined }))
   on('ui.render', { component: 'AbovePrompt' }, () => ({ type: 'Box', props: { key: 'native' }, children: [] }) as any)
-  return { stored, status, clock, files, opens, runs, commands, forks, toasts, registered, notices, submitted, fetches: () => fetches }
+  return { stored, status, clock, files, opens, runs, shell, spawns, commands, forks, toasts, registered, notices, submitted, fetches: () => fetches }
 }
 
 /** Every string in a drawn tree, joined: what the terminal shows, without the styling */

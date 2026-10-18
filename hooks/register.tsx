@@ -24,9 +24,9 @@ import { answerQuestions, continuePrompt, decide, effortFor, forModel, HANDOFF_F
 import { addPrice, priceOf, replyEquivalents, ttlSeconds, warmAction } from './cache.ts'
 import { snapshotOf, type Snapshot } from './model.ts'
 import * as Q from './quota.ts'
-import { goalOf, stepsOf } from './plan.ts'
+import { goalOf, lockBroken, planChanges, revisionsOf, stepsOf } from './plan.ts'
 import { startingGear } from './throttle.ts'
-import { gearNote, planPrompt, ultraProtocol, workPrompt } from './ultra.ts'
+import { closingPrompt, decideUltra, fanoutPrompt, gearNote, planPrompt, ultraProtocol, workPrompt, type UltraDecision, type UltraInput } from './ultra.ts'
 import type { PlanFeed } from './timeline.ts'
 import { mergeModelPrompts, mergePrompts } from './rate.ts'
 import { addSpend, mergeSpend } from './spend.ts'
@@ -495,6 +495,16 @@ const ULTRA_FLOOR = 'sonnet'
 let pendingPlan: { plan: string; max: number; ultra?: PaceUltra } | null = null
 /** The effort the main loop last asked for: the user's, which ultra pace's cruise gear keeps */
 let lastEffort: PaceGear['effort'] = 'high'
+/** The plan as the last turn left it, for ultra pace's ticks and lock; null before one was read */
+let planMark: string | null = null
+/** Subagents out on ultra pace's fan-out that have reported, by id */
+let reported = new Set<string>()
+/** How long the goal's check may run */
+const CHECK_TIMEOUT = 10 * 60_000
+/** Lines of the check's output a failed check's review carries */
+const CHECK_TAIL = 40
+/** How long pace waits on a fan-out before checking in, in case a subagent hung */
+const FANOUT_CHECK = 15 * 60_000
 /** The pending end of a hold or a wait: one at a time */
 let holdTimer: { cancel: () => void } | undefined
 /** The session's working directory, where a plan's relative path starts */
@@ -543,6 +553,7 @@ async function submitSoon($: Engine, text: string): Promise<void> {
 async function startAuto($: Engine, plan: string, max: number, ultra?: PaceUltra): Promise<void> {
   await setPrefs($, p => ({ ...p, onPace: true, auto: { plan, turns: 1, max, ...(ultra ? { ultra } : {}) } }))
   progressMark = await progressText($, plan).catch(() => null)
+  planMark = await fileText($, plan).catch(() => null)
   await tell($, ultra
     ? `Ultra pace on: works toward the goal in ${plan} on its own and spends quota while you are away. /pace ultra off stops it.`
     : `Auto mode on: works through ${plan} on its own and spends quota while you are away. /pace auto off stops it.`)
@@ -660,6 +671,7 @@ async function endHold($: Engine): Promise<void> {
   // A turn under way ends by deciding: prompting now would land on top of it
   if (working) return
   await refreshAll($)
+  if (auto.ultra) return decideAndAct($, running(auto), '', false, false)
   await act($, decide({ auto: running(auto), snap: published!, answer: '', aborted: false, model: await modelOf($) }))
 }
 
@@ -669,13 +681,108 @@ async function afterTurn($: Engine, answer: string, aborted: boolean): Promise<v
   await refreshLine($)
   const auto = prefs.auto
   if (auto && !auto.paused) {
-    if (auto.heldUntil == null) await act($, decide({ auto, snap: published!, answer, aborted, model: await modelOf($), progressed: await progressed($, auto.plan) }))
+    if (auto.heldUntil != null) return
+    if (auto.ultra) return decideAndAct($, auto, answer, aborted, true)
+    await act($, decide({ auto, snap: published!, answer, aborted, model: await modelOf($), progressed: await progressed($, auto.plan) }))
     return
   }
   if (prefs.onPace && upkeep(published!) === 'compact') {
     $.ui.toast('pace: compacting a heavy context while its cache is warm')
     await $.command.run({ command: 'compact' })
   }
+}
+
+const doneCount = (markdown: string) => stepsOf(markdown, false).filter(s => s.state === 'done').length
+
+/** Whether every subagent out on the fan-out has reported: its turn's end heard, or the engine lists it as ended */
+async function agentsDone($: Engine, ultra: PaceUltra): Promise<boolean> {
+  const ids = ultra.fanout?.agentIds ?? []
+  const ended = new Set((await $.agent.list().catch(() => [])).filter(a => a.status === 'completed' || a.status === 'failed' || a.status === 'killed').map(a => a.id))
+  return ids.every(id => reported.has(id) || ended.has(id))
+}
+
+/**
+ * Ultra pace's next move, then carried out. `turnRan`: a turn just ended, whose plan changes count; false when a
+ * hold, a wait or a fan-out ends with no turn behind it.
+ */
+async function decideAndAct($: Engine, auto: PaceAuto, answer: string, aborted: boolean, turnRan: boolean): Promise<void> {
+  const after = await fileText($, auto.plan).catch(() => '')
+  const before = planMark ?? after
+  if (turnRan) planMark = after
+  const input: UltraInput = {
+    auto, snap: published!, answer, aborted, model: await modelOf($), effort: lastEffort,
+    progressed: turnRan ? await progressed($, auto.plan) : undefined,
+    ticked: turnRan && doneCount(after) > doneCount(before),
+    lock: turnRan ? lockBroken(planChanges(before, after), revisionsOf(after) > revisionsOf(before)) : [],
+    steps: stepsOf(after, false),
+    agentsDone: await agentsDone($, auto.ultra!),
+  }
+  await actUltra($, decideUltra(input), input)
+}
+
+/** Runs the goal's check as captured at the start, outside the permission prompts: an edited Check: line changes nothing */
+async function runCheck($: Engine, command: string, plan: string): Promise<{ ok: boolean; tail: string }> {
+  if (goalOf(await fileText($, plan).catch(() => ''))?.check !== command) {
+    $.ui.toast(`pace: the plan's Check: line changed; ultra pace runs the one captured at the start: ${command}`)
+  }
+  try {
+    const r = await $.process.run(['sh', '-c', command], { timeoutMs: CHECK_TIMEOUT })
+    return { ok: r.exitCode === 0, tail: `${r.stdout}${r.stderr}`.trimEnd().split('\n').slice(-CHECK_TAIL).join('\n') }
+  } catch (e) {
+    return { ok: false, tail: `The check did not finish within ${CHECK_TIMEOUT / 60_000} minutes, or could not start: ${String(e)}` }
+  }
+}
+
+/** Carries out what ultra pace decided: the check and the fan-out here, everything else as auto mode does */
+async function actUltra($: Engine, d: UltraDecision, input: UltraInput): Promise<void> {
+  const auto = await autoOf($)
+  if (!auto) return
+  const next: PaceAuto = { ...running(auto), ultra: d.ultra }
+  if (d.kind === 'check') {
+    await setAuto($, next)
+    $.ui.toast(`pace: running the goal's check: ${d.command}`)
+    const check = await runCheck($, d.command, auto.plan)
+    return actUltra($, decideUltra({ ...input, auto: next, check }), input)
+  }
+  if (d.kind === 'fanout') {
+    holdTimer?.cancel()
+    reported = new Set()
+    // A started subagent comes back with its id, but for a remote one, which only the check-in covers
+    const agentIds: string[] = []
+    const out: string[] = []
+    for (const [i, step] of d.steps.entries()) {
+      const r = await $.agent.spawn({ prompt: fanoutPrompt(d.ultra.goal, step, i + 1), description: `pace: ${step}`.slice(0, 60), model: d.ultra.gear.subagentModel }).catch(() => null)
+      if (!r || r.deny) continue
+      out.push(step)
+      if (r.agentId) agentIds.push(r.agentId)
+    }
+    if (!out.length) {
+      // None started: the main thread takes the next step itself
+      const { fanout: _, ...rest } = d.ultra
+      await setAuto($, { ...next, turns: auto.turns + 1, ultra: { ...rest, phase: 'work' } })
+      await $.prompt.submit({ text: `${workPrompt(auto.plan)}${gearNote(d.ultra.gear)}` })
+      return
+    }
+    const until = (await $.clock.now()) + FANOUT_CHECK
+    await setAuto($, { ...next, waitingUntil: until, why: `Waiting on ${out.length} subagents`, ultra: { ...d.ultra, fanout: { agentIds, steps: out } } })
+    await holdUntil($, until)
+    $.ui.toast(`pace: ${out.length} subagents out on parallel steps; the main thread waits for their reports`)
+    return
+  }
+  await setAuto($, next)
+  await act($, d)
+  if (d.kind === 'stop' && d.why.startsWith('Goal reached')) await $.prompt.submit({ text: closingPrompt(auto.plan, d.ultra.goal) })
+}
+
+/** A subagent out on the fan-out reported: once the last has, ultra pace decides again */
+async function fanoutReported($: Engine, agentId: string): Promise<void> {
+  const auto = await autoOf($)
+  if (!auto?.ultra?.fanout?.agentIds.includes(agentId)) return
+  reported.add(agentId)
+  if (working || auto.paused || !(await agentsDone($, auto.ultra))) return
+  holdTimer?.cancel()
+  await refreshAll($)
+  await decideAndAct($, running(auto), '', false, false)
 }
 
 /** The onboarding pane: what auto mode does and what it costs, before it starts the first time */
@@ -881,7 +988,11 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId !== undefined) return next(e)
+    if (e.agentId !== undefined) {
+      const r = await next(e)
+      try { await fanoutReported($, e.agentId) } catch {}
+      return r
+    }
     working = false
     const r = await next(e)
     try { await afterTurn($, e.answer, e.isAborted) } catch {}

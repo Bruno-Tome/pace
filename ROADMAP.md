@@ -76,7 +76,7 @@ spends the quota at the pace it allows. The design, every rule and the contract 
       `fanoutPrompt(goal, step)`, the gear line beside `pacingNote`, and `ultraProtocol()` as fixed text.
 - [x] **The shell: start and stop.** `/pace ultra [plan] [turns] [floor..ceiling]` and `/pace ultra resume`; no start
       without a goal; the check captured at start; the onboarding pane's ultra lines; the system section swapped.
-- [ ] **The shell: carry out decisions.** `check` through `$.process.run` with a timeout, `fanout` through
+- [x] **The shell: carry out decisions.** `check` through `$.process.run` with a timeout, `fanout` through
       `$.agent.spawn`, the handoff carrying goal, phase and gear. Extend `tests/world.ts` where it lacks a fake.
 - [ ] **The shell: apply the gear.** `turn.step` sets the main thread's model (cold cache only) and effort;
       `agent.spawn` sets subagent models and denies spawns beyond the gear's count.

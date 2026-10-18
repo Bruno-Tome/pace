@@ -48,6 +48,10 @@ export const reviewPrompt = (plan: string, reason: string, tail?: string) =>
 export const integratePrompt = (plan: string, steps: readonly string[]) =>
   `Integrate the subagents' work on ${steps.map(s => `"${s}"`).join(', ')} from ${plan}: read each report in ${FANOUT_DIR}/, run the suite, tick the steps that hold and reopen what does not.`
 
+/** The last prompt of a run whose goal is reached: the closing report, its headings spelled out, as ultra pace's instructions have left the system prompt */
+export const closingPrompt = (plan: string, goal: string) =>
+  `The goal's check passed: ${goal} Ultra pace has stopped. Write the closing report for the user, who was away, under these headings: **What got done** (each step finished this run, one line each); **Why it stopped** (the goal is reached); **What needs you** (each thing only the user can do, with its reason and urgency, or "Nothing"); **How to do it**; **The plan now** (the checklist in ${plan} as it stands).`
+
 export const verifyPrompt = (plan: string) =>
   `Verify the goal in ${plan}: check each Done when line against the code and give the evidence for it. End with PACE: GOAL if every line holds; otherwise add the steps that are missing.`
 
@@ -125,7 +129,7 @@ export function decideUltra(i: UltraInput): UltraDecision {
     return { kind: 'fanout', steps: parallel, ultra: { ...ultra, phase: 'fanout', fanout: { agentIds: [], steps: parallel } } }
   }
   prompt += pacingNote(i.snap) + gearNote(gear)
-  if (base.kind === 'handoff') return { kind: 'handoff', prompt: `Resume from ${HANDOFF_FILE}: it says what is done, what is next and what you need to know. Then: ${prompt}`, stalls: base.stalls, ultra }
+  if (base.kind === 'handoff') return { kind: 'handoff', prompt: `Resume from ${HANDOFF_FILE}: it says what is done, what is next and what you need to know. The goal: ${u.goal} Then: ${prompt}`, stalls: base.stalls, ultra }
   return { kind: 'continue', prompt, stalls: base.stalls, ultra }
 }
 
