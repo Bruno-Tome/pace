@@ -332,7 +332,8 @@ export function formatDuration(seconds: number): string {
   const m = Math.floor((s % 3600) / 60)
   if (d) return h ? `${d}d ${h}h` : `${d}d`
   if (h) return m ? `${h}h ${m}m` : `${h}h`
-  return `${m}m`
+  // Under a minute: "0m" would read as already
+  return m ? `${m}m` : '<1m'
 }
 
 const pad = (n: number) => String(n).padStart(2, '0')

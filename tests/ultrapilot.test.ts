@@ -229,3 +229,48 @@ test('the Agent tool\'s subagents run on the gear\'s model, and no more of them 
   await $.agent.spawn({ prompt: 'Read the tests.' } as any)
   expect(w.spawns.length).toBe(2)
 })
+
+test('/pace ultra preview plays push on the band for 20 seconds, whatever the quota says, then calms down', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await pace($, 'ultra preview')
+  const band = await $.ui.mount({ plugin: 'pace', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 6, bodyColumns: 120, scroll: {} } as any })
+  const frames: string[] = []
+  for (let i = 0; i < 20; i++) { await band.advance(80); frames.push(JSON.stringify(await band.drawn({ in: 'pace-band' }))) }
+  expect(frames.some(f => f.includes('▓'))).toBe(true)
+  expect(frames.some(f => f.includes('ultra') && f.includes('push'))).toBe(true)
+  await w.clock.advance(21_000)
+  await band.advance(80)
+  const after = JSON.stringify(await band.drawn({ in: 'pace-band' }))
+  expect(after.includes('▓') || after.includes('push')).toBe(false)
+})
+
+test('/pace plan shows the roadmap and the ultra run\'s plan side by side, each counting its own steps', async ($, on) => {
+  const w = world(on)
+  w.files['/tmp/ROADMAP.md'] = '- [x] one\n- [x] two\n- [ ] three'
+  w.files['/tmp/PLAN.md'] = `${PLAN}\n- [x] a\n- [ ] b\n- [ ] c\n- [ ] d`
+  w.stored['session:session-a'] = stored({})
+  await start($)
+  await pace($, 'plan')
+  const pane: any = await $.ui.mount({ plugin: 'pace', surface: 'terminal', component: 'Pane', requestId: 'pace-plan', props: { bodyColumns: 120 } as any } as any)
+  await pane.advance(3000)
+  const tree: any = await pane.drawn({ in: 'pace-plan' })
+  const rows: string[] = (tree.children ?? []).map((r: any) => textOf(r))
+  const head = rows.find(r => r.includes('ROADMAP.md'))!
+  expect(head).toContain('2 of 3 steps done')
+  expect(head).toContain('PLAN.md')
+  expect(head).toContain('1 of 4 steps done')
+})
+
+test('/pace plan takes two files, drawn side by side', async ($, on) => {
+  const w = world(on)
+  w.files['/tmp/A.md'] = '- [x] one\n- [ ] two'
+  w.files['/tmp/B.md'] = '- [ ] x\n- [ ] y\n- [ ] z'
+  await start($)
+  await pace($, 'plan A.md B.md')
+  const pane: any = await $.ui.mount({ plugin: 'pace', surface: 'terminal', component: 'Pane', requestId: 'pace-plan', props: { bodyColumns: 120 } as any } as any)
+  await pane.advance(3000)
+  const text = textOf(await pane.drawn({ in: 'pace-plan' }))
+  expect(text).toContain('1 of 2 steps done')
+  expect(text).toContain('0 of 3 steps done')
+})

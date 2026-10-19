@@ -6,7 +6,8 @@ import type { PaceAuto } from '../types'
 import type { Line, Seg } from './view.ts'
 
 /** What the tmux sidebar draws from: the plan as named and its full path, auto mode's run on it, when written */
-export type PlanFeed = { plan: string; path: string; auto: PaceAuto | null; at: number }
+/** What the sidebar draws from; `also`: a second plan drawn beside the first (the roadmap beside an ultra run's plan) */
+export type PlanFeed = { plan: string; path: string; auto: PaceAuto | null; at: number; also?: { plan: string; path: string; auto: PaceAuto | null } }
 
 /** Frames between two lines coming in */
 const REVEAL = 1

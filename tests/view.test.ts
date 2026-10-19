@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import type { Snapshot } from '../hooks/model.ts'
-import { bandLines, keyAction, lineText, screen, statusRow, type Line, type Feed } from '../hooks/view.ts'
+import { bandLines, keyAction, lineText, screen, sideBySide, statusRow, type Line, type Feed } from '../hooks/view.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const H = 3600_000
@@ -166,4 +166,11 @@ test('an ultra run easing, or after failed checks, says so in the warning color'
   expect(plainLine(modes)).toContain('ultra ▶ ease · sonnet medium · 1 agent')
   expect(plainLine(modes)).toContain('check failed 2×')
   expect(modes.some(s => s.color === 'warning')).toBe(true)
+})
+
+test('two plans side by side: the left padded to its width, a gap, the right; the longer one runs on alone', () => {
+  const left: Line[] = [[{ t: 'abc' }], [{ t: 'de' }]]
+  const right: Line[] = [[{ t: 'X' }], [{ t: 'Y' }], [{ t: 'Z' }]]
+  const rows = sideBySide(left, right, 5).map(l => l.map(s => s.t).join(''))
+  expect(rows).toEqual(['abc     X', 'de      Y', '        Z'])
 })

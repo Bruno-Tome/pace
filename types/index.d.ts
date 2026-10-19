@@ -135,6 +135,8 @@ declare module 'claude-code' {
       /** The same prompts by the model they went to, where it was known */
       modelPrompts: Record<string, number[]>
       prefs: PacePrefs
+      /** Until when `/pace ultra preview` plays push on the band (ms); 0 when it does not */
+      preview: number
       /** The last reply's context, null before one and after /clear or a compaction */
       cache: PaceCacheInfo | null
       /** The last replies' dollars per input-token equivalent, which price the next prompt */

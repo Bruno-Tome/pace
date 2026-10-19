@@ -715,3 +715,18 @@ export function keyAction(key: string, focus: number | undefined): KeyAction {
   if (key === 'r') return { send: 'refresh' }
   return {}
 }
+
+/** The gap between two plans drawn side by side */
+const PAIR_GAP = '   '
+
+/** Two columns of lines side by side: each left line padded to `width`, a gap, the right line; the longer runs on alone */
+export function sideBySide(left: readonly Line[], right: readonly Line[], width: number): Line[] {
+  return Array.from({ length: Math.max(left.length, right.length) }, (_, i) => {
+    const l = left[i] ?? []
+    const pad = Math.max(0, width - l.reduce((n, s) => n + [...s.t].length, 0))
+    return [...l, { t: ' '.repeat(pad) + PAIR_GAP }, ...(right[i] ?? [])]
+  })
+}
+
+/** How wide each of two plans is drawn in `cols` */
+export const pairWidth = (cols: number) => Math.max(20, Math.floor((cols - PAIR_GAP.length) / 2))

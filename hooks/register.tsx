@@ -30,7 +30,7 @@ import { closingPrompt, decideUltra, fanoutPrompt, gearNote, planPrompt, ultraPr
 import { nowRow, type PlanFeed } from './timeline.ts'
 import { mergeModelPrompts, mergePrompts } from './rate.ts'
 import { addSpend, mergeSpend, spendModel } from './spend.ts'
-import { bandLines, chartHeight, lineText, paneLines, planLines, statusRow, toAnsi, type Feed, type Seg } from './view.ts'
+import { bandLines, chartHeight, lineText, pairWidth, paneLines, planLines, sideBySide, statusRow, toAnsi, type Feed, type Seg } from './view.ts'
 
 const PANE = 'pace'
 /** The plan `/pace auto` works through when it is given none */
@@ -44,6 +44,8 @@ const promptsA = atom({ plugin: 'pace', key: 'prompts' } as const, [] as number[
 const modelPromptsA = atom({ plugin: 'pace', key: 'modelPrompts' } as const, {} as Record<string, number[]>)
 const prefsA = atom({ plugin: 'pace', key: 'prefs' } as const, DEFAULT_PREFS)
 const nowA = atom({ plugin: 'pace', key: 'now' } as const, 0)
+/** Until when `/pace ultra preview` plays push on the band; 0 when it does not */
+const previewA = atom({ plugin: 'pace', key: 'preview' } as const, 0)
 const cacheA = atom({ plugin: 'pace', key: 'cache' } as const, null as PaceCacheInfo | null)
 const ttlA = atom({ plugin: 'pace', key: 'ttl' } as const, '1h' as PaceCacheTtl)
 const pricesA = atom({ plugin: 'pace', key: 'prices' } as const, [] as number[])
@@ -70,7 +72,20 @@ async function snapshot($: Engine): Promise<Snapshot> {
   }
 }
 
-function drawBand($: Engine, e: RenderInput<'AbovePrompt'>, s: Snapshot, now: number): RenderElement {
+/** What `/pace ultra preview` draws the band with where no ultra run is at work: a run in push */
+const PREVIEW_RUN: PaceAuto = {
+  plan: 'preview', turns: 1, max: 1,
+  ultra: {
+    goal: 'preview', check: null, phase: 'work', sinceReview: 0, quietReviews: 0, checkFails: 0,
+    models: { floor: 'sonnet', ceiling: 'opus' }, headroomStreak: 0,
+    gear: { model: 'opus', effort: 'xhigh', subagents: 3, subagentModel: 'sonnet', fanout: true },
+  },
+}
+
+function drawBand($: Engine, e: RenderInput<'AbovePrompt'>, snap: Snapshot, now: number, preview = false): RenderElement {
+  // A preview plays push over the band, unless an ultra run is at work to show for itself
+  const working = (a: PaceAuto | null | undefined) => a?.ultra && !a.paused && a.heldUntil == null
+  const s = preview && !working(snap.auto) ? { ...snap, auto: PREVIEW_RUN } : snap
   const els = $.ui.resolve(e)
   const { Box, Text } = els
   const Client = 'Client' in els ? els.Client : undefined
@@ -78,7 +93,7 @@ function drawBand($: Engine, e: RenderInput<'AbovePrompt'>, s: Snapshot, now: nu
   // Animated where the surface runs surface modules; drawn still elsewhere
   // An ultra run at work powers the animation up by its gear
   const a = s.auto
-  const ultra = a?.ultra && !a.paused && a.heldUntil == null ? notchName(a.ultra.gear) : undefined
+  const ultra = a?.ultra && working(a) ? (preview ? 'push' : notchName(a.ultra.gear)) : undefined
   if (Client) return <Client key="pace-band" module="./band-client.tsx" props={{ lines, ...(ultra ? { ultra } : {}) }} />
   return (
     <Box key="pace-band" flexDirection="column">
@@ -509,6 +524,8 @@ let reported = new Set<string>()
 const active = new Set<string>()
 /** The model ultra pace switched the main thread to, on a cold cache; null for the session's own */
 let mainModel: string | null = null
+/** How long `/pace ultra preview` plays push on the band */
+const PREVIEW_MS = 20_000
 /** How long the goal's check may run */
 const CHECK_TIMEOUT = 10 * 60_000
 /** Lines of the check's output a failed check's review carries */
@@ -574,12 +591,22 @@ async function startAuto($: Engine, plan: string, max: number, ultra?: PaceUltra
   await submitSoon($, ultra ? planPrompt(plan) : startPrompt(plan))
 }
 
-/** The plan the timeline shows, its full path, and auto mode's run when it is on that plan */
-async function shownPlan($: Engine): Promise<{ plan: string; path: string; auto: PaceAuto | null }> {
+type ShownPlan = { plan: string; path: string; auto: PaceAuto | null }
+
+/**
+ * The plans the timeline shows, each with its full path and auto mode's run when it is on that plan: the one or two
+ * `/pace plan` named, else the roadmap beside an ultra run's own plan, else auto mode's plan or the roadmap
+ */
+async function shownPlans($: Engine): Promise<ShownPlan[]> {
   const run = await autoOf($)
-  const plan = planShown ?? run?.plan ?? DEFAULT_PLAN
-  return { plan, path: plan.startsWith('/') ? plan : `${cwd}/${plan}`, auto: run?.plan === plan ? run : null }
+  const names = planShown ? planShown.split(/\s+/).slice(0, 2)
+    : run?.ultra && run.plan !== DEFAULT_PLAN ? [DEFAULT_PLAN, run.plan]
+    : [run?.plan ?? DEFAULT_PLAN]
+  return names.map(plan => ({ plan, path: plan.startsWith('/') ? plan : `${cwd}/${plan}`, auto: run?.plan === plan ? run : null }))
 }
+
+/** The first plan the timeline shows */
+const shownPlan = async ($: Engine): Promise<ShownPlan> => (await shownPlans($))[0]!
 
 /** The tmux pane the plan sidebar runs in, while it lives */
 let planSplit: string | undefined
@@ -588,7 +615,8 @@ let planSplit: string | undefined
 async function writePlanFeed($: Engine): Promise<void> {
   const home = await homeOf($)
   if (!home) return
-  const feed: PlanFeed = { ...(await shownPlan($)), at: await $.clock.now() }
+  const [first, also] = await shownPlans($)
+  const feed: PlanFeed = { ...first!, at: await $.clock.now(), ...(also ? { also } : {}) }
   await $.fs.write(`${home}/${planFeedFile(spendId)}`, JSON.stringify(feed))
 }
 
@@ -603,7 +631,9 @@ async function openPlanSplit($: Engine): Promise<boolean> {
   if (!node) return false
   const beside = await $.env.get('TMUX_PANE')
   const run = `exec ${shellQuote(node)} ${shellQuote(`${$.plugin.root}/bin/plan-viewer.ts`)} ${shellQuote(`${home}/${planFeedFile(spendId)}`)}`
-  const r = await $.process.run(['tmux', 'split-window', '-h', '-d', '-l', String(SIDEBAR_COLUMNS), ...(beside ? ['-t', beside] : []), '-P', '-F', '#{pane_id}', run])
+  // Two plans side by side take twice the width
+  const width = (await shownPlans($)).length > 1 ? SIDEBAR_COLUMNS * 2 + 3 : SIDEBAR_COLUMNS
+  const r = await $.process.run(['tmux', 'split-window', '-h', '-d', '-l', String(width), ...(beside ? ['-t', beside] : []), '-P', '-F', '#{pane_id}', run])
   if (r.exitCode !== 0) return false
   planSplit = r.stdout.trim() || undefined
   return true
@@ -628,12 +658,18 @@ async function drawPlan($: Engine, e: RenderInput<'Pane'>): Promise<RenderElemen
   const els = $.ui.resolve(e)
   const { Box, Text } = els
   const Client = 'Client' in els ? els.Client : undefined
-  const { plan, auto } = await shownPlan($)
+  const plans = await shownPlans($)
   const now = (await read($, nowA)) || (await $.clock.now())
-  const steps = stepsOf(await fileText($, plan).catch(() => ''), auto != null && !auto.paused)
+  const cols = e.props.bodyColumns ?? 60
+  const width = plans.length > 1 ? pairWidth(cols) : cols
+  let done = 0
   // Every step: the engine scrolls a pane taller than its room, which beats folding steps away
-  const lines = planLines(steps, { plan, auto, cols: e.props.bodyColumns ?? 60, now, rows: Infinity })
-  const done = steps.filter(s => s.state === 'done').length
+  const drawn = await Promise.all(plans.map(async ({ plan, auto }) => {
+    const steps = stepsOf(await fileText($, plan).catch(() => ''), auto != null && !auto.paused)
+    done += steps.filter(s => s.state === 'done').length
+    return planLines(steps, { plan, auto, cols: width, now, rows: Infinity })
+  }))
+  const lines = drawn.length > 1 ? sideBySide(drawn[0]!, drawn[1]!, width) : drawn[0]!
   if (Client) return <Client key="pace-plan" module="./plan-client.tsx" props={{ lines, done }} />
   return (
     <Box flexDirection="column">
@@ -912,6 +948,13 @@ async function ultraCommand($: Engine, rest: string): Promise<string> {
     return 'Ultra pace off'
   }
   if (rest.toLowerCase() === 'resume') return resumeAuto($)
+  if (rest.toLowerCase() === 'preview') {
+    await update($, previewA, () => 0)
+    const now = await $.clock.now()
+    await update($, previewA, () => now + PREVIEW_MS)
+    timers.push($.clock.after(PREVIEW_MS, () => { void update($, previewA, () => 0).catch(() => {}) }))
+    return `Preview: ultra pace in push on the band for ${PREVIEW_MS / 1000} seconds`
+  }
   const m = /^(\S+)?(?:\s+(\d+))?(?:\s+([\w.-]+)\.\.([\w.-]+))?$/.exec(rest)
   if (!m) return 'Use /pace ultra [plan file] [turns] [floor..ceiling], /pace ultra off or /pace ultra resume'
   const plan = m[1] ?? DEFAULT_PLAN
@@ -943,7 +986,7 @@ function say($: Engine, text: string): {} {
   return {}
 }
 
-const USAGE = 'split | pane | window | refresh | on | off | auto [plan] [turns] | auto off | auto resume | auto burst [off] | ultra [plan] [turns] [floor..ceiling] | ultra off | ultra resume | plan [file] | hide | show | line on | line off | warm compact | warm ping | warm off'
+const USAGE = 'split | pane | window | refresh | on | off | auto [plan] [turns] | auto off | auto resume | auto burst [off] | ultra [plan] [turns] [floor..ceiling] | ultra off | ultra resume | ultra preview | plan [file] [file] | hide | show | line on | line off | warm compact | warm ping | warm off'
 
 export const register: Register = (on, options) => {
   placement = options.placement === 'status' ? 'status' : 'above'
@@ -1128,7 +1171,7 @@ export const register: Register = (on, options) => {
     if (arg === 'plan' || arg.startsWith('plan ')) {
       planShown = raw.slice(4).trim() || null
       const where = await openPlan($)
-      return say($, `Plan timeline opened ${where === 'split' ? 'in a tmux sidebar' : 'in a pane'}: ${(await shownPlan($)).plan}`)
+      return say($, `Plan timeline opened ${where === 'split' ? 'in a tmux sidebar' : 'in a pane'}: ${(await shownPlans($)).map(p => p.plan).join(' beside ')}`)
     }
     if (arg && arg !== 'pane' && arg !== 'window' && arg !== 'split') return say($, `Unknown argument "${arg}": use ${USAGE}`)
     await tick($)
@@ -1153,7 +1196,8 @@ export const register: Register = (on, options) => {
     const prefs = (await read($, prefsA)) ?? DEFAULT_PREFS
     if (!prefs.band) return next(e)
     const now = (await read($, nowA)) || (await $.clock.now())
-    const ours = drawBand($, e, await snapshot($), now)
+    const preview = (await read($, previewA)) > (await $.clock.now())
+    const ours = drawBand($, e, await snapshot($), now, preview)
     const below = await next(e)
     const { Box } = $.ui.resolve(e)
     return <Box flexDirection="column">{ours}{below ?? null}</Box>

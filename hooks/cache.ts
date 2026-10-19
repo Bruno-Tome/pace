@@ -51,12 +51,14 @@ export function priceOf(prices: readonly number[]): number | null {
 
 /** `$0.03`, `$1.20`, `<$0.01` */
 export function formatUsd(usd: number): string {
+  if (usd <= 0) return '$0.00'
   if (usd < 0.005) return '<$0.01'
   return `$${usd.toFixed(2)}`
 }
 
 export function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${Number((n / 1_000_000).toFixed(1))}M`
+  // From 999.5k up, thousands would round to "1000k"
+  if (n >= 999_500) return `${Number((n / 1_000_000).toFixed(1))}M`
   if (n >= 1000) return `${Math.round(n / 1000)}k`
   return String(n)
 }

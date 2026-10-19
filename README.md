@@ -267,7 +267,8 @@ gassed out. The onboarding pane says so before the first run.
 | `/pace auto [plan] [turns]`, `auto off`, `auto resume` | Auto mode; the plan defaults to `ROADMAP.md` |
 | `/pace auto burst`, `auto burst off` | Auto mode stops holding for pacing; only a gassed-out quota holds |
 | `/pace ultra [plan] [turns] [floor..ceiling]`, `ultra off`, `ultra resume` | Ultra pace: works toward the plan's goal until its check passes |
-| `/pace plan [file]` | The plan's timeline in a sidebar (a tmux split, or a pane): auto mode's plan, the file named, or `ROADMAP.md` |
+| `/pace plan [file] [file]` | The plan's timeline in a sidebar (a tmux split, or a pane): the files named, side by side for two; else the roadmap beside an ultra run's plan, auto mode's plan, or `ROADMAP.md` |
+| `/pace ultra preview` | Plays ultra pace's push animation on the band for 20 seconds |
 | `/pace warm ping \| compact \| off` | Keeps an idle cache warm |
 | `/pace hide`, `/pace show` | The band |
 | `/pace line on \| off` | The status-line entry |

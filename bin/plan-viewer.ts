@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs'
 
 import { stepsOf } from '../hooks/plan.ts'
 import { FRAME_MS, followOffset, keyOf, planFrame, scrollBy, type PlanFeed } from '../hooks/timeline.ts'
-import { planLines, toAnsi, type Seg } from '../hooks/view.ts'
+import { pairWidth, planLines, sideBySide, toAnsi, type Seg } from '../hooks/view.ts'
 
 const feedPath = process.argv[2]
 if (!feedPath) {
@@ -18,6 +18,8 @@ if (!feedPath) {
 
 let feed: PlanFeed | null = null
 let text = ''
+/** The second plan's text, where the feed names one to draw beside the first */
+let alsoText = ''
 let f = 0
 let done: number | null = null
 let popAt: number | null = null
@@ -32,6 +34,7 @@ function load(): void {
   try { feed = JSON.parse(readFileSync(feedPath!, 'utf8')) as PlanFeed } catch {}
   if (!feed) return
   try { text = readFileSync(feed.path, 'utf8') } catch { text = '' }
+  try { alsoText = feed.also ? readFileSync(feed.also.path, 'utf8') : '' } catch { alsoText = '' }
 }
 
 /** A line cut to the terminal's width, so it never wraps */
@@ -53,11 +56,17 @@ function draw(): void {
   let body = 'Waiting for pace to write the plan… (q quits)'
   if (feed) {
     const steps = stepsOf(text, feed.auto != null && !feed.auto.paused)
-    const now = steps.filter(s => s.state === 'done').length
+    const also = feed.also ? stepsOf(alsoText, feed.also.auto != null && !feed.also.auto.paused) : null
+    const now = [...steps, ...(also ?? [])].filter(s => s.state === 'done').length
     if (done != null && now > done) popAt = f
     done = now
-    // Every step, the window over them scrolled: folding steps away would hide what you scroll to
-    const lines = planLines(steps, { plan: feed.plan, auto: feed.auto, cols: cols - 1, now: Date.now(), rows: Infinity })
+    // Every step, the window over them scrolled: folding steps away would hide what you scroll to. A second plan
+    // goes beside the first, each with its own count
+    const width = also ? pairWidth(cols - 1) : cols - 1
+    const first = planLines(steps, { plan: feed.plan, auto: feed.auto, cols: width, now: Date.now(), rows: Infinity })
+    const lines = also && feed.also
+      ? sideBySide(first, planLines(also, { plan: feed.also.plan, auto: feed.also.auto, cols: width, now: Date.now(), rows: Infinity }), width)
+      : first
     total = lines.length
     shown = rows - 1
     offset = follow ? followOffset(lines, shown) : Math.min(offset, Math.max(0, total - shown))

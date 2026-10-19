@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The band's sheen crosses each bar to its last cell. It wrapped after a fixed 40 frames (20 in cruise, 14 in push),
+  so on a bar wider than that it turned back short of the end.
+- `/pace ultra preview` plays ultra pace's push animation on the band for 20 seconds, whatever the quota says.
+- The plan's timeline shows the roadmap and an ultra run's own plan side by side, each with its own count of steps
+  done. `/pace plan A.md B.md` puts any two plans side by side; the tmux sidebar opens twice as wide for two.
 - The band powers up while ultra pace runs: in cruise the sheen comes round twice as often; in push it goes super
   saiyan, a wide gold sheen three times as often, the filled cells crackling gold and the `▶` on ultra pace's row
   flickering through sparks.

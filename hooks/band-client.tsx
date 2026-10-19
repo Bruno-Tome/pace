@@ -12,17 +12,31 @@ type Props = { lines: Seg[][]; ultra?: 'push' | 'cruise' | 'ease' }
 const FRAME = 80
 /** Frames the fill takes to reach its value */
 const GROW = 12
-/** Frames between the starts of two sweeps: the sheen's crossing, then a rest */
-const PERIOD = 40
 const PULSE = 6
 
-/** How the animation looks at each of ultra pace's gears; calm without one */
-type Power = { period: number; sheen: number; gold: boolean; crackle: boolean; spark: boolean }
-const CALM: Power = { period: PERIOD, sheen: 2, gold: false, crackle: false, spark: false }
-const POWER: Record<NonNullable<Props['ultra']>, Power> = {
+/**
+ * How the animation looks at each of ultra pace's gears; calm without one. A sweep crosses the whole bar at `speed`
+ * cells a frame, then rests `rest` frames.
+ */
+type Power = { speed: number; rest: number; sheen: number; gold: boolean; crackle: boolean; spark: boolean }
+const CALM: Power = { speed: 1, rest: 28, sheen: 2, gold: false, crackle: false, spark: false }
+export const POWERS = {
+  calm: CALM,
   ease: CALM,
-  cruise: { ...CALM, period: PERIOD / 2 },
-  push: { period: 14, sheen: 3, gold: true, crackle: true, spark: true },
+  cruise: { ...CALM, speed: 2, rest: 12 },
+  push: { speed: 3, rest: 4, sheen: 3, gold: true, crackle: true, spark: true },
+} satisfies Record<string, Power>
+const POWER: Record<NonNullable<Props['ultra']>, Power> = POWERS
+
+/** The cells the sheen lights at frame `f` on a bar `width` cells wide, first to last; off the bar while it rests */
+export function sheenAt(f: number, width: number, power: Power): [number, number] {
+  if (f < GROW) return [-99, -99]
+  // Frames to carry the sheen's tail past the last cell, then the rest
+  const crossing = Math.ceil((width + power.sheen) / power.speed)
+  const t = (f - GROW) % (crossing + power.rest)
+  if (t >= crossing) return [-99, -99]
+  const head = t * power.speed
+  return [head - power.sheen + 1, head]
 }
 /** In place of ultra pace's ▶, one cell wide each so the row keeps its width */
 const SPARKS = ['▶', '✦', '✧', '✦']
@@ -58,7 +72,6 @@ const Band: ClientModule<Props, { f: number }> = (props, surface) => {
 
 /** One row's segments at frame `f`: bar cells hidden until the fill reaches them, the sheen's cells bright */
 function drawLine(Text: any, segs: readonly Seg[], f: number, power: Power = CALM): RenderElement[] {
-  const sweep = f < GROW ? -99 : (f - GROW) % power.period
   const out: RenderElement[] = []
   const inBar = new Map<number, [number, number]>()
   for (const span of barSpans(segs)) for (let i = span[0]; i <= span[1]; i++) inBar.set(i, span)
@@ -79,6 +92,7 @@ function drawLine(Text: any, segs: readonly Seg[], f: number, power: Power = CAL
     const start = lengths.slice(0, i - span[0]).reduce((a, b) => a + b, 0)
     const width = lengths.reduce((a, b) => a + b, 0)
     const grown = Math.min(1, f / GROW) * width
+    const lit = sheenAt(f, width, power)
     const chars = [...s.t]
     // Cells of one look go out together
     let run = ''
@@ -96,7 +110,7 @@ function drawLine(Text: any, segs: readonly Seg[], f: number, power: Power = CAL
       const filled = ch === '█'
       const next =
         filled && cell >= grown ? 'hidden'
-        : cell <= sweep && cell > sweep - power.sheen ? 'sheen'
+        : cell >= lit[0] && cell <= lit[1] ? 'sheen'
         : filled && power.crackle && crackles(cell, f) ? 'crackle'
         : 'plain'
       if (next !== look) flush()
