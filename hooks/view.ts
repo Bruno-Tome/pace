@@ -20,7 +20,7 @@ const MIN = 60_000
  * the plan's, `spin` marks the node of the step under way, `flow` the line into it and `pop` the step done last.
  * `whole` keeps a run on one row when its line wraps.
  */
-export type Seg = { t: string; color?: string; dim?: boolean; bold?: boolean; bar?: boolean; pulse?: boolean; spin?: boolean; flow?: boolean; pop?: boolean; whole?: boolean }
+export type Seg = { t: string; color?: string; dim?: boolean; bold?: boolean; bar?: boolean; pulse?: boolean; spin?: boolean; flow?: boolean; pop?: boolean; whole?: boolean; aura?: boolean }
 export type Line = Seg[]
 
 const compact = (seconds: number) => Q.formatDuration(seconds).replace(/ /g, '')
@@ -225,7 +225,7 @@ function modesLine(s: Snapshot, now: number, extra: readonly Seg[] = []): Line |
     const u = a.ultra
     const tense = notchName(u.gear) === 'ease' || u.checkFails > 0
     return [
-      { t: 'ultra ▶ ', color: tense ? 'warning' : 'success', bold: true },
+      { t: 'ultra ▶ ', color: tense ? 'warning' : 'success', bold: true, aura: true },
       { t: `${gearText(u.gear)} · turn ${a.turns}/${a.max}`, dim: true },
       ...ultraCheck(a),
       ...extra,

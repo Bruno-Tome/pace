@@ -68,3 +68,17 @@ export function followOffset(lines: readonly Line[], rows: number): number {
   const lead = Math.min(4, Math.floor(rows / 3))
   return Math.min(Math.max(0, lines.length - rows), Math.max(0, nowRow(lines) - lead))
 }
+
+const NAMED: Record<string, string> = {
+  '\x1b[A': 'up', '\x1b[B': 'down', '\x1b[5~': 'pageup', '\x1b[6~': 'pagedown',
+  '\x1b[H': 'home', '\x1b[1~': 'home', '\x1b[F': 'end', '\x1b[4~': 'end',
+}
+
+/** What the sidebar reads as a scroll: a key's name for `scrollBy`, the mouse wheel as up or down; null for anything else */
+export function keyOf(k: string): string | null {
+  if (NAMED[k]) return NAMED[k]!
+  // SGR mouse: button 64 is the wheel up, 65 down
+  const wheel = /^\x1b\[<(64|65);\d+;\d+M/.exec(k)
+  if (wheel) return wheel[1] === '64' ? 'up' : 'down'
+  return ['j', 'k', 'g', 'G', ' '].includes(k) ? k : null
+}

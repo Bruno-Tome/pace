@@ -25,7 +25,7 @@ import { addPrice, priceOf, replyEquivalents, ttlSeconds, warmAction } from './c
 import { snapshotOf, type Snapshot } from './model.ts'
 import * as Q from './quota.ts'
 import { goalOf, lockBroken, planChanges, revisionsOf, stepsOf } from './plan.ts'
-import { coldAt, mainModelFor, requestModel, spawnAllowed, startingGear, subagentModelFor } from './throttle.ts'
+import { coldAt, mainModelFor, notchName, requestModel, spawnAllowed, startingGear, subagentModelFor } from './throttle.ts'
 import { closingPrompt, decideUltra, fanoutPrompt, gearNote, planPrompt, ultraProtocol, workPrompt, type UltraDecision, type UltraInput } from './ultra.ts'
 import { nowRow, type PlanFeed } from './timeline.ts'
 import { mergeModelPrompts, mergePrompts } from './rate.ts'
@@ -76,7 +76,10 @@ function drawBand($: Engine, e: RenderInput<'AbovePrompt'>, s: Snapshot, now: nu
   const Client = 'Client' in els ? els.Client : undefined
   const lines = bandLines(s, now, e.props.bodyColumns ?? 100)
   // Animated where the surface runs surface modules; drawn still elsewhere
-  if (Client) return <Client key="pace-band" module="./band-client.tsx" props={{ lines }} />
+  // An ultra run at work powers the animation up by its gear
+  const a = s.auto
+  const ultra = a?.ultra && !a.paused && a.heldUntil == null ? notchName(a.ultra.gear) : undefined
+  if (Client) return <Client key="pace-band" module="./band-client.tsx" props={{ lines, ...(ultra ? { ultra } : {}) }} />
   return (
     <Box key="pace-band" flexDirection="column">
       {lines.map((segs, i) => <Text key={`pace-line-${i}`} wrap="truncate-end">{toText(Text, segs)}</Text>)}

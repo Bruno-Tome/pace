@@ -42,6 +42,50 @@ test('the band animates: the bars fill in, then a sheen sweeps across them, its 
   expect(frames.size).toBeGreaterThan(5)
 })
 
+/** An ultra run of this session's in `gear`, stored as `claude --resume` finds it */
+const ultraRun = (gear: object) => ({
+  at: NOW - H, onPace: true,
+  auto: { plan: 'PLAN.md', turns: 4, max: 80, ultra: {
+    goal: 'Ship it.', check: null, phase: 'work', sinceReview: 0, quietReviews: 0, checkFails: 0,
+    models: { floor: 'sonnet', ceiling: 'opus' }, headroomStreak: 0, gear,
+  } },
+})
+const PUSH = { model: 'opus', effort: 'xhigh', subagents: 3, subagentModel: 'sonnet', fanout: true }
+
+/** 30 frames of the band: each frame's tree as JSON, and the mark after `ultra` on the modes row */
+async function bandFrames($: any): Promise<{ trees: string[]; sparks: Set<string> }> {
+  const ui = await $.ui.mount({ plugin: 'pace', surface: 'terminal', component: 'AbovePrompt', props: BAND as any })
+  const trees: string[] = []
+  const sparks = new Set<string>()
+  for (let i = 0; i < 30; i++) {
+    await ui.advance(80)
+    const t: any = await ui.drawn({ in: 'pace-band' })
+    trees.push(JSON.stringify(t))
+    const row = textOf(t.children.at(-1))
+    if (row.startsWith('ultra ')) sparks.add([...row][6]!)
+  }
+  return { trees, sparks }
+}
+
+test('ultra pace in push goes super saiyan: gold sheen, crackling bars, a spark on its row', async ($, on) => {
+  const w = world(on)
+  w.stored['session:session-a'] = ultraRun(PUSH)
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  const { trees, sparks } = await bandFrames($)
+  expect(trees.some(t => t.includes('▓'))).toBe(true)
+  expect(trees.some(t => t.includes('"color":"warning"') && t.includes('█'))).toBe(true)
+  // The ▶ flickers through sparks, the word itself untouched
+  expect(sparks.size).toBeGreaterThanOrEqual(3)
+  expect([...sparks].every(c => '▶✦✧'.includes(c))).toBe(true)
+})
+
+test('the band without ultra pace keeps its calm: no crackle, no spark', async ($, on) => {
+  world(on)
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  const { trees } = await bandFrames($)
+  expect(trees.some(t => t.includes('▓') || t.includes('✦'))).toBe(false)
+})
+
 test('/pace hide removes the band and /pace pane opens the pane', async ($, on) => {
   world(on)
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)

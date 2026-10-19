@@ -7,7 +7,7 @@
 import { readFileSync } from 'node:fs'
 
 import { stepsOf } from '../hooks/plan.ts'
-import { FRAME_MS, followOffset, planFrame, scrollBy, type PlanFeed } from '../hooks/timeline.ts'
+import { FRAME_MS, followOffset, keyOf, planFrame, scrollBy, type PlanFeed } from '../hooks/timeline.ts'
 import { planLines, toAnsi, type Seg } from '../hooks/view.ts'
 
 const feedPath = process.argv[2]
@@ -66,19 +66,6 @@ function draw(): void {
   }
   // Home, each line cleared to its end, then the rest of the screen cleared: no flicker between frames
   process.stdout.write('\x1b[H' + body.split('\n').map(l => `${l}\x1b[K`).join('\n') + '\x1b[J')
-}
-
-/** A key or a wheel turn as a scroll: null for anything else */
-function keyOf(k: string): string | null {
-  const named: Record<string, string> = {
-    '\x1b[A': 'up', '\x1b[B': 'down', '\x1b[5~': 'pageup', '\x1b[6~': 'pagedown',
-    '\x1b[H': 'home', '\x1b[1~': 'home', '\x1b[F': 'end', '\x1b[4~': 'end',
-  }
-  if (named[k]) return named[k]!
-  // SGR mouse: button 64 is the wheel up, 65 down
-  const wheel = /^\x1b\[<(64|65);\d+;\d+M/.exec(k)
-  if (wheel) return wheel[1] === '64' ? 'up' : 'down'
-  return ['j', 'k', 'g', 'G', ' '].includes(k) ? k : null
 }
 
 function quit(): void {

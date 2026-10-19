@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The band powers up while ultra pace runs: in cruise the sheen comes round twice as often; in push it goes super
+  saiyan, a wide gold sheen three times as often, the filled cells crackling gold and the `▶` on ultra pace's row
+  flickering through sparks.
 - A quota pace sees no prompt for is no longer idle while it moves: where its readings measure its movement, idle
   means it has not moved, whoever moved it. A Fable subagent in a session prompting Opus, another session or
   claude.ai now shows on the Fable week's rate in every session, instead of `idle`. Prompt counts decide idle only

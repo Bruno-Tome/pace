@@ -247,7 +247,8 @@ or a `PACE: REPLAN <why>`), or a turn integrating subagents' work.
   more of them run at once than the gear allows. In push, `(parallel)` steps go to background subagents that write
   a report to `.pace/fanout/<n>.md`; a turn then integrates them and ticks what holds.
 - **Where it shows.** Under the band and in the status-line entry, `ultra ▶ push · opus xhigh · 3 agents · turn
-  4/80`, in the warning color while it eases or after a failed check. The timeline gives the goal, the phase of the
+  4/80`, in the warning color while it eases or after a failed check. The band powers up with the gear: in push a
+  wide gold sheen sweeps the bars, the filled cells crackle and the `▶` flickers through sparks. The timeline gives the goal, the phase of the
   step under way and the steps out on subagents.
 
 **What it costs.** Ultra pace spends quota on its own, and in push it spends it faster on purpose: a stronger model,
