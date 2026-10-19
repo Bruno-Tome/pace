@@ -90,6 +90,12 @@ spends the quota at the pace it allows. The design, every rule and the contract 
       entry (`ultra · push · opus xhigh · 3 agents`).
 - [x] **Docs.** A README section on ultra pace (the goal block, the check, the throttle, what it costs) and the
       changelog.
+- [x] **Timers after a reload.** A hot reload cancels pace's pending timers, and fires `session.start` again, whose
+      `load()` re-arms a run's hold or wait from the stored run. A test pins the wait.
+- [ ] **A fan-out picked up on its own.** The push run's integrate turn needed `/pace ultra resume`: the reports were
+      lost to a reload (now kept with the run), and the fallback, a subagent the engine no longer lists at work,
+      did not fire. On the next fan-out, read the wait's recorded agent statuses and fix what they show.
+      **(needs a live fan-out)**
 - [ ] **A live run.** Ultra pace on a small real goal over one 5-hour window: watch the gear move, the reviews, a
       failed check and a fan-out, then tune `REVIEW_EVERY`, the guard limits and the headroom thresholds.
       **(needs you)**

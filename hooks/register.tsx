@@ -1036,11 +1036,14 @@ export const register: Register = (on, options) => {
       $.clock.every(MIN, () => { void tick($).catch(() => {}) }),
       $.clock.every(15_000, () => { void cacheTick($).catch(() => {}) }),
       $.clock.every(5 * MIN, () => { void sampleCache($).catch(() => {}) }),
-      // Per-model quotas only move through the endpoint: ask again every 15 minutes, and only after a prompt since the last ask
-      $.clock.every(15 * MIN, () => {
+      // Per-model quotas only move through the endpoint: ask again every 3 minutes, and only after a prompt or any
+      // session's spend since the last ask (another session's subagents spend without prompting)
+      $.clock.every(3 * MIN, () => {
         void (async () => {
+          await tick($)
           const prompts = (await read($, promptsA)) ?? []
-          const latest = prompts[prompts.length - 1] ?? 0
+          const spent = (await read($, spendA)) ?? []
+          const latest = Math.max(prompts[prompts.length - 1] ?? 0, ...spent.map(x => x.t))
           if (latest <= lastFetchPrompt) return
           lastFetchPrompt = latest
           await sampleUsageApi($)

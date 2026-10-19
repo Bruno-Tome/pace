@@ -580,3 +580,17 @@ test('on pace mode asks for one effort level lighter while a burst lasts', async
   await step()
   expect(asked).toEqual(['high', 'medium'])
 })
+
+test('another session\'s spend with no prompt of its own (its subagents at work) brings the figures again; a quiet hour does not', async ($, on) => {
+  const { clock, stored, fetches } = world(on)
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  const before = fetches()
+  await clock.advance(30 * 60_000)
+  expect(fetches()).toBe(before)
+  stored['spend'] = [{ t: NOW + 31 * 60_000, id: 'session-b', usd: 2, m: 'claude-fable-5-1' }]
+  // Within 3 minutes of the spend
+  await clock.advance(3 * 60_000)
+  expect(fetches()).toBe(before + 1)
+  await clock.advance(30 * 60_000)
+  expect(fetches()).toBe(before + 1)
+})

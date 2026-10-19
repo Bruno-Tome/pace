@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A model's own week (Fable's) moves while another session's subagents spend it with no prompt anywhere: the
+  usage check now runs every 3 minutes (was 15) after any session's spend, not only after a prompt.
 - Under a minute reads `<1m`, not `0m` (`out in <1m`); 999.5k tokens and up read `1M`, not `1000k`; nothing spent
   reads `$0.00`, not `<$0.01`.
 - Ultra pace integrates a fan-out once every subagent has reported, even across a reload. The reports were kept in

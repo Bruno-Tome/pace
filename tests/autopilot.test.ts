@@ -299,6 +299,17 @@ test('a resumed session whose run was holding picks the plan back up when the ho
   expect(submitted[0]).toContain('ROADMAP.md')
 })
 
+test('a run that was waiting when pace reloaded waits on, and decides when the wait ends', async ($, on) => {
+  const { submitted, stored, clock } = world(on)
+  // A reload fires session.start again; the wait it cancelled must come back from the stored run
+  stored['session:session-a'] = { at: NOW - H, onPace: true, auto: { plan: 'ROADMAP.md', turns: 5, max: 40, waitingUntil: NOW + 10 * 60_000, why: 'Waiting on the test run' } }
+  await start($)
+  expect(submitted).toEqual([])
+  await clock.advance(11 * 60_000)
+  expect(submitted.length).toBe(1)
+  expect(submitted[0]).toContain('ROADMAP.md')
+})
+
 test('a session\'s own modes are forgotten a month after it was last used', async ($, on) => {
   const { stored } = world(on)
   stored['session:old'] = { at: NOW - 31 * 24 * H, onPace: true }
