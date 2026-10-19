@@ -274,3 +274,34 @@ test('/pace plan takes two files, drawn side by side', async ($, on) => {
   expect(text).toContain('1 of 2 steps done')
   expect(text).toContain('0 of 3 steps done')
 })
+
+test('a subagent\'s report heard before a reload still counts: the reports are kept with the run', async ($, on) => {
+  const w = world(on)
+  w.files['/tmp/PLAN.md'] = `${PLAN}\n${STEPS}`
+  // agent-1 reported, then the hooks module reloaded (a subagent edited it): only the stored run remembers
+  w.stored['session:session-a'] = stored({ phase: 'fanout', fanout: { agentIds: ['agent-1', 'agent-2'], steps: ['Bump plugin.json', 'Move Unreleased'], reported: ['agent-1'] } })
+  await start($)
+  await $.turn.complete({ answer: 'Moved.', durationMs: 1, isAborted: false, turnId: 's2', reason: 'answer', agentId: 'agent-2' } as any)
+  expect(w.submitted.at(-1)).toMatch(/Integrate the subagents' work/)
+})
+
+test('each report is stored with the run as it comes in', async ($, on) => {
+  const w = world(on)
+  w.files['/tmp/PLAN.md'] = `${PLAN}\n${STEPS}`
+  w.stored['session:session-a'] = stored({ phase: 'fanout', fanout: { agentIds: ['agent-1', 'agent-2'], steps: ['Bump plugin.json', 'Move Unreleased'] } })
+  await start($)
+  await $.turn.complete({ answer: 'Bumped.', durationMs: 1, isAborted: false, turnId: 's1', reason: 'answer', agentId: 'agent-1' } as any)
+  expect(runOf(w).ultra.fanout.reported).toEqual(['agent-1'])
+})
+
+test('/pace ultra resume on a run waiting on its fan-out goes on to integrate what the subagents did', async ($, on) => {
+  const w = world(on)
+  w.files['/tmp/PLAN.md'] = `${PLAN}\n${STEPS}`
+  w.stored['session:session-a'] = stored({ phase: 'fanout', fanout: { agentIds: ['agent-1', 'agent-2'], steps: ['Bump plugin.json', 'Move Unreleased'] } })
+  await start($)
+  await pace($, 'ultra resume')
+  await w.clock.advance(1)
+  expect(w.submitted.at(-1)).toMatch(/Integrate the subagents' work on "Bump plugin.json", "Move Unreleased"/)
+  expect(runOf(w).ultra.phase).toBe('integrate')
+  expect(runOf(w).ultra.fanout).toBeUndefined()
+})

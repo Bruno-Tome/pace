@@ -139,6 +139,7 @@ const withoutDue = ({ due: _, ...u }: PaceUltra): PaceUltra => u
 
 /** What the gear allows in subagents, said in each prompt; the model and effort are set by pace, not asked for */
 export function gearNote(g: PaceGear): string {
+  if (g.subagents < 1) return ' Pace allows no subagents: do the work inline.'
   const who = `${g.subagents} subagent${g.subagents === 1 ? '' : 's'} on ${g.subagentModel}`
   const use = g.subagents > 1 ? 'delegate searches, reads and independent steps' : 'keep it to searches and reads, the rest inline'
   return ` Pace allows ${who}: ${use}.`

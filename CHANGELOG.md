@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Under a minute reads `<1m`, not `0m` (`out in <1m`); 999.5k tokens and up read `1M`, not `1000k`; nothing spent
+  reads `$0.00`, not `<$0.01`.
+- Ultra pace integrates a fan-out once every subagent has reported, even across a reload. The reports were kept in
+  memory, so a subagent editing pace's own code reloaded it and lost the reports already in: the run waited on
+  subagents that had finished. They are now kept with the run (`fanout.reported` in `PaceUltra`), and a subagent
+  Claude Code no longer lists at work counts as reported. A 0-subagent gear says to work inline, and a session
+  stored with a timestamp of `NaN` or `Infinity` is forgotten like any old one. `/pace ultra resume` on a run
+  waiting on its fan-out integrates what the subagents did, and the wait says how Claude Code lists each subagent.
 - The band's sheen crosses each bar to its last cell. It wrapped after a fixed 40 frames (20 in cruise, 14 in push),
   so on a bar wider than that it turned back short of the end.
 - `/pace ultra preview` plays ultra pace's push animation on the band for 20 seconds, whatever the quota says.

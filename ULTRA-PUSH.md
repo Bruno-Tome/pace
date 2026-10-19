@@ -18,13 +18,14 @@ Check: `npx --yes -p typescript@5 tsc -p . && claude plugin validate . && claude
 
 ## Steps
 - [x] tests/format.test.ts for formatDuration, clockAt, formatTokens and formatUsd, edge values included; fix what it finds (parallel)
-- [ ] tests/quota-names.test.ts for drawsOn, isWeekly, isPerModel, theName and modelName; fix what it finds (parallel)
-- [ ] tests/gear-text.test.ts for notchName, gearText and startingGear, every notch, an id and an alias; fix what it finds (parallel)
-- [ ] tests/prompts.test.ts for ultra pace's prompt builders and gearNote; fix what it finds (parallel)
-- [ ] tests/session-keys.test.ts for sessionKey, isSessionKey, sharedOf, sessionOf and isStale; fix what it finds (parallel)
-- [ ] Integrate the subagents' reports, note any fixed bug in CHANGELOG.md, run the check and claim the goal
+- [x] tests/quota-names.test.ts for drawsOn, isWeekly, isPerModel, theName and modelName; fix what it finds (parallel)
+- [x] tests/gear-text.test.ts for notchName, gearText and startingGear, every notch, an id and an alias; fix what it finds (parallel)
+- [x] tests/prompts.test.ts for ultra pace's prompt builders and gearNote; fix what it finds (parallel)
+- [x] tests/session-keys.test.ts for sessionKey, isSessionKey, sharedOf, sessionOf and isStale; fix what it finds (parallel)
+- [x] Integrate the subagents' reports, note any fixed bug in CHANGELOG.md, run the check and claim the goal
 
 ## Revisions
 - turn 0 · written by hand for a push run: five independent steps, each in a file of its own, then one to integrate and check
 - turn 1 · kept the 6 steps as written: each parallel step names its own new test file and the module it may fix, so subagents never share a file; the integrate step owns CHANGELOG.md, so no subagent edits it
 - turn 2 · format tests found 3 bugs, fixed: under a minute read "0m" (now "<1m"), 999.6k tokens read "1000k" (now "1M"), $0 read "<$0.01" (now "$0.00")
+- turn 9 · integrated the fan-out: prompts (gearNote with 0 subagents said "0 subagents on sonnet", fixed) and session keys (isStale kept a NaN/Infinity timestamp forever, fixed); each red without its fix

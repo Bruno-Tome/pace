@@ -34,7 +34,7 @@ export type PaceGear = {
  * check, until the goal is verified). `sinceReview`: work turns since the last review; `quietReviews`: reviews in a
  * row with no new tick; `checkFails`: failed checks in a row; `models`: the user's bounds on the gear's model;
  * `headroomStreak`: decisions in a row the headroom has pointed away from the gear; `fanout`: subagents out on
- * `(parallel)` steps; `due`: a review owed while auto mode holds or waits, with the check's output when it failed
+ * `(parallel)` steps, and those that reported; `due`: a review owed while auto mode holds or waits, with the check's output when it failed
  */
 export type PaceUltra = {
   goal: string
@@ -46,7 +46,7 @@ export type PaceUltra = {
   models: { floor: string; ceiling: string }
   gear: PaceGear
   headroomStreak: number
-  fanout?: { agentIds: string[]; steps: string[] }
+  fanout?: { agentIds: string[]; steps: string[]; reported?: string[] }
   due?: { reason: string; tail?: string }
 }
 

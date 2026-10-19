@@ -44,3 +44,9 @@ test('a run in burst reads back in burst; one stored without it is not', () => {
   expect(prefsFrom({}, { at: 0, auto: { ...RUN, burst: true } }).auto).toEqual({ ...RUN, burst: true })
   expect(prefsFrom({}, { at: 0, auto: { ...RUN, burst: 'yes' } }).auto).toEqual(RUN)
 })
+
+test('a fan-out\'s reports read back with it; a run stored before them reads with none', () => {
+  const out = { agentIds: ['a1', 'a2'], steps: ['x', 'y'] }
+  expect(prefsFrom({}, { at: 0, auto: { ...RUN, ultra: { ...ULTRA, fanout: { ...out, reported: ['a1'] } } } }).auto?.ultra?.fanout).toEqual({ ...out, reported: ['a1'] })
+  expect(prefsFrom({}, { at: 0, auto: { ...RUN, ultra: { ...ULTRA, fanout: out } } }).auto?.ultra?.fanout).toEqual(out)
+})

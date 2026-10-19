@@ -48,7 +48,9 @@ function ultraOf(v: unknown): PaceUltra | null {
     goal: v.goal, check: v.check, phase: v.phase as PaceUltra['phase'],
     sinceReview: v.sinceReview, quietReviews: v.quietReviews, checkFails: v.checkFails,
     models: { floor: m.floor, ceiling: m.ceiling }, gear, headroomStreak: v.headroomStreak,
-    ...(isObject(f) && isStrings(f.agentIds) && isStrings(f.steps) ? { fanout: { agentIds: f.agentIds, steps: f.steps } } : {}),
+    ...(isObject(f) && isStrings(f.agentIds) && isStrings(f.steps)
+      ? { fanout: { agentIds: f.agentIds, steps: f.steps, ...(isStrings(f.reported) ? { reported: f.reported } : {}) } }
+      : {}),
     ...(isObject(d) && typeof d.reason === 'string' ? { due: { reason: d.reason, ...(typeof d.tail === 'string' ? { tail: d.tail } : {}) } } : {}),
   }
 }
@@ -92,4 +94,4 @@ export function prefsFrom(shared: unknown, own: unknown): PacePrefs {
 }
 
 /** Whether a session's stored modes are old enough to forget, or do not parse */
-export const isStale = (v: unknown, now: number) => !isObject(v) || typeof v.at !== 'number' || v.at < now - SESSION_KEEP
+export const isStale = (v: unknown, now: number) => !isObject(v) || !isNumber(v.at) || v.at < now - SESSION_KEEP

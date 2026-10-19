@@ -26,7 +26,7 @@ import { snapshotOf, type Snapshot } from './model.ts'
 import * as Q from './quota.ts'
 import { goalOf, lockBroken, planChanges, revisionsOf, stepsOf } from './plan.ts'
 import { coldAt, mainModelFor, notchName, requestModel, spawnAllowed, startingGear, subagentModelFor } from './throttle.ts'
-import { closingPrompt, decideUltra, fanoutPrompt, gearNote, planPrompt, ultraProtocol, workPrompt, type UltraDecision, type UltraInput } from './ultra.ts'
+import { closingPrompt, decideUltra, fanoutPrompt, gearNote, integratePrompt, planPrompt, ultraProtocol, workPrompt, type UltraDecision, type UltraInput } from './ultra.ts'
 import { nowRow, type PlanFeed } from './timeline.ts'
 import { mergeModelPrompts, mergePrompts } from './rate.ts'
 import { addSpend, mergeSpend, spendModel } from './spend.ts'
@@ -518,8 +518,6 @@ let pendingPlan: { plan: string; max: number; ultra?: PaceUltra } | null = null
 let lastEffort: PaceGear['effort'] = 'high'
 /** The plan as the last turn left it, for ultra pace's ticks and lock; null before one was read */
 let planMark: string | null = null
-/** Subagents out on ultra pace's fan-out that have reported, by id */
-let reported = new Set<string>()
 /** Subagents at work that the Agent tool started, by id: ultra pace's gear caps how many */
 const active = new Set<string>()
 /** The model ultra pace switched the main thread to, on a cold cache; null for the session's own */
@@ -750,11 +748,20 @@ async function afterTurn($: Engine, answer: string, aborted: boolean): Promise<v
 
 const doneCount = (markdown: string) => stepsOf(markdown, false).filter(s => s.state === 'done').length
 
-/** Whether every subagent out on the fan-out has reported: its turn's end heard, or the engine lists it as ended */
+/** Agent statuses that are still at work, or about to be */
+const AT_WORK = new Set(['pending', 'running', 'waiting'])
+
+/**
+ * Whether every subagent out on the fan-out has reported: its turn's end heard (kept with the run, so a reload or a
+ * resume forgets none), or the engine no longer lists it at work, which covers a report missed
+ */
 async function agentsDone($: Engine, ultra: PaceUltra): Promise<boolean> {
-  const ids = ultra.fanout?.agentIds ?? []
-  const ended = new Set((await $.agent.list().catch(() => [])).filter(a => a.status === 'completed' || a.status === 'failed' || a.status === 'killed').map(a => a.id))
-  return ids.every(id => reported.has(id) || ended.has(id))
+  const f = ultra.fanout
+  if (!f) return true
+  const heard = new Set(f.reported ?? [])
+  const listed = await $.agent.list().catch(() => null)
+  const atWork = listed ? new Set(listed.filter(a => AT_WORK.has(a.status)).map(a => a.id)) : null
+  return f.agentIds.every(id => heard.has(id) || (atWork != null && !atWork.has(id)))
 }
 
 /**
@@ -802,7 +809,6 @@ async function actUltra($: Engine, d: UltraDecision, input: UltraInput): Promise
   }
   if (d.kind === 'fanout') {
     holdTimer?.cancel()
-    reported = new Set()
     // A started subagent comes back with its id, but for a remote one, which only the check-in covers
     const agentIds: string[] = []
     const out: string[] = []
@@ -825,6 +831,16 @@ async function actUltra($: Engine, d: UltraDecision, input: UltraInput): Promise
     $.ui.toast(`pace: ${out.length} subagents out on parallel steps; the main thread waits for their reports`)
     return
   }
+  // A wait on a fan-out says how the engine lists each subagent, so a stuck one can be told from a slow one
+  if (d.kind === 'wait' && d.ultra.phase === 'fanout' && d.ultra.fanout) {
+    const listed = await $.agent.list().catch(() => null)
+    const how = listed
+      ? d.ultra.fanout.agentIds.map(id => `${id.slice(0, 5)}…: ${listed.find(a => a.id === id)?.status ?? 'not listed'}`).join(', ')
+      : 'agent list unavailable'
+    await setAuto($, next)
+    await act($, { ...d, why: `${d.why} (${how})` })
+    return
+  }
   await setAuto($, next)
   await act($, d)
   if (d.kind === 'stop' && d.why.startsWith('Goal reached')) await $.prompt.submit({ text: closingPrompt(auto.plan, d.ultra.goal) })
@@ -833,12 +849,14 @@ async function actUltra($: Engine, d: UltraDecision, input: UltraInput): Promise
 /** A subagent out on the fan-out reported: once the last has, ultra pace decides again */
 async function fanoutReported($: Engine, agentId: string): Promise<void> {
   const auto = await autoOf($)
-  if (!auto?.ultra?.fanout?.agentIds.includes(agentId)) return
-  reported.add(agentId)
-  if (working || auto.paused || !(await agentsDone($, auto.ultra))) return
+  const f = auto?.ultra?.fanout
+  if (!auto?.ultra || !f?.agentIds.includes(agentId)) return
+  const heard: PaceAuto = { ...auto, ultra: { ...auto.ultra, fanout: { ...f, reported: [...new Set([...(f.reported ?? []), agentId])] } } }
+  await setAuto($, heard)
+  if (working || heard.paused || !(await agentsDone($, heard.ultra!))) return
   holdTimer?.cancel()
   await refreshAll($)
-  await decideAndAct($, running(auto), '', false, false)
+  await decideAndAct($, running(heard), '', false, false)
 }
 
 /** The onboarding pane: what auto mode does and what it costs, before it starts the first time */
@@ -918,9 +936,16 @@ async function resumeAuto($: Engine): Promise<string> {
   const auto = await autoOf($)
   if (!auto) return 'Auto mode is not running: /pace auto <plan file> starts it'
   const more = auto.ultra ? ULTRA_TURNS : AUTO_TURNS
-  await setAuto($, { ...running(auto), turns: auto.turns + 1, max: auto.turns >= auto.max ? auto.turns + more : auto.max })
+  const u = auto.ultra
+  // Resumed while waiting on a fan-out: you say go on, so what the subagents did is integrated now
+  const out = u?.phase === 'fanout' ? u.fanout : undefined
+  const { fanout: _, ...rest } = u ?? ({} as PaceUltra)
+  const ultra = u && out ? { ultra: { ...rest, phase: 'integrate' as const } } : {}
+  await setAuto($, { ...running(auto), ...ultra, turns: auto.turns + 1, max: auto.turns >= auto.max ? auto.turns + more : auto.max })
   const snap = forModel(published ?? snapshotOf(await snapshot($), await $.clock.now()), await modelOf($))
-  await submitSoon($, auto.ultra ? `${workPrompt(auto.plan)}${pacingNote(snap)}${gearNote(auto.ultra.gear)}` : continuePrompt(auto.plan, snap))
+  const prompt = !u ? continuePrompt(auto.plan, snap)
+    : `${out ? integratePrompt(auto.plan, out.steps) : workPrompt(auto.plan)}${pacingNote(snap)}${gearNote(u.gear)}`
+  await submitSoon($, prompt)
   return `${auto.ultra ? 'Ultra pace' : 'Auto mode'} resumed: ${auto.plan}`
 }
 
