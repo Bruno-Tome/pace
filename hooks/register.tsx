@@ -200,9 +200,20 @@ async function refreshRow($: Engine, s: Snapshot, prefs: PacePrefs, now: number)
 /** What the window draws: the snapshot, its samples cut to the last week, when it was taken, and the plan's steps */
 async function writeState($: Engine, s: Snapshot, now: number): Promise<void> {
   if (!feeding) return
-  const { plan, auto } = await shownPlan($)
-  const steps = stepsOf(await fileText($, plan).catch(() => ''), auto != null && !auto.paused)
-  const feed: Feed = { ...s, samples: s.samples.filter(x => x.at >= now - STATE_SPAN), at: now, ...(steps.length ? { plan: { name: plan, steps } } : {}) }
+  const shown = await shownPlans($)
+  const timelines = await Promise.all(shown.map(async ({ plan, auto }) => {
+    const steps = stepsOf(await fileText($, plan).catch(() => ''), auto != null && !auto.paused)
+    return steps.length ? { name: plan, steps } : undefined
+  }))
+  const [plan, also] = timelines
+  const prefs = (await read($, prefsA)) ?? DEFAULT_PREFS
+  const feed: Feed = {
+    ...s, samples: s.samples.filter(x => x.at >= now - STATE_SPAN), at: now,
+    ...(plan ? { plan } : {}), ...(also ? { also } : {}),
+    prefs: { band: prefs.band, line: prefs.line },
+    known: [...new Set([DEFAULT_PLAN, ...(s.auto ? [s.auto.plan] : []), ...shown.map(x => x.plan)])],
+    ...(lastNotice ? { notice: lastNotice } : {}),
+  }
   const text = JSON.stringify(feed)
   if (text === lastState) return
   const home = await homeOf($)
@@ -270,18 +281,28 @@ async function openSplit($: Engine): Promise<'opened' | 'open' | false> {
   return 'opened'
 }
 
-/** A key pressed in the window: w steps warm mode, r refreshes the figures; each handled once */
+/** The last answer a command from the window got, for its feed */
+let lastNotice: { id: number; text: string; at: number } | undefined
+
+/**
+ * A button pressed in the window: any `/pace` argument, run as the command would be and answered in the feed;
+ * `warm` alone steps warm mode off → compact → ping. Each handled once.
+ */
 async function readKeys($: Engine): Promise<void> {
   const home = await homeOf($)
   const path = `${home}/${KEYS_FILE}`
   if (!home || !(await $.fs.exists(path))) return
   const k = JSON.parse(await $.fs.read(path)) as { id?: unknown; cmd?: unknown }
-  if (typeof k.id !== 'number' || k.id <= lastKey) return
+  if (typeof k.id !== 'number' || k.id <= lastKey || typeof k.cmd !== 'string') return
   lastKey = k.id
   if (k.cmd === 'warm') {
     await setPrefs($, p => ({ ...p, warm: WARM_NEXT[p.warm ?? 'off'] }))
     warmActions = 0
-  } else if (k.cmd === 'refresh') await refreshAll($)
+    return
+  }
+  const text = await paceCommand($, k.cmd, 80)
+  lastNotice = { id: k.id, text, at: await $.clock.now() }
+  await refreshLine($)
 }
 
 /** Every source read again: the session's limits, Claude Code's usage cache and the usage endpoint */
@@ -609,6 +630,16 @@ const shownPlan = async ($: Engine): Promise<ShownPlan> => (await shownPlans($))
 /** The tmux pane the plan sidebar runs in, while it lives */
 let planSplit: string | undefined
 
+/** The viewer and sidebar panes named closed, and forgotten */
+async function killPanes($: Engine, panes: readonly (string | undefined)[]): Promise<void> {
+  for (const pane of panes) {
+    if (!pane) continue
+    try { await $.process.run(['tmux', 'kill-pane', '-t', pane]) } catch {}
+    if (pane === splitPane) splitPane = undefined
+    if (pane === planSplit) planSplit = undefined
+  }
+}
+
 /** Writes what the plan sidebar draws from */
 async function writePlanFeed($: Engine): Promise<void> {
   const home = await homeOf($)
@@ -619,7 +650,7 @@ async function writePlanFeed($: Engine): Promise<void> {
 }
 
 /** Opens the plan sidebar in a narrow tmux split on the right, or finds the one open; false outside tmux or where that fails */
-async function openPlanSplit($: Engine): Promise<boolean> {
+async function openPlanSplit($: Engine, inside = false): Promise<boolean> {
   if (!(await inTmux($))) return false
   const home = await homeOf($)
   if (!home) return false
@@ -627,11 +658,13 @@ async function openPlanSplit($: Engine): Promise<boolean> {
   if (planSplit && (await $.process.run(['tmux', 'display-message', '-p', '-t', planSplit, '#{pane_id}'])).exitCode === 0) return true
   const node = await nodeOf($)
   if (!node) return false
-  const beside = await $.env.get('TMUX_PANE')
   const run = `exec ${shellQuote(node)} ${shellQuote(`${$.plugin.root}/bin/plan-viewer.ts`)} ${shellQuote(`${home}/${planFeedFile(spendId)}`)}`
-  // Two plans side by side take twice the width
+  // Under the Pace split, half its height; else beside Claude, two plans side by side taking twice the width
+  const under = inside && !!splitPane
+  const beside = under ? splitPane : await $.env.get('TMUX_PANE')
   const width = (await shownPlans($)).length > 1 ? SIDEBAR_COLUMNS * 2 + 3 : SIDEBAR_COLUMNS
-  const r = await $.process.run(['tmux', 'split-window', '-h', '-d', '-l', String(width), ...(beside ? ['-t', beside] : []), '-P', '-F', '#{pane_id}', run])
+  const size = under ? ['-v', '-d', '-l', '50%'] : ['-h', '-d', '-l', String(width)]
+  const r = await $.process.run(['tmux', 'split-window', ...size, ...(beside ? ['-t', beside] : []), '-P', '-F', '#{pane_id}', run])
   if (r.exitCode !== 0) return false
   planSplit = r.stdout.trim() || undefined
   return true
@@ -1005,13 +1038,81 @@ async function ultraCommand($: Engine, rest: string): Promise<string> {
 // Hooks
 // ======================================================================
 
+/** `/pace …` run: what it answers, from the prompt or from a button in the window; `columns` sizes the pane */
+async function paceCommand($: Engine, args: string, columns: number): Promise<string> {
+  const raw = args.trim().replace(/\s+/g, ' ')
+  const arg = raw.toLowerCase()
+  const mode = await modeCommand($, raw)
+  if (mode != null) return mode
+  if (arg === 'hide' || arg === 'show') {
+    await setPrefs($, p => ({ ...p, band: arg === 'show' }))
+    return arg === 'show' ? 'Pace band shown' : 'Pace band hidden; /pace show brings it back'
+  }
+  if (arg === 'line on' || arg === 'line off') {
+    await setPrefs($, p => ({ ...p, line: arg === 'line on' }))
+    return `Pace status line ${arg === 'line on' ? 'on' : 'off'}`
+  }
+  if (arg.startsWith('warm ')) {
+    const mode = arg.slice(5) as PaceWarmMode
+    if (mode !== 'off' && mode !== 'compact' && mode !== 'ping') return 'Use /pace warm compact, ping or off'
+    await setPrefs($, p => ({ ...p, warm: mode }))
+    warmActions = 0
+    return mode === 'off'
+      ? 'Warm mode off'
+      : `Warm mode ${mode}: with under 10 minutes of cache left and Claude idle, ${mode === 'compact' ? 'runs /compact (once until your next prompt)' : 'pings the cache through a fork (up to 3 times until your next prompt)'}`
+  }
+  if (arg === 'refresh') {
+    const ok = await refreshAll($)
+    return ok ? 'Pace figures refreshed' : 'Could not reach the usage endpoint; showing the latest local figures'
+  }
+  if (arg === 'plan' || arg.startsWith('plan ')) {
+    planShown = raw.slice(4).trim() || null
+    const where = await openPlan($)
+    return `Plan timeline opened ${where === 'split' ? 'in a tmux sidebar' : 'in a pane'}: ${(await shownPlans($)).map(p => p.plan).join(' beside ')}`
+  }
+  if (arg === 'timeline') {
+    // The split's timeline button: the plan's timeline under the Pace split, closed again when it is open; the
+    // sidebar beside Claude without a split
+    if (planSplit && (await $.process.run(['tmux', 'display-message', '-p', '-t', planSplit, '#{pane_id}'])).exitCode === 0) {
+      await killPanes($, [planSplit])
+      return 'Plan timeline closed'
+    }
+    if (splitPane && (await openPlanSplit($, true).catch(() => false))) return `Plan timeline opened under the Pace split: ${(await shownPlans($)).map(p => p.plan).join(' beside ')}`
+    const where = await openPlan($)
+    return `Plan timeline opened ${where === 'split' ? 'in a tmux sidebar' : 'in a pane'}: ${(await shownPlans($)).map(p => p.plan).join(' beside ')}`
+  }
+  if (arg === 'close') {
+    // The viewer quitting: its timeline pane goes with it, and the next /pace opens a fresh split
+    await killPanes($, [planSplit])
+    splitPane = undefined
+    feeding = false
+    return 'Pace split closed'
+  }
+  if (arg && arg !== 'pane' && arg !== 'window' && arg !== 'split') return `Unknown argument "${arg}": use ${USAGE}`
+  await tick($)
+  if (arg === 'window') {
+    let opened = false
+    try { opened = await openWindow($) } catch {}
+    if (opened) return 'Pace window opened; q closes it'
+  } else if (arg !== 'pane') {
+    let split: 'opened' | 'open' | false = false
+    try { split = await openSplit($) } catch {}
+    if (split === 'opened') return 'Pace opened in a tmux split; q there closes it'
+    if (split === 'open') return 'Pace is already open in a tmux split'
+  }
+  const lines = paneLines(await snapshot($), await $.clock.now(), paneLayout(Math.max(40, columns - 4), DEFAULT_PREFS))
+  await $.ui.open({ id: PANE, title: 'Pace', rows: lines.length + 4, columns: 80, focus: true, closeOnEscape: true })
+  const why = arg === 'window' ? 'Could not open a terminal window; ' : arg === 'split' ? 'Not inside tmux; ' : ''
+  return `${why}Pace pane opened${why ? ' here' : ''}`
+}
+
 /** /pace answers in a toast: no transcript row, so the model never reads it and the context stays as it was */
 function say($: Engine, text: string): {} {
   $.ui.toast(text)
   return {}
 }
 
-const USAGE = 'split | pane | window | refresh | on | off | auto [plan] [turns] | auto off | auto resume | auto burst [off] | ultra [plan] [turns] [floor..ceiling] | ultra off | ultra resume | ultra preview | plan [file] [file] | hide | show | line on | line off | warm compact | warm ping | warm off'
+const USAGE = 'split | pane | window | refresh | timeline | close | on | off | auto [plan] [turns] | auto off | auto resume | auto burst [off] | ultra [plan] [turns] [floor..ceiling] | ultra off | ultra resume | ultra preview | plan [file] [file] | hide | show | line on | line off | warm compact | warm ping | warm off'
 
 export const register: Register = (on, options) => {
   placement = options.placement === 'status' ? 'status' : 'above'
@@ -1170,54 +1271,7 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('command.run', { command: 'pace' }, async ($, e) => {
-    const raw = (e.args ?? '').trim().replace(/\s+/g, ' ')
-    const arg = raw.toLowerCase()
-    const mode = await modeCommand($, raw)
-    if (mode != null) return say($, mode)
-    if (arg === 'hide' || arg === 'show') {
-      await setPrefs($, p => ({ ...p, band: arg === 'show' }))
-      return say($, arg === 'show' ? 'Pace band shown' : 'Pace band hidden; /pace show brings it back')
-    }
-    if (arg === 'line on' || arg === 'line off') {
-      await setPrefs($, p => ({ ...p, line: arg === 'line on' }))
-      return say($, `Pace status line ${arg === 'line on' ? 'on' : 'off'}`)
-    }
-    if (arg.startsWith('warm ')) {
-      const mode = arg.slice(5) as PaceWarmMode
-      if (mode !== 'off' && mode !== 'compact' && mode !== 'ping') return say($, 'Use /pace warm compact, ping or off')
-      await setPrefs($, p => ({ ...p, warm: mode }))
-      warmActions = 0
-      return say($, mode === 'off'
-        ? 'Warm mode off'
-        : `Warm mode ${mode}: with under 10 minutes of cache left and Claude idle, ${mode === 'compact' ? 'runs /compact (once until your next prompt)' : 'pings the cache through a fork (up to 3 times until your next prompt)'}`)
-    }
-    if (arg === 'refresh') {
-      const ok = await refreshAll($)
-      return say($, ok ? 'Pace figures refreshed' : 'Could not reach the usage endpoint; showing the latest local figures')
-    }
-    if (arg === 'plan' || arg.startsWith('plan ')) {
-      planShown = raw.slice(4).trim() || null
-      const where = await openPlan($)
-      return say($, `Plan timeline opened ${where === 'split' ? 'in a tmux sidebar' : 'in a pane'}: ${(await shownPlans($)).map(p => p.plan).join(' beside ')}`)
-    }
-    if (arg && arg !== 'pane' && arg !== 'window' && arg !== 'split') return say($, `Unknown argument "${arg}": use ${USAGE}`)
-    await tick($)
-    if (arg === 'window') {
-      let opened = false
-      try { opened = await openWindow($) } catch {}
-      if (opened) return say($, 'Pace window opened; q closes it')
-    } else if (arg !== 'pane') {
-      let split: 'opened' | 'open' | false = false
-      try { split = await openSplit($) } catch {}
-      if (split === 'opened') return say($, 'Pace opened in a tmux split; q there closes it')
-      if (split === 'open') return say($, 'Pace is already open in a tmux split')
-    }
-    const lines = paneLines(await snapshot($), await $.clock.now(), paneLayout(Math.max(40, (e.presentation?.columns ?? 80) - 4), DEFAULT_PREFS))
-    await $.ui.open({ id: PANE, title: 'Pace', rows: lines.length + 4, columns: 80, focus: true, closeOnEscape: true })
-    const why = arg === 'window' ? 'Could not open a terminal window; ' : arg === 'split' ? 'Not inside tmux; ' : ''
-    return say($, `${why}Pace pane opened${why ? ' here' : ''}`)
-  })
+  on('command.run', { command: 'pace' }, async ($, e) => say($, await paceCommand($, e.args ?? '', e.presentation?.columns ?? 80)))
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey || placement !== 'above') return next(e)
@@ -1233,11 +1287,7 @@ export const register: Register = (on, options) => {
 
   // The split's viewer would show stale figures once the session that feeds it is gone
   on('session.end', async ($, e, next) => {
-    for (const pane of [splitPane, planSplit]) {
-      if (pane) try { await $.process.run(['tmux', 'kill-pane', '-t', pane]) } catch {}
-    }
-    splitPane = undefined
-    planSplit = undefined
+    await killPanes($, [splitPane, planSplit])
     return next(e)
   })
 

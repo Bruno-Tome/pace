@@ -79,6 +79,62 @@ describe('the rate from the quota\'s own movement', () => {
   })
 })
 
+describe('the rate once the prompting stops', () => {
+  // A fresh 5-hour window: 3% to 9% between 20 and 28 minutes in, a prompt before each reading, then nothing
+  const start = NOW - 36 * MIN
+  const at = (min: number, percent: number): PaceSample => ({ at: start + min * MIN, quotas: { five_hour: { percent, resetsAt: start + 5 * H } } })
+  const samples = [at(20, 3), at(22, 5), at(24, 6), at(26, 8), at(28, 9)]
+  const prompts = [19.5, 21.5, 23.5, 25.5, 27.5].map(m => start + m * MIN)
+  const row = () => rowsOf(samples, NOW).find(r => r.key === 'five_hour')!
+
+  test('is not the busy stretch\'s rate 8 quiet minutes on: 9% with 4h24m left runs out after the reset', () => {
+    // The readings alone climb 4 points in 6 minutes, 40 an hour, out in about 2 hours; nothing has moved it since
+    const v = rateOf({ samples, prompts, cache: null }, row(), NOW)
+    expect(v.level).not.toBe('burst')
+    expect(v.emptyIn!).toBeGreaterThan(v.resetIn!)
+  })
+
+  test('is still the readings\' rate while a prompt since the last one may be moving it', () => {
+    const v = rateOf({ samples, prompts: [...prompts, NOW - MIN], cache: null }, row(), NOW)
+    expect(v.level).toBe('burst')
+  })
+})
+
+describe('a shared window on a plan with a model\'s own week', () => {
+  // A fresh 5-hour window climbing 0% to 10% in its first 12 minutes, while the Fable week stands at 83%
+  const start = NOW - 14 * MIN
+  const five = (min: number, percent: number): PaceSample => ({ at: start + min * MIN, quotas: { five_hour: { percent, resetsAt: start + 5 * H } } })
+  const samples = [five(0, 0), five(3, 2), five(6, 5), five(9, 7), five(12, 10), fableWeek(NOW - MIN, 83)]
+  const prompts = [1, 4, 7, 10].map(m => start + m * MIN)
+  const row = (s: Snapshot) => rowsOf(s.samples, NOW).find(r => r.key === 'five_hour')!
+
+  test('is paced by the models with no week of their own: a Fable burst leaves it idle, not too fast', () => {
+    // Every prompt and dollar since the window began went to Fable, whose week paces it
+    const spend = addSpend([], 'a', NOW - 10 * MIN, 8, NOW, FABLE)
+    const s: Snapshot = { samples, prompts, cache: null, spend, modelPrompts: { [FABLE]: prompts } }
+    const v = rateOf(s, row(s), NOW)
+    expect(v.level).toBe('idle')
+    expect(v.emptyIn).toBeNull()
+  })
+
+  test('moves by the share of the dollars from those models: half from Opus, half the movement', () => {
+    // $4 of Opus and $4 of Fable in the span, against the same $8 all from Opus
+    const fable = addSpend([], 'a', NOW - 10 * MIN, 4, NOW, FABLE)
+    const split: Snapshot = { samples, prompts, cache: null, spend: addSpend(fable, 'b', NOW - 8 * MIN, 4, NOW, OPUS), modelPrompts: { [FABLE]: prompts.slice(0, 2), [OPUS]: prompts.slice(2) } }
+    const opus: Snapshot = { samples, prompts, cache: null, spend: addSpend([], 'b', NOW - 8 * MIN, 8, NOW, OPUS), modelPrompts: { [OPUS]: prompts } }
+    const half = rateOf(split, row(split), NOW).pctPerHour!
+    const whole = rateOf(opus, row(opus), NOW).pctPerHour!
+    expect(whole).toBeGreaterThan(30)
+    expect(Math.round((half / whole) * 100)).toBe(50)
+  })
+
+  test('without a model\'s own week on the plan, every model moves it: the same burst is too fast', () => {
+    const spend = addSpend([], 'a', NOW - 10 * MIN, 8, NOW, FABLE)
+    const s: Snapshot = { samples: samples.slice(0, 5), prompts, cache: null, spend, modelPrompts: { [FABLE]: prompts } }
+    expect(rateOf(s, row(s), NOW).level).toBe('fast')
+  })
+})
+
 describe('a quota moved by what pace sees no prompt for', () => {
   // The Fable week climbing 3 points in 3 hours while every prompt here went to Opus: a Fable subagent, or another session
   const week = (at: number, percent: number): PaceSample => ({ at, quotas: { seven_day_fable: { percent, resetsAt: NOW + 3.6 * 24 * H, name: 'Fable' } } })

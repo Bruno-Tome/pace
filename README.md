@@ -58,12 +58,19 @@ Outside tmux, `/pace` opens the pane instead.
 - **A band above the prompt:** the 5-hour and weekly bars, each with its pace status and the rate against it,
   then the prompt cache's countdown and what the next prompt costs.
 - **A status-line entry,** or with `placement: status`, a full row your status line prints.
-- **`/pace`:** burn-up charts for every quota. Inside tmux it opens full-screen in a split beside Claude (two
-  columns on wide splits; keys: `1`–`9` shows one quota alone, `w` cycles warm mode, `r` refreshes, `q` quits).
-  The split also shows auto mode's run or on pace mode under its title, with `effort a level lighter` while the
-  rate would run a quota out, and the plan's timeline under the charts when the plan has a checklist.
-  Outside tmux it opens a pane inside Claude Code, docked full-height beside the transcript in fullscreen mode.
-  `/pace pane` always opens the pane; `/pace window` opens the full-screen view in a macOS terminal window.
+- **`/pace`:** the whole mod in one view. Inside tmux it opens full-screen in a split beside Claude: the modes
+  (on pace mode, warm mode, the band and the status line, and the run under way with its plan, turn, gear, goal,
+  phase and check), burn-up charts for every quota (two columns on wide splits), the plans' timelines (the roadmap
+  beside an ultra run's own plan), the prompting rate, the cache and the suggestions, and a command bar last.
+  Every `/pace` command is a button there: press its key or click it. `[a] auto…` and `[u] ultra…` list the plans
+  the session knows to start a run on (`t` types another path); while one runs the bar offers `auto off`,
+  `burst`, `resume`, `ultra off`. `[t] timeline` opens the plans' timelines in a second split carved out of the
+  Pace split, under it, where they scroll and animate on their own; `t` again closes it, and quitting the split
+  closes it too. `[p]` flips on pace mode, `[w]` steps warm
+  mode, `[b]` and `[l]` the band and the status line, `[r]` refreshes, `1`–`9` shows one quota alone, `q` quits. A command's answer shows under the
+  title for 10 seconds. Outside tmux it opens a pane inside Claude Code, docked full-height beside the transcript
+  in fullscreen mode. `/pace pane` always opens the pane; `/pace window` opens the full view in a macOS terminal
+  window.
 
 `/pace` runs at once, even mid-turn, and answers in a toast. Nothing lands in the conversation, so it never costs
 context.
@@ -85,7 +92,11 @@ point closes in on what is already used, so it stays readable to the last minute
 not known yet shows `→ —`.
 
 A model's own week counts only the prompts and spend that went to that model: prompting Opus never moves the
-Fable week's rate. Prompts from before pace knew the model count everywhere, so pace errs toward warning.
+Fable week's rate. pace reads the plan's quotas from the usage endpoint, and a model with a week of its own is
+paced by that week alone: on such a plan the shared 5-hour window's rate, run-out time and notices come from the
+other models, by their share of the dollars (else the prompts) over the last 15 minutes. A Fable burst still fills
+the window's bar and sets its pace status, since every model stops when it is full, but it is not called too fast
+there. Prompts from before pace knew the model count everywhere, so pace errs toward warning.
 
 | Mark | Meaning |
 | --- | --- |
@@ -267,6 +278,7 @@ gassed out. The onboarding pane says so before the first run.
 | `/pace auto [plan] [turns]`, `auto off`, `auto resume` | Auto mode; the plan defaults to `ROADMAP.md` |
 | `/pace auto burst`, `auto burst off` | Auto mode stops holding for pacing; only a gassed-out quota holds |
 | `/pace ultra [plan] [turns] [floor..ceiling]`, `ultra off`, `ultra resume` | Ultra pace: works toward the plan's goal until its check passes |
+| `/pace timeline` | The plans' timelines in a split under the Pace split while one is open (again: closes it), else as `/pace plan` opens them; the split's `[t]` button |
 | `/pace plan [file] [file]` | The plan's timeline in a sidebar (a tmux split, or a pane): the files named, side by side for two; else the roadmap beside an ultra run's plan, auto mode's plan, or `ROADMAP.md` |
 | `/pace ultra preview` | Plays ultra pace's push animation on the band for 20 seconds |
 | `/pace warm ping \| compact \| off` | Keeps an idle cache warm |

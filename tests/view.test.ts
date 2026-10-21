@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import type { Snapshot } from '../hooks/model.ts'
-import { bandLines, keyAction, lineText, screen, sideBySide, statusRow, type Line, type Feed } from '../hooks/view.ts'
+import { bandLines, click, lineText, paneLines, press, screen, screenOf, sideBySide, statusRow, type Line, type Feed, type UiState } from '../hooks/view.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const H = 3600_000
@@ -27,7 +27,7 @@ test('the window fills the terminal: taller charts on a taller screen, no line w
   expect(text).toMatch(/[⠁-⣿]/)
   expect(text).toContain('5-hour window')
   expect(text).toContain('Cache & tokens')
-  expect(text).toContain('q quits')
+  expect(text).toContain('[q] quit')
 })
 
 test('the window says how old its figures are', () => {
@@ -57,23 +57,134 @@ test('focusing a quota draws its chart alone, full-height, and the footer names 
   expect(one.join('\n')).toContain('Week · all models')
   expect(one.join('\n')).not.toContain('5-hour window')
   expect(braille(one)).toBeGreaterThan(20)
-  expect(all.join('\n')).toMatch(/w warm · r refresh · 1–2 focus/)
-  expect(one.join('\n')).toMatch(/2 again/)
+  expect(all.join('\n')).toContain('[1–2] focus')
+  expect(one.join('\n')).toContain('[2] all')
 })
 
 test('focus on a quota that is not there draws the whole window', () => {
   expect(plain(screen(STATE, NOW, 100, 40, { focus: 3 }))).toContain('5-hour window')
 })
 
-test('the window\'s keys: a digit focuses its quota and again shows all, w and r go to the session, q quits', () => {
-  expect(keyAction('2', undefined)).toEqual({ focus: 2 })
-  expect(keyAction('2', 2)).toEqual({ focus: undefined })
-  expect(keyAction('3', 2)).toEqual({ focus: 3 })
-  expect(keyAction('w', 1)).toEqual({ send: 'warm' })
-  expect(keyAction('r', undefined)).toEqual({ send: 'refresh' })
-  expect(keyAction('q', undefined)).toEqual({ quit: true })
-  expect(keyAction('\x03', undefined)).toEqual({ quit: true })
-  expect(keyAction('x', 1)).toEqual({})
+test('the pane wraps its figures to its columns: nothing is cut off at a narrow split', () => {
+  // 20 prompts in 20 minutes on a window at 60%: a burst with a run-out time, a long figures line
+  const busy: Feed = { ...STATE, prompts: Array.from({ length: 20 }, (_, i) => NOW - i * 60_000) }
+  const lines = paneLines(busy, NOW, { cols: 36, chartWidth: 30, chartHeight: () => 4 })
+  for (const l of lines) expect([...l.map(x => x.t).join('')].length).toBeLessThanOrEqual(36)
+  // The figures line and the context line, which a narrow split used to cut mid-word, now wrap between words
+  const text = lines.map(l => l.map(x => x.t).join('')).join(' ')
+  expect(text).toContain('per-prompt cost')
+  expect(text).toContain('next prompt')
+})
+
+const ULTRA_RUN = {
+  plan: 'PLAN.md', turns: 4, max: 80,
+  ultra: {
+    goal: 'pace ships 1.0 with CI green.', check: 'claude plugin test .', phase: 'work' as const, sinceReview: 1, quietReviews: 0, checkFails: 0,
+    models: { floor: 'sonnet', ceiling: 'claude-opus-5-5' }, headroomStreak: 0,
+    gear: { model: 'claude-opus-5-5', effort: 'xhigh' as const, subagents: 3, subagentModel: 'sonnet', fanout: true },
+  },
+}
+const UI: UiState = {}
+const FULL: Feed = { ...STATE, onPace: true, warm: 'compact', prefs: { band: true, line: false }, known: ['ROADMAP.md', 'PLAN.md'] }
+
+test('the split\'s Modes section says what is on, and the command bar offers each command by key', () => {
+  const { text, hits } = screenOf(FULL, NOW, 100, 60, UI)
+  const t = plain(text)
+  expect(t).toContain('on pace mode  on')
+  expect(t).toContain('warm mode  compact')
+  expect(t).toContain('band  shown')
+  expect(t).toContain('status line  off')
+  expect(t).toContain('auto mode  off')
+  for (const label of ['[r] refresh', '[a] auto…', '[u] ultra…', '[t] timeline', '[p] on pace off', '[w] warm ping', '[b] hide band', '[l] line on', '[q] quit']) expect(t).toContain(label)
+  // Each button's hit covers its label on the screen
+  const rows = t.split('\n')
+  expect(hits.length).toBeGreaterThanOrEqual(8)
+  for (const h of hits as { x: number; y: number; w: number; label: string }[]) expect([...rows[h.y - 1]!].slice(h.x - 1, h.x - 1 + h.w).join('')).toBe(h.label)
+  for (const l of rows) expect([...l].length).toBeLessThanOrEqual(100)
+})
+
+test('the command bar follows the run: auto off and burst while one runs, resume while it is paused, ultra off under ultra pace', () => {
+  const running = plain(screenOf({ ...FULL, auto: { plan: 'ROADMAP.md', turns: 3, max: 20 } }, NOW, 100, 60, UI).text)
+  expect(running).toContain('[a] auto off')
+  expect(running).toContain('[s] burst on')
+  expect(running).toContain('auto mode  ▶ ROADMAP.md · turn 3/20')
+  const paused = plain(screenOf({ ...FULL, auto: { plan: 'ROADMAP.md', turns: 3, max: 20, paused: true } }, NOW, 100, 60, UI).text)
+  expect(paused).toContain('[a] resume')
+  const ultra = plain(screenOf({ ...FULL, auto: ULTRA_RUN }, NOW, 100, 60, UI).text)
+  expect(ultra).toContain('[u] ultra off')
+  expect(ultra).toContain('goal  pace ships 1.0 with CI green.')
+  expect(ultra).toContain('gear  push · opus xhigh · 3 agents')
+  expect(ultra).toContain('check  claude plugin test .')
+})
+
+test('picking a plan: a lists the plans the session knows, a digit starts the run on one, t takes a typed path, esc cancels', () => {
+  const a = press(UI, 'a', FULL)
+  expect(a.ui.picking).toBe('auto')
+  expect(a.send).toBeUndefined()
+  const menu = plain(screenOf(FULL, NOW, 100, 60, a.ui).text)
+  expect(menu).toContain('Start auto mode on')
+  expect(menu).toContain('[1] ROADMAP.md')
+  expect(menu).toContain('[2] PLAN.md')
+  expect(menu).toContain('[t] a path')
+  expect(menu).toContain('[esc] cancel')
+  expect(press(a.ui, '2', FULL)).toEqual({ ui: {}, send: 'auto PLAN.md' })
+  const typing = press(a.ui, 't', FULL).ui
+  expect(typing.typing).toBe('')
+  let ui = typing
+  for (const c of 'x.md') ui = press(ui, c, FULL).ui
+  expect(plain(screenOf(FULL, NOW, 100, 60, ui).text)).toContain('plan file: x.md')
+  expect(press(ui, '\x7f', FULL).ui.typing).toBe('x.m')
+  expect(press(ui, '\r', FULL)).toEqual({ ui: {}, send: 'auto x.md' })
+  expect(press(ui, '\x1b', FULL)).toEqual({ ui: {} })
+  expect(press(press(UI, 'u', FULL).ui, '1', FULL)).toEqual({ ui: {}, send: 'ultra ROADMAP.md' })
+})
+
+test('the keys send the /pace command that flips each mode, focus a quota, or quit', () => {
+  expect(press(UI, 'p', FULL).send).toBe('off')
+  expect(press(UI, 'p', { ...FULL, onPace: false }).send).toBe('on')
+  expect(press(UI, 'w', { ...FULL, warm: 'off' }).send).toBe('warm compact')
+  expect(press(UI, 'w', FULL).send).toBe('warm ping')
+  expect(press(UI, 'w', { ...FULL, warm: 'ping' }).send).toBe('warm off')
+  expect(press(UI, 'b', FULL).send).toBe('hide')
+  expect(press(UI, 'b', { ...FULL, prefs: { band: false, line: true } }).send).toBe('show')
+  expect(press(UI, 'l', FULL).send).toBe('line on')
+  expect(press(UI, 'r', FULL).send).toBe('refresh')
+  expect(press(UI, 't', FULL).send).toBe('timeline')
+  expect(press(UI, 'v', FULL).send).toBe('ultra preview')
+  const run = { ...FULL, auto: { plan: 'ROADMAP.md', turns: 3, max: 20 } }
+  expect(press(UI, 'a', run).send).toBe('auto off')
+  expect(press(UI, 's', run).send).toBe('auto burst')
+  expect(press(UI, 's', { ...run, auto: { ...run.auto, burst: true as const } }).send).toBe('auto burst off')
+  expect(press(UI, 'a', { ...run, auto: { ...run.auto, paused: true } }).send).toBe('auto resume')
+  expect(press(UI, 'u', { ...FULL, auto: ULTRA_RUN }).send).toBe('ultra off')
+  expect(press(UI, '2', FULL)).toEqual({ ui: { focus: 2 } })
+  expect(press({ focus: 2 }, '2', FULL)).toEqual({ ui: { focus: undefined } })
+  expect(press(UI, 'q', FULL)).toEqual({ ui: {}, quit: true })
+  expect(press(UI, '\x03', FULL)).toEqual({ ui: {}, quit: true })
+  expect(press(UI, 'z', FULL)).toEqual({ ui: {} })
+})
+
+test('a click on a button is its key', () => {
+  const { hits } = screenOf(FULL, NOW, 100, 60, UI)
+  const refresh = hits.find(h => h.label === '[r] refresh')!
+  expect(click(hits, refresh.x + 2, refresh.y)).toBe('r')
+  expect(click(hits, refresh.x + refresh.w, refresh.y)).toBeUndefined()
+  expect(click(hits, 1, 1)).toBeUndefined()
+})
+
+test('the split draws two plans side by side when wide, one under the other when narrow', () => {
+  const also = { name: 'PLAN.md', steps: [{ text: 'Ship it', state: 'now' as const, section: null }] }
+  const wide = plain(screenOf({ ...FULL, plan: PLAN, also }, NOW, 180, 70, UI).text).split('\n')
+  expect(wide.some(l => l.includes('ROADMAP.md') && l.includes('PLAN.md'))).toBe(true)
+  const narrow = plain(screenOf({ ...FULL, plan: PLAN, also }, NOW, 80, 70, UI).text)
+  expect(narrow).toContain('ROADMAP.md')
+  expect(narrow).toContain('Ship it')
+})
+
+test('a command\'s answer shows under the title for 10 seconds', () => {
+  const f: Feed = { ...FULL, notice: { id: 1, text: 'On pace mode off', at: NOW } }
+  expect(plain(screenOf(f, NOW + 5_000, 100, 60, UI).text)).toContain('› On pace mode off')
+  expect(plain(screenOf(f, NOW + 11_000, 100, 60, UI).text)).not.toContain('On pace mode off')
 })
 
 const textOfLine = (l: Line) => l.map(x => x.t).join('')
@@ -143,14 +254,6 @@ test('the split\'s status row puts the lighter effort with the mode\'s figures, 
   expect(onPace).toBe('on pace ● compacts heavy contexts, keeps the cache warm · effort a level lighter · /pace off')
 })
 
-const ULTRA_RUN = {
-  plan: 'PLAN.md', turns: 4, max: 80,
-  ultra: {
-    goal: 'pace ships 1.0 with CI green.', check: 'claude plugin test .', phase: 'work' as const, sinceReview: 1, quietReviews: 0, checkFails: 0,
-    models: { floor: 'sonnet', ceiling: 'claude-opus-5-5' }, headroomStreak: 0,
-    gear: { model: 'claude-opus-5-5', effort: 'xhigh' as const, subagents: 3, subagentModel: 'sonnet', fanout: true },
-  },
-}
 const plainLine = (l: Line | undefined) => (l ?? []).map(s => s.t).join('')
 
 test('an ultra run shows under the band and in the status-line entry: its gear and its turn', () => {

@@ -43,6 +43,18 @@ export function drawsOn(key: string, model: string | undefined): boolean {
   return model.toLowerCase().includes(family)
 }
 
+/**
+ * Whether a model's usage sets a quota's rate: a model's own week, that model's alone; a shared quota (the 5-hour
+ * window, the all-models week), the models with no week of their own among `keys`, the quotas the plan has. A
+ * model with a week of its own is paced by that week, so a plan that gives Fable one keeps a Fable burst off the
+ * 5-hour window's rate, though the window's fill still shows. Every model while it is not known.
+ */
+export function pacedBy(key: string, model: string | undefined, keys: readonly string[]): boolean {
+  if (!model) return true
+  if (isPerModel(key)) return drawsOn(key, model)
+  return !keys.some(k => isPerModel(k) && drawsOn(k, model))
+}
+
 /** A quota's name mid-sentence: `the 5-hour window`, `the week · Fable` */
 export const theName = (name: string) => `the ${name.startsWith('5-hour') ? name : name.replace(/^Week/, 'week')}`
 

@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- The split is the whole mod in one view. A modes block at the top says what is on (on pace mode, warm mode, the
+  band, the status line) and shows the run under way: its plan and turn, and under ultra pace its goal, gear,
+  phase and check. Two plans draw side by side on a wide split, as the plan sidebar does. A command bar at the
+  bottom offers every `/pace` command as a button, by key or by click: `[a] auto…` and `[u] ultra…` pick a plan
+  from those the session knows (`t` types a path), and while a run is on the bar offers `auto off`, `burst`,
+  `resume` or `ultra off`; `[p]` `[w]` `[b]` `[l]` flip on pace mode, warm mode, the band and the status line.
+  `[t] timeline` (`/pace timeline`) opens the plans' timelines in a second split carved under the Pace split, and
+  closes it again; quitting the split closes it too (the viewer sends `close`).
+  The answer shows under the title for 10 seconds. The window's keys file now carries any `/pace` argument
+  (`warm` alone still steps warm mode); the feed gains `also`, `prefs`, `known` and `notice`, all optional. The
+  keys that were in the title (`w warm · r refresh`) live in the bar.
+- The pane wraps its lines to its width: a narrow split used to cut the per-quota figures, the context line, the
+  cache bar, the legend and the pace summary mid-word.
+- A model with a week of its own is paced by that week alone. On a plan with a Fable week, the 5-hour window's rate,
+  `out in` and notices now count only the other models, by their share of the dollars (else the prompts) over the
+  last 15 minutes; a Fable burst used to make the shared window `too fast` in every session. The window's fill and
+  pace status still count every model. New `pacedBy` in `quota.ts`; plans with no per-model week are unchanged.
+- A burst ends when the prompting does. Readings come only with use, so after a busy stretch its last few minutes
+  stood as the rate for up to 15 minutes: `9% On pace ↻ 4h24m │ ▲ burst · out in 2h9m`. With no prompt or spend
+  since the last reading, the quota now counts as unmoved up to now.
 - A model's own week (Fable's) moves while another session's subagents spend it with no prompt anywhere: the
   usage check now runs every 3 minutes (was 15) after any session's spend, not only after a prompt.
 - Under a minute reads `<1m`, not `0m` (`out in <1m`); 999.5k tokens and up read `1M`, not `1000k`; nothing spent

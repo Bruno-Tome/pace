@@ -5,7 +5,7 @@ import type { PaceAuto, PaceCacheInfo, PaceQuota, PaceReading, PaceSample, PaceS
 import { cacheLeft, nextCost, suggestions, type Suggestion } from './cache.ts'
 import * as Q from './quota.ts'
 import { budgetText, judgedOnMovement, movedPerHour, rateSince, type RateVerdict } from './rate.ts'
-import { quotaPerDollar, sessionsOf, spendVerdict, usdPerHour, usdPerPrompt } from './spend.ts'
+import { quotaPerDollar, sessionsOf, spendIn, spendVerdict, usdPerHour, usdPerPrompt } from './spend.ts'
 
 const MIN = 60_000
 const DAY = 24 * 60 * MIN
@@ -81,7 +81,8 @@ export function rateOf(s: Snapshot, row: Row, now: number): RateVerdict {
   const priced = spentRate(s, row, now) ?? rateSince(prompts, row.reading, baselineOf(samples, row, now), now)
   // The quota's own movement, where its recent readings measure it, outranks any estimate from dollars or prompts.
   // Idle then means it is not moving, whoever moves it: a subagent on its model, another session, claude.ai.
-  const moved = row.reading ? movedPerHour(readingsOf(samples, row), now, recentSpan(row)) : null
+  const whole = row.reading ? movedPerHour(heldSince(s, row, readingsOf(samples, row), now), now, recentSpan(row)) : null
+  const moved = whole != null ? whole * pacedShare(s, row, now) : null
   if (moved != null && row.reading) {
     const m = judgedOnMovement(priced, row.reading, moved)
     if (moved === 0) return { ...m, level: 'idle' }
@@ -100,6 +101,20 @@ export function rateOf(s: Snapshot, row: Row, now: number): RateVerdict {
  */
 const recentSpan = (row: Row) => Math.max(15 * MIN, (row.window * 1000) / 56)
 
+/**
+ * The share of a quota's movement from the models that pace it (see `pacedBy`): all of a model's own week; of a
+ * shared quota, their part of the dollars spent over the span, else of the prompts, all of it where neither is known
+ */
+function pacedShare(s: Snapshot, row: Row, now: number): number {
+  if (Q.isPerModel(row.key)) return 1
+  const from = now - recentSpan(row)
+  const usd = spendIn(s.spend ?? [], from, now)
+  if (usd > 0) return spendIn(spendFor(s, row.key), from, now) / usd
+  const inSpan = (t: number) => t > from && t <= now
+  const prompts = s.prompts.filter(inSpan).length
+  return prompts ? promptsFor(s, row.key).filter(inSpan).length / prompts : 1
+}
+
 /** The quota's readings in its current window, oldest first */
 function readingsOf(samples: readonly PaceSample[], row: Row): { at: number; percent: number }[] {
   const r = row.reading?.resetsAt
@@ -107,6 +122,18 @@ function readingsOf(samples: readonly PaceSample[], row: Row): { at: number; per
     const q = s.quotas[row.key]
     return q && (r == null || q.resetsAt == null || Math.abs(q.resetsAt - r) <= 90_000) ? [{ at: s.at, percent: q.percent }] : []
   })
+}
+
+/**
+ * The readings, held flat to now when nothing has drawn on the quota since the last: no prompt and no spend after
+ * it, past the reply's own spend, recorded with the reading. Readings come only with use, so without this the
+ * last minutes of a busy stretch would stand as the rate until they age out of the span.
+ */
+function heldSince(s: Snapshot, row: Row, pts: { at: number; percent: number }[], now: number): { at: number; percent: number }[] {
+  const last = pts[pts.length - 1]
+  if (!last || last.at >= now) return pts
+  const drawn = promptsFor(s, row.key).some(t => t > last.at) || spendFor(s, row.key).some(x => x.t > last.at + 10_000)
+  return drawn ? pts : [...pts, { at: now, percent: last.percent }]
 }
 
 /** The rate judged in dollars, where the shared spend prices both the quota and a prompt */
@@ -120,16 +147,20 @@ function spentRate(s: Snapshot, row: Row, now: number): RateVerdict | null {
 }
 
 /**
- * The prompts that draw on a quota: every prompt, less those that went to a model whose use does not count against
- * it. A prompt whose model is not known counts, so a quota is never under-warned.
+ * The prompts that pace a quota: every prompt, less those that went to a model whose use does not set its rate
+ * (see `pacedBy`). A prompt whose model is not known counts, so a quota is never under-warned.
  */
 export function promptsFor(s: Snapshot, key: string): readonly number[] {
-  const elsewhere = new Set(Object.entries(s.modelPrompts ?? {}).flatMap(([model, list]) => (Q.drawsOn(key, model) ? [] : list)))
+  const keys = Q.quotaKeys(s.samples)
+  const elsewhere = new Set(Object.entries(s.modelPrompts ?? {}).flatMap(([model, list]) => (Q.pacedBy(key, model, keys) ? [] : list)))
   return elsewhere.size ? s.prompts.filter(t => !elsewhere.has(t)) : s.prompts
 }
 
-/** The spend that draws on a quota: all of it, less what went to a model whose use does not count against it */
-export const spendFor = (s: Snapshot, key: string) => (s.spend ?? []).filter(x => Q.drawsOn(key, x.m))
+/** The spend that paces a quota: all of it, less what went to a model whose use does not set its rate */
+export function spendFor(s: Snapshot, key: string): readonly PaceSpend[] {
+  const keys = Q.quotaKeys(s.samples)
+  return (s.spend ?? []).filter(x => Q.pacedBy(key, x.m, keys))
+}
 
 const SEVERITY: Record<RateVerdict['level'], number> = { idle: 0, ok: 1, brisk: 2, burst: 3, fast: 4 }
 

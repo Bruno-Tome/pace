@@ -231,6 +231,54 @@ test('the pane shows the cache, the context and what to do about token usage', a
   expect(drawn).toContain('72%')
 })
 
+test('a burst stops being called once the prompting stops: the quiet minutes count in the rate', async ($, on) => {
+  const { clock } = world(on, {}, FABLE_ONLY)
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  // A fresh 5-hour window 20 minutes in: 3% to 9% in 8 minutes, a prompt before each reading
+  const resetsAt = iso(NOW + 4 * H + 40 * 60_000)
+  for (const [i, pct] of [3, 5, 6, 8, 9].entries()) {
+    if (i) await clock.advance(2 * 60_000)
+    await $.prompt.submit({ text: `p${i}` } as any)
+    await $.session.measure({ context: { window: 1_000_000 }, rateLimits: [{ kind: 'five_hour', percentUsed: pct, resetsAt }], changed: ['rateLimits'] } as any)
+  }
+  const band = async () => {
+    const ui = await $.ui.mount({ plugin: 'pace', surface: 'terminal', component: 'AbovePrompt', props: BAND as any })
+    return textOf(((await ui.drawn({ in: 'pace-band' })) as any).children[0])
+  }
+  // 45 points an hour while it climbs: out in about 2 hours, a burst
+  expect(await band()).toContain('burst')
+  // 8 minutes with no prompt: 9% with 4h24m left is on pace, and nothing says it runs out
+  await clock.advance(8 * 60_000)
+  const five = await band()
+  expect(five).toContain('9%')
+  expect(five).not.toContain('burst')
+  expect(five).not.toContain('out in')
+})
+
+test('a Fable session burning the 5-hour window is paced by the Fable week, not called too fast on the window', async ($, on) => {
+  const { clock, status } = world(on, {}, FABLE_ONLY)
+  on('session.model', () => ({ value: 'claude-fable-5-1' }))
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  // A fresh 5-hour window: 0% to 10% in 12 minutes, every prompt to Fable
+  const resetsAt = iso(NOW + 4 * H + 48 * 60_000)
+  for (const [i, pct] of [0, 2, 5, 7, 10].entries()) {
+    if (i) await clock.advance(3 * 60_000)
+    await $.prompt.submit({ text: `p${i}` } as any)
+    await $.session.measure({ context: { window: 1_000_000 }, rateLimits: [{ kind: 'five_hour', percentUsed: pct, resetsAt }], changed: ['rateLimits'] } as any)
+  }
+  const ui = await $.ui.mount({ plugin: 'pace', surface: 'terminal', component: 'AbovePrompt', props: BAND as any })
+  const tree: any = await ui.drawn({ in: 'pace-band' })
+  const five = textOf(tree.children[0])
+  const week = textOf(tree.children[1])
+  // The window's own fill still shows; the burst is Fable's, paced by its week
+  expect(five).toContain('10%')
+  expect(five).not.toContain('too fast')
+  expect(five).not.toContain('out in')
+  expect(week).toContain('Fable wk')
+  expect(week).toContain('↻')
+  expect(status[status.length - 1]).not.toContain('out in')
+})
+
 test('a burst over a window already over pace is too fast', async ($, on) => {
   const { clock } = world(on)
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
@@ -366,6 +414,73 @@ test('the window\'s keys reach the session: w steps warm mode off → ping → c
   expect(fetches()).toBe(before + 1)
 })
 
+
+test('the split\'s buttons reach the session: any /pace argument runs, and its answer comes back in the feed', async ($, on) => {
+  const { clock, files, stored, opens } = world(on, { TMUX: '/tmp/tmux-501/default,1,0', TMUX_PANE: '%3' })
+  files['/tmp/ROADMAP.md'] = '# Roadmap\n\n- [ ] Write CI\n'
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  await $.command.run({ command: 'pace', args: 'split' } as any)
+  const state = () => JSON.parse(files['/home/u/.claude/pace-state.json']!)
+  expect(state().prefs).toEqual({ band: true, line: true })
+  expect(state().known).toContain('ROADMAP.md')
+  let pressed = 0
+  const key = async (cmd: string) => {
+    files['/home/u/.claude/pace-keys.json'] = JSON.stringify({ id: NOW + ++pressed, cmd })
+    await clock.advance(3000)
+  }
+  await key('on')
+  expect((stored['session:session-a'] as any).onPace).toBe(true)
+  expect(state().onPace).toBe(true)
+  expect(state().notice.text).toContain('On pace mode on')
+  await key('hide')
+  expect(state().prefs.band).toBe(false)
+  // Starting a run from the split goes through the same onboarding as /pace auto
+  await key('auto ROADMAP.md')
+  expect(opens.map(o => o.id)).toContain('pace-auto')
+  expect(state().notice.text).toContain('press Start')
+})
+
+test('the split\'s timeline button opens the plan\'s timeline in a second split carved under the Pace split', async ($, on) => {
+  const { clock, files, runs } = world(on, { TMUX: '/tmp/tmux-501/default,1,0', TMUX_PANE: '%3' })
+  files['/tmp/ROADMAP.md'] = '# Roadmap\n\n- [ ] Write CI\n'
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  await $.command.run({ command: 'pace', args: 'split' } as any)
+  files['/home/u/.claude/pace-keys.json'] = JSON.stringify({ id: NOW + 1, cmd: 'timeline' })
+  await clock.advance(3000)
+  // Below the viewer's pane (%7), half its height, not beside Claude's
+  const split = runs.filter(r => r[1] === 'split-window')[1]!
+  expect(split.slice(0, 8)).toEqual(['tmux', 'split-window', '-v', '-d', '-l', '50%', '-t', '%7'])
+  expect(split[split.length - 1]).toContain('plan-viewer.ts')
+  expect(files['/home/u/.claude/pace-plan-session-a.json']).toBeDefined()
+  expect(JSON.parse(files['/home/u/.claude/pace-state.json']!).notice.text).toContain('under the Pace split')
+  // Typed as /pace timeline with no Pace split open, it is the sidebar beside Claude
+})
+
+test('t again closes the timeline pane, and quitting the split closes it too', async ($, on) => {
+  const { clock, files, runs } = world(on, { TMUX: '/tmp/tmux-501/default,1,0', TMUX_PANE: '%3' })
+  files['/tmp/ROADMAP.md'] = '# Roadmap\n\n- [ ] Write CI\n'
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  await $.command.run({ command: 'pace', args: 'split' } as any)
+  let pressed = 0
+  const key = async (cmd: string) => {
+    files['/home/u/.claude/pace-keys.json'] = JSON.stringify({ id: NOW + ++pressed, cmd })
+    await clock.advance(3000)
+  }
+  const notice = () => JSON.parse(files['/home/u/.claude/pace-state.json']!).notice.text
+  const kills = () => runs.filter(r => r[1] === 'kill-pane').length
+  await key('timeline')
+  expect(kills()).toBe(0)
+  await key('timeline')
+  expect(kills()).toBe(1)
+  expect(notice()).toContain('Plan timeline closed')
+  // Open again, then the viewer quits: its timeline pane goes with it, and /pace opens a fresh split
+  await key('timeline')
+  const splits = runs.filter(r => r[1] === 'split-window').length
+  await key('close')
+  expect(kills()).toBe(2)
+  await $.command.run({ command: 'pace', args: 'split' } as any)
+  expect(runs.filter(r => r[1] === 'split-window').length).toBe(splits + 1)
+})
 
 test('the next prompt\'s cost shows in dollars, priced from what the session\'s own replies cost', async ($, on) => {
   const { clock, stored } = world(on)

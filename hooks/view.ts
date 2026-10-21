@@ -2,7 +2,7 @@
 // full-screen window. The hooks module turns a line into Text elements, the window and the status line into ANSI.
 // Pure; times in ms.
 
-import type { PaceAuto, PaceCacheInfo, PacePrefs } from '../types'
+import type { PaceAuto, PaceCacheInfo, PacePrefs, PaceWarmMode } from '../types'
 import { cacheLeft, formatTokens, formatUsd, nextCost, ttlSeconds, type Suggestion } from './cache.ts'
 import { chart, type Layer } from './chart.ts'
 import type { Step } from './plan.ts'
@@ -349,7 +349,7 @@ function quotaBlock(s: Snapshot, row: Row, o: PaneLayout): Line[] {
       { t: ` used · ${pctOf(p.elapsed)}% elapsed · `, dim: true },
       { t: Q.statusLabel(status), color: STATUS_COLOR[status] },
     ],
-    [{ t: `${Q.paceSummary(p)}${fc ? ` · ${fc}` : ''}${p.ratio != null ? ` · ${p.ratio.toFixed(2)}× even pace` : ''}`, dim: true }],
+    ...wrapSegs([{ t: `${Q.paceSummary(p)}${fc ? ` · ${fc}` : ''}${p.ratio != null ? ` · ${p.ratio.toFixed(2)}× even pace` : ''}`, dim: true }], o.cols),
     [],
   ]
 }
@@ -376,7 +376,7 @@ function restLines(s: Snapshot, now: number, o: PaneLayout): Line[] {
   const out: Line[] = []
   const blank = () => out.push([])
   if (rows.some(r => r.view.kind === 'pace')) {
-    out.push(LEGEND)
+    out.push(...wrapSegs(LEGEND, o.cols))
     blank()
   }
 
@@ -386,15 +386,15 @@ function restLines(s: Snapshot, now: number, o: PaneLayout): Line[] {
   const labelW = Math.max(0, ...rated.map(q => q.row.short.length))
   const l = levelLook(v)
   out.push([{ t: 'Prompting', bold: true }])
-  out.push([{ t: `${v.perHour} prompts/h`, bold: true }, { t: `  · ${v.last15} in the last 15m, every session`, dim: true }])
+  out.push(...wrapSegs([{ t: `${v.perHour} prompts/h`, bold: true }, { t: `  · ${v.last15} in the last 15m, every session`, dim: true }], o.cols))
   const spend = s.spend ?? []
   const sessions = sessionsOf(spend, now)
   if (v.usdPerHour != null) {
     const perPrompt = usdPerPrompt(spend, s.prompts, now)
-    out.push([
+    out.push(...wrapSegs([
       { t: rateText(v), bold: true },
       { t: `  · across ${sessions} session${sessions === 1 ? '' : 's'}${perPrompt != null ? ` · ${formatUsd(perPrompt)} a prompt` : ''}`, dim: true },
-    ])
+    ], o.cols))
   }
   for (const { row, r } of rated) {
     const ql = levelLook(r)
@@ -404,9 +404,10 @@ function restLines(s: Snapshot, now: number, o: PaneLayout): Line[] {
       budgetText(r) ? `budget ${budgetText(r)}` : '',
       r.emptyIn != null && r.resetIn != null && r.emptyIn < r.resetIn ? `out in ${compact(r.emptyIn)}` : '',
     ].filter(Boolean)
-    out.push([{ t: `${row.short.padEnd(labelW)} `, dim: true }, { t: `${ql.mark} ${ql.word}`, color: ql.color, bold: true }, { t: `  · ${figures.join(' · ')}`, dim: true }])
+    out.push(...wrapSegs([{ t: `${row.short.padEnd(labelW)} `, dim: true }, { t: `${ql.mark} ${ql.word}`, color: ql.color, bold: true, whole: true }, { t: `  · ${figures.join(' · ')}`, dim: true }], o.cols))
   }
-  const promptBuckets = buckets(s.prompts, now, 20, 15 * MIN)
+  const promptBuckets = buckets(s.prompts, now, Math.min(20, Math.max(4, o.cols - 28)), 15 * MIN)
+  // Sized to the columns rather than wrapped: its leading blanks are the quiet quarter-hours
   out.push([{ t: sparkline(promptBuckets), color: l.color }, { t: `  prompts per 15m, last ${(promptBuckets.length * 15) / 60}h`, dim: true }])
   const advice = (() => {
     const name = worst ? Q.theName(worst.name) : 'the 5-hour window'
@@ -433,15 +434,15 @@ function restLines(s: Snapshot, now: number, o: PaneLayout): Line[] {
     const cost = nextCost(c.tokens, c.ttl)
     const size = c.window > 0 ? `${formatTokens(c.tokens)} of ${formatTokens(c.window)} (${Math.round((c.tokens / c.window) * 100)}%)` : formatTokens(c.tokens)
     const barWidth = Math.max(10, Math.min(40, o.cols - 34))
-    out.push([
-      ...cacheLine(c, now, 5, barWidth, false),
+    out.push(...wrapSegs([
+      ...cacheLine(c, now, 5, barWidth, false).map(x => ({ ...x, whole: true })),
       { t: left ? ` left of ${c.ttl}` : ` · lapsed ${Q.formatDuration((now - c.at) / 1000 - ttlSeconds(c.ttl))} ago`, dim: true },
-    ])
+    ], o.cols))
     const usd = (tokens: number) => (s.price != null ? ` (${formatUsd(tokens * s.price)})` : '')
-    out.push([{ t: `context ${size} · next prompt ≈${formatTokens(cost.warm)} tk${usd(cost.warm)} warm, ≈${formatTokens(cost.cold)}${usd(cost.cold)} cold (${Math.round(cost.cold / Math.max(1, cost.warm))}×)`, dim: true }])
+    out.push(...wrapSegs([{ t: `context ${size} · next prompt ≈${formatTokens(cost.warm)} tk${usd(cost.warm)} warm, ≈${formatTokens(cost.cold)}${usd(cost.cold)} cold (${Math.round(cost.cold / Math.max(1, cost.warm))}×)`, dim: true }], o.cols))
   } else out.push([{ t: 'The cache timer starts with the next reply.', dim: true }])
   const warm = s.warm ?? 'off'
-  out.push([{ t: 'warm mode ', dim: true }, warm === 'off' ? { t: 'off', dim: true } : { t: warm, color: 'success', bold: true }, { t: warm === 'off' ? '  · /pace warm compact | ping' : '  · acts under 10m left, while idle · /pace warm off', dim: true }])
+  out.push(...wrapSegs([{ t: 'warm mode ', dim: true }, warm === 'off' ? { t: 'off', dim: true } : { t: warm, color: 'success', bold: true }, { t: warm === 'off' ? '  · /pace warm compact | ping' : '  · acts under 10m left, while idle · /pace warm off', dim: true }], o.cols))
   blank()
 
   const advices = adviceOf(s, now)
@@ -451,7 +452,7 @@ function restLines(s: Snapshot, now: number, o: PaneLayout): Line[] {
     blank()
   }
   if (o.prefs) {
-    out.push([{ t: `/pace refresh · /pace window · /pace ${o.prefs.onPace ? 'off' : 'on'} (on pace mode) · /pace auto <plan> · /pace ${o.prefs.band ? 'hide' : 'show'} band · /pace line ${o.prefs.line ? 'off' : 'on'}`, dim: true }])
+    out.push(...wrapSegs([{ t: `/pace refresh · /pace window · /pace ${o.prefs.onPace ? 'off' : 'on'} (on pace mode) · /pace auto <plan> · /pace ${o.prefs.band ? 'hide' : 'show'} band · /pace line ${o.prefs.line ? 'off' : 'on'}`, dim: true }], o.cols))
   }
   return out
 }
@@ -617,49 +618,199 @@ export function planLines(steps: readonly Step[], o: PlanLayout): Line[] {
   return [...head, ...timeline(steps, lo, hi, o.cols, marks)]
 }
 
-/** The window's state: a snapshot, when the session wrote it, and the plan's steps; `plan` absent without a checklist */
-export type Feed = Snapshot & { at: number; plan?: { name: string; steps: readonly Step[] } }
+/**
+ * The window's state: a snapshot, when the session wrote it, the plans' steps, what the buttons toggle, the plans a
+ * run can start on and the last command's answer
+ */
+export type Feed = Snapshot & {
+  at: number
+  /** The plan the timeline shows; absent without a checklist */
+  plan?: { name: string; steps: readonly Step[] }
+  /** A second plan drawn beside it: the roadmap beside an ultra run's own plan */
+  also?: { name: string; steps: readonly Step[] }
+  /** What the band and status-line buttons toggle */
+  prefs?: { band: boolean; line: boolean }
+  /** Plan files a run can start on, the roadmap first */
+  known?: readonly string[]
+  /** The last command's answer, shown for 10 seconds from `at` */
+  notice?: { id: number; text: string; at: number }
+}
 
-/** What the window's keys chose: `focus` is the 1-based quota drawn alone */
-export type ScreenOptions = { focus?: number }
+/**
+ * What the window's keys chose: `focus` is the 1-based quota drawn alone, `picking` the run a plan is being chosen
+ * for, `typing` the path typed for it
+ */
+export type UiState = { focus?: number | undefined; picking?: 'auto' | 'ultra'; typing?: string }
+export type ScreenOptions = UiState
+
+/** A button on the screen: its label at column `x`, row `y` (both 1-based), `w` wide, and the key it stands for */
+export type Hit = { x: number; y: number; w: number; label: string; key: string }
+
+/** A button: its key, its label and the command it sends; one with no command opens the plan picker */
+type Button = { key: string; label: string; cmd?: string }
+
+/** The next warm mode along: off, compact, ping */
+const WARM_NEXT: Record<PaceWarmMode, PaceWarmMode> = { off: 'compact', compact: 'ping', ping: 'off' }
+
+/** The command bar's buttons, as the modes stand */
+function buttons(f: Feed): Button[] {
+  const a = f.auto
+  const run: Button[] = !a ? [{ key: 'a', label: 'auto…' }, { key: 'u', label: 'ultra…' }, { key: 'v', label: 'preview', cmd: 'ultra preview' }]
+    : a.paused ? [{ key: 'a', label: 'resume', cmd: `${a.ultra ? 'ultra' : 'auto'} resume` }]
+    : a.ultra ? [{ key: 'u', label: 'ultra off', cmd: 'ultra off' }, { key: 's', label: `burst ${a.burst ? 'off' : 'on'}`, cmd: `auto burst${a.burst ? ' off' : ''}` }]
+    : [{ key: 'a', label: 'auto off', cmd: 'auto off' }, { key: 's', label: `burst ${a.burst ? 'off' : 'on'}`, cmd: `auto burst${a.burst ? ' off' : ''}` }]
+  const warm = f.warm ?? 'off'
+  const band = f.prefs?.band ?? true
+  const line = f.prefs?.line ?? true
+  return [
+    { key: 'r', label: 'refresh', cmd: 'refresh' },
+    ...run,
+    { key: 't', label: 'timeline', cmd: 'timeline' },
+    { key: 'p', label: `on pace ${f.onPace ? 'off' : 'on'}`, cmd: f.onPace ? 'off' : 'on' },
+    { key: 'w', label: `warm ${WARM_NEXT[warm]}`, cmd: `warm ${WARM_NEXT[warm]}` },
+    { key: 'b', label: `${band ? 'hide' : 'show'} band`, cmd: band ? 'hide' : 'show' },
+    { key: 'l', label: `line ${line ? 'off' : 'on'}`, cmd: `line ${line ? 'off' : 'on'}` },
+  ]
+}
+
+/** The plan picker's buttons: the plans the session knows, a typed path, cancel */
+const pickButtons = (f: Feed): Button[] => [
+  ...(f.known ?? []).slice(0, 9).map((plan, i) => ({ key: String(i + 1), label: plan })),
+  { key: 't', label: 'a path' },
+  { key: '\x1b', label: 'cancel' },
+]
+
+const keyName = (key: string) => (key === '\x1b' ? 'esc' : key)
+
+/** Buttons laid out left to right in `cols`, wrapping to the next row: the rows, and each button's place on them */
+function buttonRows(list: readonly Button[], cols: number, lead: Seg | null): { lines: Line[]; hits: Hit[] } {
+  const lines: Line[] = [lead ? [lead] : []]
+  const hits: Hit[] = []
+  let used = lead ? width([lead]) : 0
+  for (const b of list) {
+    const label = `[${keyName(b.key)}] ${b.label}`
+    const w = [...label].length
+    const gap = used ? 2 : 0
+    if (used && used + gap + w > cols) {
+      lines.push([])
+      used = 0
+    }
+    const line = lines[lines.length - 1]!
+    if (used) line.push({ t: '  ' })
+    const x = used + (used ? gap : 0) + 1
+    line.push({ t: `[${keyName(b.key)}]`, color: 'suggestion', bold: true }, { t: ` ${b.label}` })
+    hits.push({ x, y: lines.length, w, label, key: b.key })
+    used = x - 1 + w
+  }
+  return { lines, hits }
+}
+
+/** The command bar: the picker while a plan is being chosen, the typed path while one is typed, else the buttons */
+function commandBar(f: Feed, ui: UiState, cols: number, charted: number): { lines: Line[]; hits: Hit[] } {
+  if (ui.typing != null) {
+    return { lines: [[{ t: 'plan file: ', dim: true }, { t: ui.typing, bold: true }, { t: '▏', color: 'suggestion' }, { t: '   enter starts · esc cancels', dim: true }]], hits: [] }
+  }
+  if (ui.picking) return buttonRows(pickButtons(f), cols, { t: `Start ${ui.picking === 'auto' ? 'auto mode' : 'ultra pace'} on:  `, bold: true })
+  const focus: Button[] = ui.focus != null ? [{ key: String(ui.focus), label: 'all' }] : charted > 1 ? [{ key: `1–${charted}`, label: 'focus' }] : charted ? [{ key: '1', label: 'focus' }] : []
+  return buttonRows([...buttons(f), ...focus, { key: 'q', label: 'quit', cmd: 'quit' }], cols, null)
+}
 
 /** Terminals at least this wide draw the charts two to a row */
 const TWO_COLUMNS = 180
 
+/** Terminals at least this wide draw two plans side by side */
+const TWO_PLANS = 120
+
+/** Seconds a command's answer stays under the title */
+const NOTICE_MS = 10_000
+
+/** The modes: on pace and warm mode, the band and the status line on one row, the run under way with its figures on the next */
+function modesBlock(f: Feed, now: number, cols: number): Line[] {
+  const warm = f.warm ?? 'off'
+  const a = f.auto
+  const label = (t: string): Seg => ({ t: `${t}  `, dim: true })
+  const state = (on: boolean, t: string): Seg => (on ? { t, color: 'success', bold: true } : { t, dim: true })
+  const sep: Seg = { t: ' · ', dim: true }
+  const band = f.prefs?.band ?? true
+  const line = f.prefs?.line ?? true
+  const out: Line[] = wrapSegs([
+    label('on pace mode'), state(!!f.onPace, f.onPace ? 'on' : 'off'), sep,
+    label('warm mode'), state(warm !== 'off', warm), sep,
+    label('band'), state(band, band ? 'shown' : 'hidden'), sep,
+    label('status line'), state(line, line ? 'on' : 'off'),
+  ], cols)
+  if (!a) {
+    out.push(...wrapSegs([label('auto mode'), state(false, 'off'), { t: ' · a run works through a plan\'s checklist while you are away; ultra pace works toward its goal', dim: true }], cols))
+  } else {
+    const u = a.ultra
+    const where: Seg = a.paused ? { t: '⏸ paused · ', color: 'warning', bold: true }
+      : a.heldUntil != null ? { t: `⏸ held until ${Q.clockAt(a.heldUntil, a.heldUntil - now >= 86400_000)} · `, color: 'warning', bold: true }
+      : { t: '▶ ', color: 'success', bold: true }
+    const turn: Seg = { t: `${a.plan} · turn ${a.turns}/${a.max}${a.burst ? ' · burst' : ''}${a.why && a.heldUntil != null ? ` · ${a.why}` : ''}`, dim: true }
+    out.push(...wrapSegs([label(u ? 'ultra pace' : 'auto mode'), where, turn], cols))
+    if (u) {
+      out.push(...wrapSegs([label('goal'), { t: u.goal }], cols))
+      out.push(...wrapSegs([label('gear'), { t: gearText(u.gear), bold: true }, { t: ` · ${u.models.floor}..${u.models.ceiling}`, dim: true }, sep, label('phase'), { t: u.phase }, { t: u.fanout ? ` · ${u.fanout.reported?.length ?? 0} of ${u.fanout.agentIds.length} subagents reported` : '', dim: true }], cols))
+      if (u.check) out.push(...wrapSegs([label('check'), { t: u.check }, { t: u.checkFails ? ` · failed ${u.checkFails}×` : '', color: 'warning' }], cols))
+    }
+  }
+  out.push([])
+  return out
+}
+
+/** The plans' timelines under the charts: two side by side on a wide terminal, else one under the other; nothing without a checklist */
+function planBlock(f: Feed, now: number, cols: number): Line[] {
+  const plans = [f.plan, f.also].filter((p): p is NonNullable<Feed['plan']> => !!p && Array.isArray(p.steps) && p.steps.length > 0)
+  if (!plans.length) return []
+  const lines = (p: NonNullable<Feed['plan']>, w: number) => planLines(p.steps, { plan: p.name, auto: f.auto?.plan === p.name ? f.auto : null, cols: w, now, rows: PLAN_ROWS })
+  if (plans.length === 2 && cols >= TWO_PLANS) return [[{ t: 'Plan', bold: true }], ...sideBySide(lines(plans[0]!, pairWidth(cols)), lines(plans[1]!, pairWidth(cols)), pairWidth(cols)), []]
+  return plans.flatMap(p => [[{ t: 'Plan', bold: true }], ...lines(p, cols), []])
+}
+
+/** Rows the window gives a plan's timeline */
+const PLAN_ROWS = 12
+
 /**
- * The window, `cols` by at most `rows`: a title with the figures' age and the keys, then the pane with its charts
- * as wide as the terminal (two to a row on a wide one) and as tall as the rows left allow, in ANSI. A focused
- * quota is drawn alone, its chart taking every row.
+ * The window, `cols` by at most `rows`: a title with the figures' age, the run's row and the last command's answer,
+ * the modes, the charts (two to a row on a wide terminal, as tall as the rows left allow), the plans, the
+ * prompting rate, the cache and the suggestions, and the command bar last, in ANSI, with each button's place on
+ * the screen. A focused quota is drawn alone, its chart taking every row.
  */
-export function screen(f: Feed, now: number, cols: number, rows: number, opts: ScreenOptions = {}): string {
+export function screenOf(f: Feed, now: number, cols: number, rows: number, ui: UiState = {}): { text: string; hits: Hit[] } {
   const age = Math.max(0, now - f.at)
   const charted = rowsOf(f.samples, now).filter(r => r.view.kind === 'pace').slice(0, 9)
-  const focused = opts.focus != null ? charted[opts.focus - 1] : undefined
-  const keys = focused ? `${opts.focus} again: all` : charted.length > 1 ? `1–${charted.length} focus` : charted.length ? '1 focus' : ''
-  const title: Line = [
-    { t: 'Pace', bold: true },
-    { t: `  · updated ${age < MIN ? 'just now' : `${compact(age / 1000)} ago`} · q quits · w warm · r refresh${keys ? ` · ${keys}` : ''}`, dim: true },
-  ]
+  const focused = ui.focus != null ? charted[ui.focus - 1] : undefined
+  const title: Line = [{ t: 'Pace', bold: true }, { t: `  · updated ${age < MIN ? 'just now' : `${compact(age / 1000)} ago`}`, dim: true }]
   const modes = splitModes(f, now)
+  const notice = f.notice && now - f.notice.at < NOTICE_MS ? wrapSegs([{ t: '› ', color: 'suggestion' }, { t: f.notice.text }], cols) : []
+  const head: Line[] = [title, ...(modes ? [modes] : []), ...notice, []]
+  const bar = commandBar(f, ui, cols, charted.length)
   const layout = (w: number, h: number): PaneLayout => ({ cols: w, chartWidth: Math.max(16, w - 6), chartHeight: () => h })
-  const fit = (lines: Line[]) => [title, ...(modes ? [modes] : []), [], ...lines].slice(0, rows).map(l => toAnsi(clip(l, cols))).join('\n')
+  const fit = (lines: Line[]): { text: string; hits: Hit[] } => {
+    const body = [...head, ...lines].slice(0, Math.max(0, rows - bar.lines.length))
+    const all = [...body, ...bar.lines]
+    return { text: all.map(l => toAnsi(clip(l, cols))).join('\n'), hits: bar.hits.map(h => ({ ...h, y: body.length + h.y })) }
+  }
 
   if (focused) {
-    const fixed = quotaBlock(f, focused, layout(cols, 0)).length + 2
+    const fixed = head.length + bar.lines.length + quotaBlock(f, focused, layout(cols, 0)).length
     return fit(quotaBlock(f, focused, layout(cols, Math.max(4, rows - fixed))))
   }
   const two = cols >= TWO_COLUMNS && charted.length > 1
   const colW = two ? Math.floor((cols - 3) / 2) : cols
   const chartRows = two ? Math.ceil(charted.length / 2) : charted.length
-  // The charts share what the rest leaves, each between 4 and 16 rows
+  // The charts share what the rest leaves, each between 3 and 16 rows
   const body = (h: number): Line[] => {
     const blocks = rowsOf(f.samples, now).map(row => quotaBlock(f, row, layout(colW, h)))
     const top = two ? pairs(blocks, colW) : blocks.flat()
-    return [...(blocks.length ? top : NO_USAGE), ...planBlock(f, now, cols), ...restLines(f, now, layout(cols, h))]
+    return [...modesBlock(f, now, cols), ...(blocks.length ? top : NO_USAGE), ...planBlock(f, now, cols), ...restLines(f, now, layout(cols, h))]
   }
-  const fixed = body(0).length + 2 + (modes ? 1 : 0)
-  return fit(body(Math.max(4, Math.min(16, Math.floor((rows - fixed) / Math.max(1, chartRows))))))
+  const fixed = body(0).length + head.length + bar.lines.length
+  return fit(body(Math.max(3, Math.min(16, Math.floor((rows - fixed) / Math.max(1, chartRows))))))
 }
+
+/** The window as text alone */
+export const screen = (f: Feed, now: number, cols: number, rows: number, ui: UiState = {}): string => screenOf(f, now, cols, rows, ui).text
 
 /** The modes row under the window's title, saying so while on pace mode thinks one effort level lighter */
 function splitModes(f: Feed, now: number): Line | null {
@@ -667,15 +818,36 @@ function splitModes(f: Feed, now: number): Line | null {
   return modesLine(f, now, lighter ? [{ t: ' · effort a level lighter', color: 'warning' }] : [])
 }
 
-/** Rows the window gives the plan's timeline */
-const PLAN_ROWS = 12
+/**
+ * What a key pressed in the window does: while a path is typed, it edits it (enter starts the run on it, esc
+ * cancels); while a plan is picked, a digit starts the run on that plan, t starts typing, esc cancels; else a
+ * digit focuses a quota (again shows all), a button's key sends its command or opens the picker, q quits
+ */
+export function press(ui: UiState, key: string, f: Feed): { ui: UiState; send?: string; quit?: true } {
+  if (ui.typing != null) {
+    if (key === '\x1b') return { ui: {} }
+    if (key === '\r' || key === '\n') return ui.typing.trim() ? { ui: {}, send: `${ui.picking ?? 'auto'} ${ui.typing.trim()}` } : { ui: {} }
+    if (key === '\x7f' || key === '\b') return { ui: { ...ui, typing: ui.typing.slice(0, -1) } }
+    return key.length === 1 && key >= ' ' ? { ui: { ...ui, typing: ui.typing + key } } : { ui }
+  }
+  if (ui.picking) {
+    if (key === '\x1b' || key === 'q') return { ui: {} }
+    if (key === 't') return { ui: { ...ui, typing: '' } }
+    const plan = /^[1-9]$/.test(key) ? (f.known ?? [])[Number(key) - 1] : undefined
+    return plan ? { ui: {}, send: `${ui.picking} ${plan}` } : { ui }
+  }
+  if (key === 'q' || key === 'Q' || key === '\x03') return { ui: {}, quit: true }
+  if (/^[1-9]$/.test(key)) return { ui: { ...ui, focus: ui.focus === Number(key) ? undefined : Number(key) } }
+  const b = buttons(f).find(x => x.key === key)
+  if (!b) return { ui }
+  if (b.cmd) return { ui, send: b.cmd }
+  return { ui: { ...ui, picking: key === 'u' ? 'ultra' : 'auto' } }
+}
 
-/** The plan's timeline in the window, under the charts; nothing without a checklist */
-function planBlock(f: Feed, now: number, cols: number): Line[] {
-  const steps = Array.isArray(f.plan?.steps) ? f.plan.steps : []
-  if (!f.plan || !steps.length) return []
-  const auto = f.auto?.plan === f.plan.name ? f.auto : null
-  return [[{ t: 'Plan', bold: true }], ...planLines(steps, { plan: f.plan.name, auto, cols, now, rows: PLAN_ROWS }), []]
+/** The key of the button at column `x`, row `y` (1-based); none off every button */
+export function click(hits: readonly Hit[], x: number, y: number): string | undefined {
+  const key = hits.find(h => h.y === y && x >= h.x && x < h.x + h.w)?.key
+  return key?.startsWith('1–') ? '1' : key
 }
 
 /** Blocks two to a row, the left one padded to `colW` columns */
@@ -703,17 +875,6 @@ function clip(line: Line, cols: number): Line {
     left -= chars.length
   }
   return out
-}
-
-/** What a key pressed in the window does: focus a quota (a digit; again shows all), send to the session, or quit */
-export type KeyAction = { focus?: number | undefined; send?: 'warm' | 'refresh'; quit?: true }
-
-export function keyAction(key: string, focus: number | undefined): KeyAction {
-  if (key === 'q' || key === 'Q' || key === '\x03') return { quit: true }
-  if (/^[1-9]$/.test(key)) return { focus: focus === Number(key) ? undefined : Number(key) }
-  if (key === 'w') return { send: 'warm' }
-  if (key === 'r') return { send: 'refresh' }
-  return {}
 }
 
 /** The gap between two plans drawn side by side */
