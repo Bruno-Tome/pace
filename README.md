@@ -393,6 +393,22 @@ to it. Two buttons open more of pace as Herdr panes:
 - `charts ⇥` beside a harness: its `/pace` pane, its charts, rates and suggestions, fed by every
   live session of that harness together. A harness has no one prompt cache, so its pane leaves the cache out.
 
+**The fleet across hosts.** The same install builds a second mod, `fleet`, into `~/.config/herdr-app/mods/fleet/`
+(docked right; open it with `herdr-app do mod.open --name fleet`). It joins every agent Herdr runs, by its terminal,
+to pace's feeds (quotas and context) and ql's (`~/.local/state/ql/feeds/`: repo, how long it has held its state, files
+edited and read), with the `ctx=<percent>` terminal label as a fallback for context. A host pace doesn't read, such as
+Gemini, shows under *No quotas*. Three views, by the tabs at the top:
+
+- **By provider:** each provider's quotas as pace draws them, the most room first, with its agents under it.
+- **By repo:** which agents work on each repo and branch; two on one tree are flagged.
+- **By urgency:** blocked first, then a context at 80% or more, then done, working and idle.
+
+Above them, the recommendation: the live provider with the most room, ties to the one with fewer agents working,
+and why in a line (`Send work to Codex: 62% of the week left, 0 agents working`). A provider whose newest reading is
+older than the 5-hour window is marked stale and never recommended. **Send work ⇥** opens a dialog with the
+recommended host picked: choose the host and folder, write the task, and Start asks once more before it opens a new
+tab running `claude` or `codex --no-daemon` with the task. It never types into an agent already running.
+
 ## Where the numbers come from
 
 - **Quotas:** the session's rate-limit readings after each reply, Claude Code's usage cache in `~/.claude.json`,
@@ -436,13 +452,14 @@ core/view.ts           every drawing as lines of styled segments: band, status l
    ├─ bin/viewer.ts    the full-screen window, run by Node in a tmux split or a terminal window
    └─ bin/band.ts      the band or the fleet, live, in any terminal
 core/host.ts           the feed every host writes, and the fleet: providers side by side
+core/fleet.ts          the fleet across hosts: Herdr's agents joined to pace's and ql's feeds, three views, a pick
 core/auto.ts           auto mode and on pace mode, as decisions
 core/plan.ts           the plan's checklist as steps: done, under way, next
 core/alerts.ts         the once-per-window warnings
 hooks/usage.ts         Claude Code's usage readings: the usage endpoint and ~/.claude.json
 hooks/files.ts         the files pace writes in ~/.claude, shared with the viewer
 adapters/codex/        the Codex adapter: rollout.ts reads the rollout and hook input, hook.ts writes the feed
-adapters/herdr/        the Herdr mod, built to plain JS by scripts/herdr.ts
+adapters/herdr/        the Herdr mod, built to plain JS by scripts/herdr.ts; fleet/, the fleet across hosts
 testing/               claude-code/testing's describe, test and expect on Node and inside Herdr
 types/index.d.ts       the public contract: stored shapes and $.pace
 ```

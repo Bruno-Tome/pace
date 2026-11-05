@@ -2,7 +2,7 @@
 // `node --test scripts/herdr.node-test.ts`.
 
 import { describe, expect, test } from '../testing/node.ts'
-import { jsOf } from './herdr.ts'
+import { jsOf, MODS } from './herdr.ts'
 
 describe('jsOf', () => {
   test('strips the types and points relative imports at the built .js files', () => {
@@ -27,5 +27,14 @@ describe('jsOf', () => {
 
   test('leaves a .ts inside a string that is not an import alone', () => {
     expect(jsOf("export const file = './plan.ts'\n", 'core/plan.js')).toContain("'./plan.ts'")
+  })
+})
+
+describe('the mods it builds', () => {
+  test('pace, and the fleet beside it: each from its own adapter, docked right until a layout places it', () => {
+    expect(MODS.map(m => [m.name, m.entry, m.json.place, m.json.title])).toEqual([
+      ['pace', 'adapters/herdr/main.ts', 'right', 'Pace'],
+      ['fleet', 'adapters/herdr/fleet/main.ts', 'right', 'Fleet'],
+    ])
   })
 })

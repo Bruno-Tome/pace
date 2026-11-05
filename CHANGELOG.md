@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Herdr: a second mod, `fleet`, built by the same `node scripts/herdr.ts install`. It joins every agent Herdr runs to
+  pace's and ql's feeds by terminal, and shows them by provider, by repo (two agents on one tree flagged) or by
+  urgency, with the provider to send work to and why. **Send work ⇥** starts `claude` or `codex --no-daemon` with a
+  task in a new tab, after asking once more. The model and its drawing are `core/fleet.ts`; `scripts/herdr.ts`
+  builds and checks every mod in its `MODS` table.
 - pace runs beyond Claude Code. Every session writes a feed, `~/.local/state/pace/feeds/<host>-<session>.json`
   (a `PaceFeed`, version 1: host, provider, session, Herdr terminal when there is one, folder, time, snapshot and
   context use), written aside then moved into place, whenever it changes and once a minute to stay live. Feeds are read
