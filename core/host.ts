@@ -153,7 +153,9 @@ export function fleetOf(feeds: readonly PaceFeed[], now: number): FleetRow[] {
     if (!own.length) return []
     const snapshot = harnessOf(own)
     const snap = snapshotOf(snapshot, now)
-    const agents = [...own].sort((a, b) => b.at - a.at).map(agentOf)
+    // A terminal that ran more than one session is its newest one: the others ended there
+    const newest = [...own].sort((a, b) => b.at - a.at)
+    const agents = newest.filter((f, i) => !f.terminal || newest.findIndex(g => g.terminal === f.terminal) === i).map(agentOf)
     return [{ provider, quotas: snap.quotas, headroom: headroomOf(snap, undefined), agents, snapshot }]
   })
   return rows.sort((a, b) => ROOM.indexOf(a.headroom) - ROOM.indexOf(b.headroom))

@@ -142,3 +142,17 @@ describe('a harness\'s snapshot', () => {
     expect(fleetOf([feed({})], NOW)[0]!.snapshot.noCache).toBe(true)
   })
 })
+
+describe('the agents on a provider', () => {
+  test('are one per terminal: a terminal that ran two sessions shows its newest alone', () => {
+    const fleet = fleetOf([
+      feed({ session: 'before', terminal: 't9', at: NOW - 7 * MIN }),
+      feed({ session: 'now', terminal: 't9', at: NOW }),
+      feed({ session: 'elsewhere', terminal: 't3', at: NOW - MIN }),
+      // Outside Herdr there is no terminal to share: each session counts
+      feed({ session: 'a' }),
+      feed({ session: 'b', at: NOW - 2 * MIN }),
+    ], NOW)
+    expect(fleet[0]!.agents.map(a => a.session)).toEqual(['now', 'a', 'elsewhere', 'b'])
+  })
+})

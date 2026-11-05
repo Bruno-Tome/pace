@@ -1,8 +1,9 @@
 // How Herdr shows view.ts's segments: each semantic color as the theme's ANSI color, the one a terminal would show,
 // so the band looks the same in a panel as beside the prompt. Pure.
 
-import type { PaceProvider } from '../../core/host.ts'
+import type { FleetAgent, PaceProvider } from '../../core/host.ts'
 import type { HerdrView } from './open.ts'
+import { formatDuration } from '../../core/quota.ts'
 import type { AgentStatus, Seg } from '../../core/view.ts'
 
 /** A segment's look in a panel */
@@ -69,3 +70,15 @@ export function barOf(s: Seg): Bar | null {
 
 /** A column's width at text `size` px, as `colsFor` counts it */
 export const colWidth = (size: number) => size * 0.6
+
+/** The agents still open: one whose Herdr terminal is gone has ended with it; one outside Herdr (no terminal) stays */
+export function openAgents(agents: readonly FleetAgent[], terminals: readonly { address: string }[]): FleetAgent[] {
+  const open = new Set(terminals.map(t => t.address))
+  return agents.filter(a => a.terminal == null || open.has(a.terminal))
+}
+
+/** How old the figures drawn at `drawnAt` are, once a minute or more, so a view that stopped redrawing says so */
+export function ageOf(drawnAt: number, now: number): Seg | null {
+  const seconds = (now - drawnAt) / 1000
+  return seconds < 60 ? null : { t: `figures from ${formatDuration(seconds).replace(/ /g, '')} ago`, color: 'warning' }
+}

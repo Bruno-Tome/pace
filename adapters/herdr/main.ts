@@ -18,9 +18,9 @@
 
 import { View, div } from 'gpui-kit'
 import { h_flex, v_flex } from 'gpui-base'
-import { agents, exec, home, panes, props, readTextFile, run, setShared, settings, shared, theme, watchFolder } from 'herdr'
+import { agents, exec, home, panes, props, readTextFile, run, setShared, settings, shared, terminals, theme, watchFolder } from 'herdr'
 
-import { barOf, colsFor, colWidth, PAD, PAD_Y, rowsFor, statusOf, styleOf, viewOf, type Bar } from './draw.ts'
+import { ageOf, barOf, colsFor, colWidth, openAgents, PAD, PAD_Y, rowsFor, statusOf, styleOf, viewOf, type Bar } from './draw.ts'
 import { claimOf, PANES_KEY, viewKey, type HerdrView } from './open.ts'
 import { SEED } from './seed.ts'
 import { agentOf, FEED_STALE, FEEDS_DIR, feedFor, feedOf, fleetOf, type FleetAgent, type FleetRow, type PaceFeed, type PaceProvider } from '../../core/host.ts'
@@ -31,6 +31,8 @@ const SIZE = 12
 const LINE = 15
 /** How often a copy rereads the feeds without a change seen, and moves its clocks */
 const REFRESH_MS = 30_000
+/** How long a failed watch of the feeds waits before it watches again */
+const WATCH_RETRY_MS = 5_000
 
 const PROVIDER_NAME: Record<PaceProvider, string> = { claude: 'Claude', codex: 'Codex' }
 
@@ -86,6 +88,8 @@ export default class Pace extends View {
   feeds: PaceFeed[] = []
   cols = 60
   rows = 40
+  /** When the figures shown were worked out; 0 before the first drawing */
+  drawnAt = 0
   /** The pane this copy claimed in the registry of pace panes; null until it could tell which is its own */
   pane: string | null = null
   /** What render shows: the view's lines, worked out by `draw` */
@@ -107,13 +111,14 @@ export default class Pace extends View {
     cx.timer.every(REFRESH_MS, (cx: any) => this.reload(cx))
     cx.spawn(async (cx: any) => {
       await exec('mkdir', ['-p', feedsDir()]).catch(() => null)
+      // A watch that fails (the folder gone, too many changes) is tried again after a pause, never given up on
       for (;;) {
         try {
           await watchFolder(feedsDir())
+          this.reload(cx)
         } catch {
-          return
+          await cx.sleep(WATCH_RETRY_MS)
         }
-        this.reload(cx)
       }
     })
   }
@@ -127,7 +132,10 @@ export default class Pace extends View {
       const kept = new Map(this.feeds.map(f => [`${f.host}-${f.session}`, f]))
       for (const f of read) if (f) kept.set(`${f.host}-${f.session}`, f)
       this.feeds = [...kept.values()]
-      this.claim()
+      // Claiming the pane is a nicety: it never stands between the feeds and their drawing
+      try {
+        this.claim()
+      } catch {}
       await this.draw(cx)
     })
   }
@@ -159,6 +167,7 @@ export default class Pace extends View {
       cx.notify()
       await cx.sleep(0)
     }
+    this.drawnAt = now
   }
 
   /**
@@ -223,8 +232,9 @@ export default class Pace extends View {
   /** The panel's children: each harness's quotas and the button to its charts, then its agents, a line each */
   panel(t: Record<string, string>): any[] {
     const now = Date.now()
+    const age = this.drawnAt ? ageOf(this.drawnAt, now) : null
     return [
-      heading('Fleet', t),
+      h_flex().id('fleet-title').gap(8).items_center().children([heading('Fleet', t), ...(age ? [lineOf([age], t, 'age')] : [])]),
       ...this.lines.map((l, i) => lineOf(l, t, `fleet-${i}`)),
       ...this.harnesses.flatMap(({ provider, lines, agents: on }, h) => [
         ...(h ? [div().id(`gap-${h}`).h(LINE)] : []),
@@ -233,7 +243,7 @@ export default class Pace extends View {
           button(`charts-${provider}`, 'charts ⇥', t, () => openPane({ view: 'pane', provider })),
         ]),
         ...lines.slice(1).map((l, i) => lineOf(l, t, `quota-${provider}-${i}`)),
-        ...on.map(a => this.agentRow(a, now, t)),
+        ...openAgents(on, terminals()).map(a => this.agentRow(a, now, t)),
       ]),
     ]
   }

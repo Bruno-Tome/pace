@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { barOf, colsFor, rowsFor, statusOf, styleOf, viewOf } from './draw.ts'
+import { ageOf, barOf, colsFor, openAgents, rowsFor, statusOf, styleOf, viewOf } from './draw.ts'
 
 /** The theme's colors by name, as Herdr's `theme()` gives them */
 const THEME: Record<string, string> = {
@@ -83,5 +83,23 @@ describe('a bar in Herdr', () => {
   test('text is text, a bar\'s or not', () => {
     expect(barOf({ t: '████' })).toBeNull()
     expect(barOf({ t: ' 30%', bar: true })).toBeNull()
+  })
+})
+
+describe('the agents the panel lists', () => {
+  const agent = (session: string, terminal: string | null) =>
+    ({ host: 'claude' as const, session, terminal, cwd: '/w', at: 0, context: null })
+
+  test('leave out one whose Herdr terminal is gone: its session ended with it', () => {
+    const listed = openAgents([agent('open', 't8'), agent('closed', 't17'), agent('outside', null)], [{ address: 't8' }, { address: 't2' }])
+    expect(listed.map(a => a.session)).toEqual(['open', 'outside'])
+  })
+})
+
+describe('how old the panel\'s figures are', () => {
+  test('nothing while they are under a minute old, then their age in the warning color', () => {
+    const at = 1_000_000_000_000
+    expect(ageOf(at, at + 59_000)).toBeNull()
+    expect(ageOf(at, at + 3 * 60_000 + 5_000)).toEqual({ t: 'figures from 3m ago', color: 'warning' })
   })
 })

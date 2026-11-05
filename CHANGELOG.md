@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- The fleet lists what is running: a terminal that ran two sessions shows its newest, and in Herdr an agent whose
+  terminal is gone is left out rather than listed as idle. The Herdr panel says how old its figures are once they
+  are a minute old, a failed claim of its pane no longer stops it drawing, and a failed watch of the feeds is tried
+  again instead of given up on.
 - pace runs beyond Claude Code. Every session writes a feed, `~/.local/state/pace/feeds/<host>-<session>.json`
   (a `PaceFeed`, version 1: host, provider, session, Herdr terminal when there is one, folder, time, snapshot and
   context use), written aside then moved into place, whenever it changes and once a minute to stay live. Feeds are read
