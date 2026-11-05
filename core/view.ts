@@ -10,7 +10,8 @@ import { runsOut } from './auto.ts'
 import { adviceOf, bandRows, isFable, ratedOf, rowsOf, snapshotOf, verdictOf, worstOf, type Row, type Snapshot } from './model.ts'
 import * as Q from './quota.ts'
 import { bar, budgetText, buckets, rateText, scoreText, sparkline, type Cell, type RateVerdict } from './rate.ts'
-import { sessionsOf, usdPerPrompt } from './spend.ts'
+import { spentWindows } from './estimate.ts'
+import { sessionsOf, usdPerHour, usdPerPrompt } from './spend.ts'
 import { gearText, notchName } from './throttle.ts'
 import type { FleetAgent, FleetRow } from './host.ts'
 import type { Headroom } from './throttle.ts'
@@ -30,6 +31,8 @@ export type Line = Seg[]
 
 const compact = (seconds: number) => Q.formatDuration(seconds).replace(/ /g, '')
 const pctOf = (x: number) => Math.round(x * 100)
+/** A quota's use as text, `~` before it when the host estimated it from its spend */
+const usedOf = (row: Row, used: number) => `${row.reading?.estimated ? '~' : ''}${pctOf(used)}%`
 const width = (segs: readonly Seg[]) => segs.reduce((n, x) => n + [...x.t].length, 0)
 
 // ----------------------------------------------------------------------
@@ -126,7 +129,7 @@ function quotaLine(row: Row, labelW: number, barWidth: number, wide: boolean, pa
   const p = row.view.pace
   const status = p.status
   if (barWidth > 0) out.push(...barSegs(bar(p.used, p.elapsed, barWidth), row.key, status), { t: ' ' })
-  out.push({ t: packed ? `${pctOf(p.used)}%` : `${pctOf(p.used)}%`.padStart(4), color: STATUS_COLOR[status], bold: true })
+  out.push({ t: packed ? usedOf(row, p.used) : usedOf(row, p.used).padStart(4), color: STATUS_COLOR[status], bold: true })
   out.push({ t: ` ${packed ? Q.statusLabel(status) : Q.statusLabel(status).padEnd(11)}`, color: STATUS_COLOR[status] })
   if (wide) out.push({ t: ` ↻ ${compact(p.resetIn).padEnd(6)}`, dim: true })
   return out
@@ -194,6 +197,25 @@ function cacheLine(cache: PaceCacheInfo | null, now: number, labelW: number, bar
 
 const SEP: Seg = { t: '  │  ', dim: true }
 
+const usdOf = (usd: number) => `$${usd.toFixed(2)}`
+
+/**
+ * A host that estimates its quotas before it knows what a window holds: each window's spend since it opened and its
+ * reset, then the dollars an hour, and when the percent comes
+ */
+function spendLines(s: Snapshot, now: number, wide: boolean): Line[] {
+  const windows = spentWindows(s.spend ?? [], s.prompts, now)
+  const labelW = Math.max(5, ...windows.map(w => Q.shortName(w.key).length))
+  return [
+    ...windows.map(w => [
+      { t: `${Q.shortName(w.key).padEnd(labelW)} `, dim: true },
+      { t: `${usdOf(w.usd)} spent`, bold: true },
+      ...(wide && w.resetsAt != null ? [{ t: `  ↻ ${compact((w.resetsAt - now) / 1000)}`, dim: true }] : []),
+    ]),
+    [{ t: `${usdOf(usdPerHour(s.spend ?? [], now))}/h · % after a limit is reached`, dim: true }],
+  ]
+}
+
 /** The band above the prompt: one row per quota with the prompting rate against it, then the cache with the top suggestion */
 export function bandLines(s: Snapshot, now: number, cols: number): Line[] {
   const rows = rowsOf(s.samples, now)
@@ -205,6 +227,7 @@ export function bandLines(s: Snapshot, now: number, cols: number): Line[] {
   // A host with no prompt cache keeps the row for the advice alone, and drops it when there is none
   const cacheRow = (barWidth: number): [Line, Line][] =>
     s.noCache ? (top ? [[[], advice]] : []) : [[cacheLine(s.cache, now, labelW, barWidth, wide, s.price), advice]]
+  if (!shown.length && s.estimated) return spendLines(s, now, wide)
   if (!shown.length) {
     return columns([[[{ t: 'usage appears after the first reply', dim: true }], rateSegs(verdictOf(s, rows, now), wide)], ...cacheRow(0)])
   }
@@ -280,13 +303,14 @@ const plainOf = (l: Line) => l.map(x => x.t).join('')
 export function lineText(s: Snapshot, now: number): string {
   const rows = rowsOf(s.samples, now)
   const rated = ratedOf(s, rows, now)
+  if (!rated.length && s.estimated) return spentWindows(s.spend ?? [], s.prompts, now).map(w => `${Q.shortName(w.key)} ${usdOf(w.usd)}`).join(' │ ')
   const a = s.auto
   // An ultra run at work says its gear after the quotas
   const ultra = a?.ultra && !a.paused && a.heldUntil == null ? [`ultra · ${gearText(a.ultra.gear)}${plainOf(ultraCheck(a))}`] : []
   if (!rated.length) return [plainOf(rateSegs(verdictOf(s, rows, now), false)), ...ultra].join(' │ ')
   return [...rated.map(({ row, r }) => {
     const u = Q.viewUsed(row.view)
-    return u == null ? `${row.short} —` : `${row.short} ${pctOf(u)}% ${plainOf(rateSegs(r, false))}`
+    return u == null ? `${row.short} —` : `${row.short} ${usedOf(row, u)} ${plainOf(rateSegs(r, false))}`
   }), ...ultra].join(' │ ')
 }
 
@@ -1038,7 +1062,6 @@ export const pairWidth = (cols: number) => Math.max(20, Math.floor((cols - PAIR_
 // The fleet: every host's agents, by the provider they draw on
 // ----------------------------------------------------------------------
 
-const PROVIDER_NAME: Record<FleetRow['provider'], string> = { claude: 'Claude', codex: 'Codex' }
 
 const ROOM: Record<Headroom, Seg> = {
   push: { t: 'room to push', color: 'success' },
@@ -1088,7 +1111,7 @@ export function providerLines(f: FleetRow, now: number, cols: number): Line[] {
   const lay = (barWidth: number) => columns(rated.map(({ row, r }): [Line, Line] => [[indent, ...quotaLine(row, labelW, barWidth, wide)], rateSegs(r, wide)]))
   const room = rated.length ? cols - Math.max(...lay(0).map(width)) - 1 : 0
   return [
-    [{ t: PROVIDER_NAME[f.provider], bold: true }, { t: ' · ', dim: true }, ROOM[f.headroom]],
+    [{ t: f.name, bold: true }, { t: ' · ', dim: true }, ROOM[f.headroom]],
     ...(rated.length ? lay(room >= 8 ? Math.min(32, room) : 0) : [[indent, { t: 'no reading yet', dim: true }]]),
   ]
 }

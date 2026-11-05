@@ -23,7 +23,7 @@ import { agents, exec, home, panes, props, readTextFile, run, setShared, setting
 import { ageOf, barOf, colsFor, colWidth, openAgents, PAD, PAD_Y, rowsFor, statusOf, styleOf, viewOf, type Bar } from './draw.ts'
 import { claimOf, PANES_KEY, viewKey, type HerdrView } from './open.ts'
 import { SEED } from './seed.ts'
-import { agentOf, FEED_STALE, FEEDS_DIR, feedFor, feedOf, fleetOf, type FleetAgent, type FleetRow, type PaceFeed, type PaceProvider } from '../../core/host.ts'
+import { agentOf, FEED_STALE, FEEDS_DIR, feedFor, feedOf, fleetOf, PROVIDER_NAME, type FleetAgent, type FleetRow, type PaceFeed, type PaceProvider } from '../../core/host.ts'
 import { agentLine, bandLines, fittedLayout, NO_FLEET, paneLines, providerLines, type Line } from '../../core/view.ts'
 
 /** Text size, and a row's height: tight, as a terminal's, so a chart's braille rows meet; px */
@@ -34,7 +34,6 @@ const REFRESH_MS = 30_000
 /** How long a failed watch of the feeds waits before it watches again */
 const WATCH_RETRY_MS = 5_000
 
-const PROVIDER_NAME: Record<PaceProvider, string> = { claude: 'Claude', codex: 'Codex' }
 
 const feedsDir = () => `${home()}/${FEEDS_DIR}`
 
@@ -95,7 +94,7 @@ export default class Pace extends View {
   /** What render shows: the view's lines, worked out by `draw` */
   lines: Line[] = []
   /** The panel's harnesses: each one's quotas as drawn, and the agents on it */
-  harnesses: { provider: PaceProvider; lines: Line[]; agents: FleetAgent[] }[] = []
+  harnesses: { provider: PaceProvider; account?: string; lines: Line[]; agents: FleetAgent[] }[] = []
 
   init(_props: unknown, cx: any): void {
     if (SEED) {
@@ -194,22 +193,23 @@ export default class Pace extends View {
           : [[{ t: `waiting for ${v.terminal}: no live feed from it yet`, dim: true }]]
       }, toLines)]
     }
-    if (v.view === 'pane') return [guard(() => { this.lines = this.chartLines(fleetOf(live, now), v.provider, now) }, toLines)]
+    if (v.view === 'pane') return [guard(() => { this.lines = this.chartLines(fleetOf(live, now), v.provider, now, v.account) }, toLines)]
     return [
       guard(() => {
         const fleet = fleetOf(live, now)
-        this.harnesses = fleet.map(row => ({ provider: row.provider, lines: providerLines(row, now, this.cols), agents: row.agents }))
+        this.harnesses = fleet.map(row => ({ provider: row.provider, ...(row.account ? { account: row.account } : {}), lines: providerLines(row, now, this.cols), agents: row.agents }))
         this.lines = fleet.length ? [] : [NO_FLEET]
       }, toLines),
     ]
   }
 
   /** A harness's pane: its name and sessions, then its charts grown to fill the pane's rows */
-  chartLines(fleet: readonly FleetRow[], provider: PaceProvider, now: number): Line[] {
-    const row = fleet.find(r => r.provider === provider)
+  chartLines(fleet: readonly FleetRow[], provider: PaceProvider, now: number, account?: string): Line[] {
+    // The quota's own row: the provider, and the account when the pane names one
+    const row = fleet.find(r => r.provider === provider && (!account || r.account === account))
     const sessions = row?.agents.length ?? 0
     const title: Line = [
-      { t: PROVIDER_NAME[provider], bold: true },
+      { t: row?.name ?? PROVIDER_NAME[provider], bold: true },
       { t: ` · ${sessions} session${sessions === 1 ? '' : 's'}${row ? '' : ': none live yet'}`, dim: true },
     ]
     if (!row) return [title]
@@ -236,15 +236,19 @@ export default class Pace extends View {
     return [
       h_flex().id('fleet-title').gap(8).items_center().children([heading('Fleet', t), ...(age ? [lineOf([age], t, 'age')] : [])]),
       ...this.lines.map((l, i) => lineOf(l, t, `fleet-${i}`)),
-      ...this.harnesses.flatMap(({ provider, lines, agents: on }, h) => [
+      ...this.harnesses.flatMap(({ provider, account, lines, agents: on }, h) => {
+        // One row per quota: two accounts of one provider are two rows, each with its own charts
+        const id = account ? `${provider}-${account}` : provider
+        return [
         ...(h ? [div().id(`gap-${h}`).h(LINE)] : []),
-        h_flex().id(`head-${provider}`).justify_between().children([
-          lineOf(lines[0] ?? [], t, `head-${provider}-line`),
-          button(`charts-${provider}`, 'charts ⇥', t, () => openPane({ view: 'pane', provider })),
+        h_flex().id(`head-${id}`).justify_between().children([
+          lineOf(lines[0] ?? [], t, `head-${id}-line`),
+          button(`charts-${id}`, 'charts ⇥', t, () => openPane({ view: 'pane', provider, ...(account ? { account } : {}) })),
         ]),
-        ...lines.slice(1).map((l, i) => lineOf(l, t, `quota-${provider}-${i}`)),
+        ...lines.slice(1).map((l, i) => lineOf(l, t, `quota-${id}-${i}`)),
         ...openAgents(on, terminals()).map(a => this.agentRow(a, now, t)),
-      ]),
+        ]
+      }),
     ]
   }
 

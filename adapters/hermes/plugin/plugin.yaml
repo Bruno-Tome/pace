@@ -1,0 +1,8 @@
+name: pace
+version: "1.0"
+description: pace - quota pacing for Claude and ChatGPT sign-ins, in Hermes sessions and its messaging bots (/pace)
+provides_hooks:
+  - pre_llm_call
+  - post_api_request
+  - post_llm_call
+  - post_auxiliary_call

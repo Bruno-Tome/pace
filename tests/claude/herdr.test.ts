@@ -15,6 +15,23 @@ test('/pace in Herdr opens Claude\'s charts in a Herdr pane beside the session, 
   expect(toasts).toContain('Pace opened in Herdr')
 })
 
+test('/pace pane and /pace window in Herdr open the charts in Herdr too: in Herdr every view goes through it first', async ($, on) => {
+  const { runs, toasts } = world(on, { HC_TERMINAL_ID: 't8' })
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  await $.command.run({ command: 'pace', args: 'pane' } as any)
+  await $.command.run({ command: 'pace', args: 'window' } as any)
+  expect(runs.filter(r => r[2] === 'pane.split' && r[3]!.includes('"view":"pane"')).length).toBe(2)
+  expect(toasts.filter(t => t === 'Pace opened in Herdr').length).toBe(2)
+})
+
+test('/pace pane falls back to Claude\'s own pane when Herdr cannot open it', async ($, on) => {
+  const { toasts, failing } = world(on, { HC_TERMINAL_ID: 't8' })
+  failing.add('herdr-app')
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  await $.command.run({ command: 'pace', args: 'pane' } as any)
+  expect(toasts).toContain('Pace pane opened')
+})
+
 test('/pace band and /pace fleet open the session\'s band under it and the fleet beside it', async ($, on) => {
   const { runs } = world(on, { HC_TERMINAL_ID: 't8' })
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)

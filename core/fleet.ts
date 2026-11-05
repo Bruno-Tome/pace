@@ -5,7 +5,7 @@
 // context; ql's feeds say its repo, how long it has held its state and the files it touched. A feed from outside
 // Herdr (no terminal) is an agent too. ql's feed is read here by its shape, not imported: pace and ql share no code.
 
-import { FEED_STALE, fleetOf, type FleetRow, type PaceFeed, type PaceProvider } from './host.ts'
+import { FEED_STALE, fleetOf, type FleetRow, type PaceFeed, type PaceProvider, PROVIDER_NAME } from './host.ts'
 import { FIVE_HOURS, formatDuration } from './quota.ts'
 import { providerLines, STATUS_LOOK, type AgentStatus, type Line, type Seg } from './view.ts'
 
@@ -56,6 +56,8 @@ export type FleetMember = {
   host: string
   /** Whose quotas it draws on; null for a host pace does not read */
   provider: PaceProvider | null
+  /** Its pace session, when it has a feed: which quota's row it is on */
+  session?: string
   title: string
   state: AgentStatus
   /** Since when it has held its state, where ql says */
@@ -98,14 +100,14 @@ export type FleetModel = {
   recommended: { provider: PaceProvider; why: string } | null
 }
 
-export const PROVIDER_NAME: Record<PaceProvider, string> = { claude: 'Claude', codex: 'Codex' }
+export { PROVIDER_NAME }
 
 const ROOM = ['push', 'cruise', 'ease', 'hold']
 const STATUSES: readonly AgentStatus[] = ['working', 'blocked', 'done', 'idle']
 
 /** The host an agent's report names: Herdr's `app` */
 const hostOf = (app: string | null): string => (app === 'claude-code' || app === 'claude' ? 'claude' : app ?? 'agent')
-const providerOf = (host: string): PaceProvider | null => (host === 'claude' || host === 'codex' ? host : null)
+const providerOf = (host: string): PaceProvider | null => (host === 'claude' || host === 'codex' || host === 'antigravity' ? host : null)
 const base = (path: string) => path.replace(/\/+$/, '').split('/').pop() || path
 const stateOf = (s: string): AgentStatus => (STATUSES.includes(s as AgentStatus) ? (s as AgentStatus) : 'idle')
 const newest = <T extends { at: number }>(list: readonly T[]): T | undefined => list.reduce<T | undefined>((a, b) => (a && a.at >= b.at ? a : b), undefined)
@@ -114,7 +116,8 @@ function memberOf(key: string, address: string | null, host: string, a: HerdrAge
   const cwd = a?.cwd ?? q?.cwd ?? p?.cwd ?? ''
   const context = p?.context ? Math.round((p.context.tokens / p.context.window) * 100) : a?.ctx ?? null
   return {
-    key, address, host, provider: providerOf(host), title: a?.title ?? host,
+    // A feed names the quota its session spends: pi's is Codex's or Claude's, by its sign-in
+    key, address, host, provider: p?.provider ?? providerOf(host), ...(p ? { session: p.session } : {}), title: a?.title ?? host,
     state: stateOf(a?.status ?? q?.state ?? ''), since: q?.since ?? null,
     cwd, repo: q?.repo || base(cwd), branch: a?.branch ?? null, context,
     edited: q?.edited ?? 0, read: q?.read ?? 0, stale: false,
@@ -127,12 +130,13 @@ function brief(row: FleetRow, key: string): QuotaBrief | null {
 }
 
 /** A provider whose newest reading is older than the 5-hour window can't say what that window holds now: stale */
-function providerRow(row: FleetRow, members: readonly FleetMember[], now: number): FleetProvider {
+function providerRow(row: FleetRow, members: readonly FleetMember[], now: number, first: boolean): FleetProvider {
   const fiveHour = brief(row, 'five_hour')
   const week = brief(row, 'seven_day')
   const fiveLeft = fiveHour ? 100 - fiveHour.percent : 100
   const weekLeft = week ? 100 - week.percent : 100
-  const on = members.filter(m => m.provider === row.provider)
+  // On the row of the quota its feed spends; an agent with no feed on its provider's first row
+  const on = members.filter(m => m.provider === row.provider && (m.session ? row.agents.some(a => a.session === m.session) : first))
   return {
     provider: row.provider, fiveHour, week,
     left: Math.max(0, Math.round(Math.min(fiveLeft, weekLeft))), tightest: weekLeft < fiveLeft ? 'week' : '5 hours',
@@ -164,7 +168,8 @@ export function fleetModel(input: { pace: readonly PaceFeed[]; ql: readonly QlSe
   }
   const elsewhere = [...outside].sort(([, a], [, b]) => b.at - a.at).map(([key, o]) => memberOf(key, null, o.host, null, o.p, o.q))
   const members = [...inHerdr, ...elsewhere]
-  const providers = fleetOf(pace, now).map(row => providerRow(row, members, now)).sort(rank)
+  const rows = fleetOf(pace, now)
+  const providers = rows.map(row => providerRow(row, members, now, rows.find(r => r.provider === row.provider) === row)).sort(rank)
   const stale = new Set(providers.filter(p => p.stale).map(p => p.provider))
   const best = providers.find(p => !p.stale)
   return {
@@ -175,7 +180,7 @@ export function fleetModel(input: { pace: readonly PaceFeed[]; ql: readonly QlSe
 }
 
 const whyOf = (p: FleetProvider) =>
-  `${PROVIDER_NAME[p.provider]}: ${p.left}% of the ${p.tightest} left, ${p.working} agent${p.working === 1 ? '' : 's'} working`
+  `${p.row.name}: ${p.left}% of the ${p.tightest} left, ${p.working} agent${p.working === 1 ? '' : 's'} working`
 
 /** A view's group of agents: its title, its agents, the provider it stands for, and whether two share one tree */
 export type FleetGroup = { title: string; agents: FleetMember[]; provider?: FleetProvider; clash?: boolean }
@@ -185,7 +190,7 @@ export function byProvider(m: FleetModel): FleetGroup[] {
   const known = new Set(m.providers.map(p => p.provider))
   const rest = m.agents.filter(a => !a.provider || !known.has(a.provider))
   return [
-    ...m.providers.map(p => ({ title: PROVIDER_NAME[p.provider], agents: m.agents.filter(a => a.provider === p.provider), provider: p })),
+    ...m.providers.map(p => ({ title: p.row.name, agents: m.agents.filter(a => p.agents.includes(a.key)), provider: p })),
     ...(rest.length ? [{ title: 'No quotas', agents: rest }] : []),
   ]
 }

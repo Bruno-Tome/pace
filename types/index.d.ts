@@ -1,5 +1,8 @@
-/** One quota's reading: percent used 0–100, when its window resets (ms), the model's name for a model's own week */
-export type PaceReading = { percent: number; resetsAt?: number; name?: string }
+/**
+ * One quota's reading: percent used 0–100, when its window resets (ms), the model's name for a model's own week, and
+ * `estimated` when a host inferred it from its spend rather than being told it (pi)
+ */
+export type PaceReading = { percent: number; resetsAt?: number; name?: string; estimated?: true }
 /** The readings taken at one moment (ms), by quota key: `five_hour`, `seven_day`, `seven_day_<model>` */
 export type PaceSample = { at: number; quotas: Record<string, PaceReading> }
 
@@ -18,12 +21,20 @@ export type PaceWarmMode = 'off' | 'compact' | 'ping'
  * Auto mode's run: the plan file, the turns taken and allowed; while it holds or waits, until when and why; and the
  * turns in a row that made no progress; `burst`: never hold for pacing, only for a quota gassed out
  */
-export type PaceAuto = { plan: string; turns: number; max: number; heldUntil?: number; waitingUntil?: number; why?: string; paused?: boolean; stalls?: number; burst?: true; ultra?: PaceUltra }
+export type PaceAuto = { plan: string; turns: number; max: number; heldUntil?: number; waitingUntil?: number; why?: string; paused?: boolean; stalls?: number; burst?: true; ultra?: PaceUltra; gears?: PaceGears }
+
+/**
+ * Ultra pace's gears on a host other than Claude Code (pi, an ACP agent), where `/pace ultra` works through a plan as
+ * auto mode does and shifts gear each turn: the user's bounds, model and thinking, the gear now, and the headroom's
+ * streak (core/throttle.ts, core/gears.ts)
+ */
+export type PaceGears = { floor: string; ceiling: string; model: string; effort: string; gear: PaceGear; streak: number }
 
 /** How hard ultra pace drives: the main thread's model and effort, how many subagents on which model, fan-out on */
 export type PaceGear = {
   model: string
-  effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+  /** Claude's effort, or the thinking level another host offers (pi's `minimal`, an ACP agent's) */
+  effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | (string & {})
   subagents: number
   subagentModel: string
   fanout: boolean

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { PaceFeed } from '../../core/host.ts'
 import { FIVE_RESET_S, hookInput, message, sessionMeta, taskStarted, tokenCount, tokenCountNoInfo, tokenCountPremium, WEEK_RESET_S } from './fixtures.ts'
-import { hookInputOf, nextFeed, paceArgOf, rolloutOf } from './rollout.ts'
+import { hookInputOf, nextFeed, rolloutOf } from './rollout.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const MIN = 60_000
@@ -81,25 +81,5 @@ describe('a Codex hook', () => {
     // Codex reports no prompt cache: the band leaves its row out
     expect(after.snapshot.cache).toBeNull()
     expect(after.snapshot.noCache).toBe(true)
-  })
-})
-
-describe('/pace in Codex', () => {
-  test('a prompt that is /pace, alone or with what to open, is pace\'s, not the model\'s', () => {
-    expect(paceArgOf('/pace')).toBe('')
-    expect(paceArgOf('  /pace band\n')).toBe('band')
-    expect(paceArgOf('/pace fleet')).toBe('fleet')
-  })
-
-  test('so is the pace skill invoked by name, $pace, which Codex sends as the prompt', () => {
-    expect(paceArgOf('$pace')).toBe('')
-    expect(paceArgOf('$pace band')).toBe('band')
-    expect(paceArgOf('$paced')).toBeNull()
-  })
-
-  test('any other prompt goes to the model, /pace in the middle of one too', () => {
-    expect(paceArgOf('why is /pace slow')).toBeNull()
-    expect(paceArgOf('/paced')).toBeNull()
-    expect(paceArgOf('/pace band and fix the tests')).toBeNull()
   })
 })

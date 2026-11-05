@@ -19,6 +19,8 @@ export type Snapshot = {
   cache: PaceCacheInfo | null
   /** The host reports no prompt cache (Codex): the band leaves the cache's row out */
   noCache?: true
+  /** The host is told no readings and estimates them from its spend (pi): before it knows a window's capacity, the band shows spend */
+  estimated?: true
   warm?: PaceWarmMode
   /** Dollars per input-token equivalent, from the session's replies; absent before one was priced */
   price?: number | null

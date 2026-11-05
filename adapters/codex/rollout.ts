@@ -7,19 +7,23 @@
 
 import type { PaceReading, PaceSample } from '../../types'
 import type { PaceContext, PaceFeed } from '../../core/host.ts'
-import { mergeSamples, readingOf } from '../../core/quota.ts'
-import { mergePrompts } from '../../core/rate.ts'
+import { meter } from '../../core/meter.ts'
+import { readingOf } from '../../core/quota.ts'
+import { commandOf, paceArgsOf } from '../../core/command.ts'
 
 /** The hook events the adapter runs on */
-export type HookEvent = 'SessionStart' | 'UserPromptSubmit' | 'PostToolUse' | 'Stop'
+export type HookEvent = 'SessionStart' | 'UserPromptSubmit' | 'PostToolUse' | 'Stop' | 'Interrupt'
 
-/** What a hook needs of Codex's stdin: the event, the session, its rollout (null when Codex has none), folder and prompt */
-export type HookInput = { event: HookEvent; session: string; transcript: string | null; cwd: string; prompt?: string }
+/**
+ * What a hook needs of Codex's stdin: the event, the session, its rollout (null when Codex has none), folder, prompt,
+ * and at a turn's end its last message, `answer`, which says how auto mode's turn ended
+ */
+export type HookInput = { event: HookEvent; session: string; transcript: string | null; cwd: string; prompt?: string; answer?: string }
 
 /** What a stretch of rollout says: its readings, and the context as of its last reply (null when it has none) */
 export type RolloutRead = { samples: PaceSample[]; context: PaceContext | null }
 
-const EVENTS: readonly HookEvent[] = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop']
+const EVENTS: readonly HookEvent[] = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop', 'Interrupt']
 
 /** The rate limit pace reads; Codex has written others (`premium`) with no windows */
 const LIMIT = 'codex'
@@ -83,34 +87,27 @@ export function hookInputOf(text: string): HookInput | null {
   return {
     event: o.hook_event_name as HookEvent, session: o.session_id, transcript, cwd: o.cwd,
     ...(typeof o.prompt === 'string' ? { prompt: o.prompt } : {}),
+    ...(typeof o.last_assistant_message === 'string' ? { answer: o.last_assistant_message } : {}),
   }
 }
 
 /**
- * The session's feed after a hook: the last feed's readings and prompts, what the rollout added, a prompt submitted,
- * and the other Codex sessions' (`siblings`) readings and prompts, so the feed carries the harness's whole history
+ * The session's feed after a hook (core/meter.ts): what the rollout added, a prompt submitted, and the history of the
+ * other live sessions on Codex's quota (`siblings`, any harness). Codex reports no cache and no dollars
  */
-export function nextFeed(prev: PaceFeed | null, input: HookInput, read: RolloutRead, now: number, terminal?: string, siblings: readonly PaceFeed[] = []): PaceFeed {
-  const theirs = siblings.filter(f => f.provider === 'codex' && f.session !== input.session)
-  const samples = mergeSamples([...(prev?.snapshot.samples ?? []), ...theirs.flatMap(f => f.snapshot.samples)], read.samples)
-  // A /pace prompt is pace's, stopped before the model: not a prompt to pace
-  const prompted = input.event === 'UserPromptSubmit' && paceArgOf(input.prompt ?? '') == null
-  const prompts = mergePrompts([...(prev?.snapshot.prompts ?? []), ...theirs.flatMap(f => f.snapshot.prompts)], prompted ? [now] : [], now)
-  const context = read.context ?? prev?.context
-  return {
-    version: 1, host: 'codex', provider: 'codex', session: input.session,
+export function nextFeed(prev: PaceFeed | null, input: HookInput, read: RolloutRead, now: number, terminal?: string, siblings: readonly PaceFeed[] = [], account?: string): PaceFeed {
+  return meter(prev, {
+    host: 'codex', provider: 'codex', ...(account ? { account } : {}), session: input.session, cwd: input.cwd, now,
     ...(terminal ? { terminal } : {}),
-    cwd: input.cwd, at: now,
-    snapshot: { samples, prompts, cache: null, noCache: true },
-    ...(context ? { context } : {}),
-  }
+    prompted: input.event === 'UserPromptSubmit' && reachesModel(input.prompt ?? ''),
+    samples: read.samples, context: read.context,
+  }, siblings, { cache: false, estimate: false })
 }
 
-/**
- * What a prompt asks of pace in Herdr, when it is `/pace` (the custom prompt's) or `$pace` (the pace skill invoked
- * by name), alone or with `band` or `fleet`; null for any other prompt
- */
-export function paceArgOf(prompt: string): string | null {
-  const m = /^[/$]pace(?:\s+(band|fleet))?$/.exec(prompt.trim())
-  return m ? (m[1] ?? '') : null
+/** Whether a prompt goes on to the model: any but a /pace that pace answers itself; auto mode's start and resume go on */
+function reachesModel(prompt: string): boolean {
+  const args = paceArgsOf(prompt)
+  if (args == null) return true
+  const kind = commandOf(args).kind
+  return kind === 'auto' || kind === 'resume'
 }

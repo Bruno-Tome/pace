@@ -7,6 +7,7 @@
 // in shape: it compacts a heavy context while the cache is warm, keeps an idle cache from lapsing, and thinks one
 // effort level lighter while the rate would run a quota out.
 
+import { AUTO_TURNS } from './command.ts'
 import type { PaceAuto, PaceSnapshot, PaceWarmMode } from '../types'
 import { clockAt, drawsOn, formatDuration } from './quota.ts'
 
@@ -172,4 +173,10 @@ export function upkeep(s: PaceSnapshot): 'compact' | null {
 export function warmModeFor(o: { onPace: boolean; warm: PaceWarmMode }, s: PaceSnapshot): PaceWarmMode {
   if (o.warm !== 'off' || !o.onPace) return o.warm
   return fill(s) >= 0.3 ? 'compact' : 'ping'
+}
+
+/** A run picked back up: running again, the next turn counted, more turns when it ran out */
+export function resumed(a: PaceAuto): PaceAuto {
+  const { paused: _p, heldUntil: _h, waitingUntil: _w, why: _y, ...rest } = a
+  return { ...rest, turns: a.turns + 1, max: a.turns >= a.max ? a.turns + AUTO_TURNS : a.max }
 }

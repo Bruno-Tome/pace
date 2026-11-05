@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { drawsOn, isPerModel, isWeekly, modelName, theName } from '../core/quota.ts'
+import { drawsOn, isPerModel, isWeekly, modelName, quotaKeys, quotaName, shortName, theName, windowOf } from '../core/quota.ts'
 
 describe('which quotas a model draws on', () => {
   test('the 5-hour window and the all-models week, whatever the model', () => {
@@ -42,5 +42,28 @@ describe('names', () => {
     expect(modelName('seven_day_claude_design')).toBe('Claude Design')
     expect(modelName('seven_day')).toBe('All models')
     expect(modelName('five_hour')).toBe('5-hour')
+  })
+})
+
+describe('a model\'s own 5-hour window, as Antigravity has one per model', () => {
+  test('is a model\'s quota, five hours long, named for the model', () => {
+    expect(isPerModel('five_hour_gemini_3_8_flash')).toBe(true)
+    expect(isWeekly('five_hour_gemini_3_8_flash')).toBe(false)
+    expect(windowOf('five_hour_gemini_3_8_flash')).toBe(5 * 3600)
+    expect(quotaName('five_hour_gemini_3_8_flash', 'Gemini 3.8 Flash')).toBe('5-hour · Gemini 3.8 Flash')
+    expect(shortName('five_hour_claude_sonnet', 'Claude Sonnet')).toBe('Claude Sonnet 5h')
+    expect(modelName('five_hour_claude_sonnet', 'Claude Sonnet')).toBe('Claude Sonnet')
+    expect(theName('5-hour · Claude Sonnet')).toBe('the 5-hour · Claude Sonnet')
+  })
+
+  test('is drawn on by that model alone', () => {
+    expect(drawsOn('five_hour_gemini_3_8_flash', 'gemini-3.8-flash-high')).toBe(true)
+    expect(drawsOn('five_hour_gemini_3_8_flash', 'claude-sonnet-4-6')).toBe(false)
+  })
+
+  test('is known once read with a reset, after the shared quotas and before the weeks', () => {
+    const at = 0
+    const r = { percent: 10, resetsAt: 3600_000 }
+    expect(quotaKeys([{ at, quotas: { seven_day_x: r, five_hour_gemini: r, five_hour: r, seven_day: r } }])).toEqual(['five_hour', 'seven_day', 'five_hour_gemini', 'seven_day_x'])
   })
 })

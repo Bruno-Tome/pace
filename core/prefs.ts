@@ -2,7 +2,7 @@
 // same in every session. The modes a session runs in (warm mode, on pace mode, auto mode's run) are its own, kept
 // under its id: `claude --resume` finds them again, and no other session ever acts on them. Pure; times in ms.
 
-import type { PaceAuto, PaceGear, PacePrefs, PaceUltra, PaceWarmMode } from '../types'
+import type { PaceAuto, PaceGear, PaceGears, PacePrefs, PaceUltra, PaceWarmMode } from '../types'
 
 const DAY = 24 * 60 * 60_000
 
@@ -27,10 +27,18 @@ const isNumber = (v: unknown): v is number => typeof v === 'number' && Number.is
 const isStrings = (v: unknown): v is string[] => Array.isArray(v) && v.every(x => typeof x === 'string')
 
 /** A gear as stored, or null where it does not parse */
-function gearOf(v: unknown): PaceGear | null {
-  if (!isObject(v) || typeof v.model !== 'string' || !EFFORTS.includes(v.effort as PaceGear['effort'])) return null
+/** A gear as stored; Claude's efforts only, unless `anyEffort` (another host's thinking levels) */
+function gearOf(v: unknown, anyEffort = false): PaceGear | null {
+  if (!isObject(v) || typeof v.model !== 'string' || !(anyEffort ? typeof v.effort === 'string' : EFFORTS.includes(v.effort as PaceGear['effort']))) return null
   if (!isNumber(v.subagents) || typeof v.subagentModel !== 'string' || typeof v.fanout !== 'boolean') return null
   return { model: v.model, effort: v.effort as PaceGear['effort'], subagents: v.subagents, subagentModel: v.subagentModel, fanout: v.fanout }
+}
+
+/** Ultra pace's gears on another host, as stored; null where they do not parse */
+function gearsOf(v: unknown): PaceGears | null {
+  if (!isObject(v) || typeof v.floor !== 'string' || typeof v.ceiling !== 'string' || typeof v.model !== 'string' || typeof v.effort !== 'string' || !isNumber(v.streak)) return null
+  const gear = gearOf(v.gear, true)
+  return gear ? { floor: v.floor, ceiling: v.ceiling, model: v.model, effort: v.effort, gear, streak: v.streak } : null
 }
 
 /** An ultra pace run as stored, or null where it does not parse; a fan-out or a review owed that does not is left out */
@@ -60,6 +68,7 @@ export function autoOf(v: unknown): PaceAuto | null {
   if (!isObject(v) || typeof v.plan !== 'string' || typeof v.turns !== 'number' || typeof v.max !== 'number') return null
   const num = (k: string) => (typeof v[k] === 'number' ? { [k]: v[k] as number } : {})
   const ultra = ultraOf(v.ultra)
+  const gears = gearsOf(v.gears)
   return {
     plan: v.plan, turns: v.turns, max: v.max,
     ...num('heldUntil'), ...num('waitingUntil'), ...num('stalls'),
@@ -67,6 +76,7 @@ export function autoOf(v: unknown): PaceAuto | null {
     ...(v.paused === true ? { paused: true } : {}),
     ...(v.burst === true ? { burst: true } : {}),
     ...(ultra ? { ultra } : {}),
+    ...(gears ? { gears } : {}),
   }
 }
 

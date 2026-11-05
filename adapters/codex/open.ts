@@ -1,5 +1,6 @@
 // Opens pace in Herdr beside this Codex session: its charts, or with `band` its band, or with `fleet` the fleet.
-// The hook runs it for a `/pace` or `$pace` prompt; the pace skill runs it as a command when the hook did not:
+// The hook runs it for a `/pace` or `$pace` prompt, and pi's extension for its `/pace`, with the provider pi spends;
+// the pace skill runs it as a command when the hook did not:
 // `node adapters/codex/open.ts [band|fleet]`, which prints one line and exits 1 when nothing opened.
 
 import { execFileSync } from 'node:child_process'
@@ -7,15 +8,19 @@ import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
+import type { PaceProvider } from '../../core/host.ts'
 import { ALREADY_OPEN, herdrOpen, herdrReuse, paceViewOf, registryIn, sharedFile } from '../herdr/open.ts'
 
 const run = (argv: readonly string[]) => execFileSync(argv[0]!, argv.slice(1), { stdio: 'ignore', timeout: 5000 })
 
-/** Opens what `/pace <arg>` asks for, or focuses the pane already showing it: whether it did, and what to say */
-export function openInHerdr(arg: string): { opened: boolean; text: string } {
+/**
+ * Opens what `/pace <arg>` asks for, beside the session of `host` spending `provider`'s quota, or focuses the pane
+ * already showing it: whether it did, and what to say
+ */
+export function openInHerdr(arg: string, provider: PaceProvider = 'codex', host = 'Codex', account?: string): { opened: boolean; text: string } {
   const terminal = process.env.HC_TERMINAL_ID
-  if (!terminal) return { opened: false, text: '/pace opens pace in Herdr, and this Codex is not running in Herdr' }
-  const view = paceViewOf(arg, 'codex', terminal)
+  if (!terminal) return { opened: false, text: `/pace opens pace in Herdr, and this ${host} is not running in Herdr` }
+  const view = paceViewOf(arg, provider, terminal, account)
   if (!view) return { opened: false, text: `/pace ${arg}: use /pace, /pace band or /pace fleet` }
   const shared = sharedFile(process.env.HERDR_APP_HOME || join(homedir(), '.config', 'herdr-app'))
   const reuse = herdrReuse(existsSync(shared) ? registryIn(readFileSync(shared, 'utf8')) : {}, view)

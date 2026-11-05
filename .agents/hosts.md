@@ -63,7 +63,7 @@ never turns them on. Imports between core files keep their `.ts` extensions; the
 
 Codex has hooks but no custom prompt area, status line or pane (its `tui.status_line` takes only built-in items).
 
-- `adapters/codex/hook.ts` runs on `SessionStart`, `UserPromptSubmit`, `PostToolUse` and `Stop` (async), reads
+- `adapters/codex/hook.ts` runs on `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop` and `Interrupt`, reads
   the hook's JSON on stdin (`session_id`, `transcript_path`, `cwd`), parses the rollout's new lines from where it
   left off, and writes the feed. Prompts come from `UserPromptSubmit`; readings from `token_count` events
   (`rate_limits.primary` → `five_hour`, `secondary` → `seven_day`, `used_percent`, `resets_at` in seconds);
@@ -73,10 +73,18 @@ Codex has hooks but no custom prompt area, status line or pane (its `tui.status_
   wrote a `premium` limit with null windows. `transcript_path` may be null; the feed is written all the same.
 - Codex has no prompt cache or dollars to report: its snapshot sets `noCache`, and the band leaves the cache's row
   out.
-- The hook prints nothing (a `UserPromptSubmit` hook's stdout joins the conversation), always exits 0, and keeps
+- The hook prints only its event's JSON (a `UserPromptSubmit` hook's plain stdout joins the conversation), always exits 0, and keeps
   how far it has read in `~/.local/state/pace/codex/<session>.json`. Async hooks can overlap a prompt's hook, so
   it holds a lock while it reads and writes.
 - The band shows through `bin/band.ts` in a pane beside Codex; under Herdr the mod opens it.
+- `/pace`'s commands (routed by `core/api.ts` for Codex's surfaces, ADR 0022): a `/pace` or `$pace` prompt is pace's; its answer blocks it
+  (the reason shows to the user), except auto mode's start and resume, which go on with auto mode's instructions as
+  `additionalContext`. Views go through Herdr first (decisions/0001-herdr-first.md), else a tmux split, a macOS
+  window, or drawn into the answer. Auto mode runs at the Stop hook, synchronous with a 600-second timeout:
+  `decide()`'s next prompt is `decision: block` with the prompt as its reason, a hold under nine minutes is waited
+  out in the hook, a longer one pauses the run; an Interrupt hook pauses it. Its run lives in the feed's
+  `snapshot.auto`. Warnings are `systemMessage`, once per window. Codex's hooks cannot change the model or effort
+  or run `/compact`, so ultra pace, on pace mode and warm mode say so.
 - Installing writes hooks to `~/.codex/config.toml` only with the user's go-ahead.
 
 ## Herdr
@@ -109,6 +117,34 @@ Codex has hooks but no custom prompt area, status line or pane (its `tui.status_
   `memberLine` draw them with view.ts's segments.
 - The mod never types into a running agent: Send work opens a new tab (`tab.new {folder, argv, task}`) after a
   second click. Codex starts as `codex --no-daemon`.
+
+## pi
+
+pi (`@earendil-works/pi-coding-agent`) loads TypeScript extensions in its own process from `~/.pi/agent/extensions/`.
+`adapters/pi/extension.ts` is one: it listens to pi's events, writes the session's feed and draws in pi's own UI.
+
+- **Whose quota.** pi runs many providers. A session spends a quota pace knows only on a subscription sign-in
+  (`ctx.modelRegistry.isUsingOAuth`): `openai` or `openai-codex` spend Codex's, `anthropic` Claude's
+  (`providerOf` in `adapters/pi/feed.ts`). The feed says `host: 'pi'` and that provider, so in the fleet pi's
+  agents count under the quota they spend; on an API key or any other provider pi writes no feed and draws nothing.
+- **No readings.** pi is told nothing of the quotas: on a ChatGPT sign-in neither the response headers nor the
+  stream carry them, and its token is not one the usage endpoint takes. pi stands alone, so it infers them.
+- **What pi knows.** Its prompts (the `input` event, from the user, not from an extension); its spend, from each
+  reply's `usage.cost` (pi's price table, so a reply weighs what it would cost); its context
+  (`ctx.getContextUsage()`, whose tokens are null right after a compaction: the last known context stands); and a
+  limit reached, an error naming the usage limit (`usage_limit_exceeded` on ChatGPT).
+- **The estimate** (`core/estimate.ts`, pure): a window starts with the first prompt or spend after the last one
+  ended, and resets its length later. Its use is the spend in it over the window's capacity, in dollars. The
+  capacity is learned: a limit reached says the window held what was spent in it; a real reading of the same
+  provider, from a Codex or Claude feed when one is live, says it through `quotaPerDollar`. Until either, there is no
+  percent: the band shows the window's spend, its dollars an hour and its reset. An estimated reading carries
+  `estimated: true` and the band marks it `~`; it is never history, so no rule learns from an estimate.
+- **The feed** carries the session's prompts and spend, the other pi sessions' on its provider, any real readings
+  of other feeds on it, and the estimate as its newest reading. The capacities learned are kept in
+  `~/.local/state/pace/pi/<provider>.json`, shared by pi's sessions.
+- **Drawing.** The band in a widget above the editor (`ctx.ui.setWidget`), the quotas in the footer
+  (`ctx.ui.setStatus`), both from `view.ts` as ANSI. `/pace` is a pi command (`pi.registerCommand`), so pi's
+  commands come in phases on the same core rules: views, on pace mode, auto mode, ultra pace, plans.
 
 ## Tests: green on every host
 

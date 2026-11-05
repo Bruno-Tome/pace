@@ -2,6 +2,109 @@
 
 ## Unreleased
 
+- From the review by four agents on four accounts (`.agents/review-2026-11-05.md`):
+  - Metering keeps each account's readings its own. `meter` takes readings only from feeds of the session's account,
+    and from none while a session that cannot tell has two accounts on its provider. Prompts and spend still pool.
+    The adapters' own guards are gone.
+  - Claude Code pools the prompts and spend of the other harnesses on its Claude account into its snapshot
+    (`pooled`, reading the feeds at most once a minute).
+  - A turn count past 10,000 is refused (`MAX_TURNS`), so auto mode always stops.
+  - Hosts declare the modes they keep (`Host.keeps`, additive), so `/pace on` over ACP no longer claims a mode that
+    nothing runs. A host that can neither ping nor compact says warm mode is not there, instead of pointing in a
+    circle.
+  - `pace-acp` meters sessions the client loads or resumes, and refuses a host or provider no reader accepts.
+  - Hermes keeps one feed file per session and quota, and tells a restarted bridge its sessions again.
+  - Making pace's key and numbering accounts is safe in parallel processes.
+  - Antigravity's per-model quotas are named as Antigravity's ("Claude Opus 4.6 (Antigravity)").
+
+- Fixes from the live test of every harness (`.agents/live-test.md`):
+  - Antigravity's plugin ships a `pace` skill, so `agy` knows `/pace` and never completes it to another skill. The
+    hook reads `/pace:pace` as `/pace`.
+  - A Herdr chart pane is keyed by provider and account (`HerdrView.account`, additive), so two accounts of one
+    provider no longer share a pane.
+  - A session that cannot tell its account (pi on ChatGPT) learns from no other account's feeds once its provider
+    has two here (`learnsFrom`).
+
+- Hermes Agent (ADR 0023): `'hermes'` is a host (additive). A Python plugin (`adapters/hermes/plugin`, installed by
+  `node scripts/hermes.ts install`) runs in `hermes chat` and in the messaging gateway, and hands its events to a Node
+  bridge (`bin/pace-hermes.ts`) that runs the core. Each provider call's tokens, cache and context come from
+  `post_api_request`, and the account's real windows from Hermes's `fetch_account_usage` (`adapters/hermes/events.ts`
+  maps them). `/pace` is answered in place, in the session or the chat. Auto mode's prompts go into the same session or
+  chat. A bot has its chat alone, so every view is drawn into it. `adapters/views.ts` is the view-opening shared by the
+  two Node bridges. The plugin also handles:
+  - Background calls (`post_auxiliary_call`) and subagents' calls are their session's, with no prompt counted, and
+    `/pace` keeps its session.
+  - A session moving between Claude and ChatGPT keeps a history on each.
+  - A pooled credential names its account (`adapters/account.ts`, `accountForIdentity`). It is Codex's own account
+    when Codex is signed in here on it.
+
+- Ultra pace's gears on every provider (ADR 0021, `core/gears.ts`): a ladder of the models and thinking levels a host
+  offers, ranked lightest first by the provider's families. `core/throttle.ts` picks the notch on any ladder (Claude's
+  by default, so Claude Code's gears are unchanged); `startGears` and `shiftGears` run a plan with gears on a host other
+  than Claude Code. `/pace ultra` now runs in pi (`pi.setModel`, `pi.setThinkingLevel`) and over ACP
+  (`session/set_config_option` on the agent's `model` and `thought_level` options): the plan as auto mode, a gear shift
+  at every turn's end. The goal-owned plan, its check and fan-out stay Claude Code's. Contract, additive:
+  `PaceAuto.gears` (`PaceGears`), and `PaceGear.effort` widened to any host's thinking level.
+- Antigravity installed here: the plugin in `~/.gemini/config/plugins/pace`, and an `agy` shell function in
+  `~/.zshrc` that starts it with a CSRF token of its own.
+
+- The core's API (`core/api.ts`, ADRs 0018 and 0022): a host declares its surfaces (Herdr, a split, a window, a pane,
+  an overlay, the band, the status line, toasts, an answer) and what pace can do to its agent; `route()` decides what
+  each `/pace` command comes to there, `stepOf()` what auto mode's decision does, `warmStep()` warm mode's, and
+  `viewLines()` draws any view for any surface. Codex, pi, Antigravity and Claude Code all route through it;
+  `adapters/codex/commands.ts`, `piAction`, `piStep`, `piWarm` and `agyAction` are gone, their tests moved to
+  `tests/api.test.ts`. Small changes on the way: pi's `/pace split` shows the charts in tmux (it showed the band), the
+  status-line answer says "status line" on every host, the in-place band's answer says Herdr can open it, and Claude
+  Code's `/pace band` outside Herdr says the band is above the prompt.
+- Metering is one rule (`core/meter.ts`): every host's feed is built from what it metered, merged with every live
+  feed on its quota, real readings only. pi's spend now counts with every harness's on its quota.
+- Accounts (ADR 0017): `PaceFeed.account`, additive, a keyed hash of the sign-in's email (`core/account.ts`; the key
+  in `~/.local/state/pace/key`, mode 600; accounts numbered in `accounts.json`, ids only). Claude Code, Codex, pi and
+  Antigravity name theirs; pi on ChatGPT, whose token names no email, joins the one account its provider has here.
+  The fleet has one row per quota, `Codex account 1 · 1233ab…`; `FleetRow` gains `account` and `name`,
+  `FleetMember` gains `session`.
+- Antigravity is a host and a provider (`'antigravity'` in `PaceHost` and `PaceProvider`), with a 5-hour window per
+  model (`five_hour_<model>`). Its CLI (`agy` 1.5.1, verified live): the language server runs inside `agy`, whose
+  CSRF token comes from `ANTIGRAVITY_CSRF_TOKEN`; the hook finds it there, asks over HTTP then HTTPS, and answers
+  `/pace` as the message of the turn it ends rather than in a macOS notification.
+- The ACP proxy (`bin/pace-acp.ts`, `adapters/acp/proxy.ts`, ADR 0019): `pace-acp -- <agent>` passes every message
+  through, meters prompts, cost (`usage_update`) and context into the feed, answers `/pace` without the agent seeing
+  it, adds `/pace` to the agent's commands, and runs auto mode by sending the agent its next prompt. Under `agy acp` it
+  starts the agent with a token of its own and reads its quotas.
+
+- pi: `adapters/pi/extension.ts`, a pi extension (`node scripts/pi.ts install`) that writes the session's feed
+  (`host: 'pi'`) and draws the band above pi's editor and the quotas in its footer. A session paces the quota of its
+  subscription sign-in, ChatGPT's as Codex's and Claude's as Claude's; on an API key it writes nothing. pi is told no
+  readings, so they are estimated from its spend (`core/estimate.ts`): a window's spend over what it holds, learned
+  from a usage limit reached or a live feed's real readings. Until then the band shows each window's spend.
+- pi: `/pace` is a pi command (`adapters/pi/commands.ts` decides, the extension carries it out): the views in Herdr,
+  the charts or the fleet over pi, the band in a tmux split, `hide`/`show`, `line on`/`off`, `refresh` and on pace
+  mode, which lowers pi's thinking level one step for a run while the rate would gas a quota out. Warnings are said
+  once per window. Auto mode, ultra pace and the plan's timeline say they are not in pi yet.
+- pi: its prompt cache, read from each reply's cache tokens with an hour's TTL; on pace mode compacts a heavy context
+  while the cache is warm and keeps a large idle one warm; `/pace warm compact`. Auto mode (`auto`, `off`, `resume`,
+  `burst`): the instructions in the system prompt, each next prompt sent after a run, holds on pi's clock, a handoff
+  compacting. The plan's timeline in a tmux split or over pi. Ultra pace says it is not in pi yet.
+- `resumed()`, a run picked back up with more turns when it ran out, is the core's (`core/auto.ts`), shared by Codex and
+  pi.
+- Herdr first: in Herdr every `/pace` view opens there first, `pane` and `window` too, and falls back to the harness's
+  own when Herdr cannot (`.agents/decisions/0001-herdr-first.md`). Claude Code's `/pace pane` and `/pace window` in
+  Herdr now open the charts in a Herdr pane.
+- Codex: every `/pace` command. Views open in Herdr first, else in a tmux split or a macOS window, else drawn into the
+  answer (`bin/band.ts --pane` draws the charts); the plan's timeline likewise. Auto mode runs through the hooks:
+  the prompt goes on with auto mode's instructions, the Stop hook sends each next prompt, waits out a hold of up to
+  nine minutes and pauses a longer one, and an Interrupt hook pauses the run. Ultra pace, on pace mode, warm mode and
+  the band's preferences say why Codex's hooks cannot run them. Warnings show in Codex's UI once per window. The
+  Stop hook now runs synchronously with a 600-second timeout, and an Interrupt hook is added: update
+  `~/.codex/config.toml` from the README. A `/pace` prompt with arguments pace does not know is answered with what
+  `/pace` takes rather than sent to the model, as in Claude Code.
+- `/pace`'s arguments are read once for every host, `core/command.ts`; Claude Code's `/pace` reads them there, its
+  behavior unchanged.
+- Contract, additive: `PaceHost` adds `'pi'`; `PaceReading` adds `estimated?: true`, which the band and the status
+  line mark with `~`; a feed's snapshot adds `estimated?: true` for a host that estimates its quotas. Older feeds
+  read as before.
+- The fleet counts an agent under the provider its feed names, so a pi agent signed in with ChatGPT counts under
+  Codex. The Codex hook carries the prompts of every live feed on Codex's quota, pi's too, not only Codex's.
 - The fleet lists what is running: a terminal that ran two sessions shows its newest, and in Herdr an agent whose
   terminal is gone is left out rather than listed as idle. The Herdr panel says how old its figures are once they
   are a minute old, a failed claim of its pane no longer stops it drawing, and a failed watch of the feeds is tried

@@ -46,6 +46,8 @@ describe('which view a copy of the mod draws', () => {
 
   test('a pace pane: a harness\'s charts, all its sessions together', () => {
     expect(viewOf({ view: 'pane', provider: 'codex' })).toEqual({ view: 'pane', provider: 'codex' })
+    expect(viewOf({ view: 'pane', provider: 'antigravity' })).toEqual({ view: 'pane', provider: 'antigravity' })
+    expect(viewOf({ view: 'pane', provider: 'codex', account: '1233abcd5678ef90' })).toEqual({ view: 'pane', provider: 'codex', account: '1233abcd5678ef90' })
   })
 
   test('the panel otherwise, or for props it cannot read', () => {

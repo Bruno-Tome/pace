@@ -3,15 +3,19 @@
 // Pure; times in ms.
 
 import type { PaceCacheInfo, PaceQuota, PaceSpend, PaceWarmMode } from '../types'
+import { accountLabel, numbered, soleAccount, type Accounts } from './account.ts'
 import { snapshotOf, type Snapshot } from './model.ts'
 import { autoOf } from './prefs.ts'
 import { mergeSamples } from './quota.ts'
 import { headroomOf, type Headroom } from './throttle.ts'
 
 /** The program a session runs in */
-export type PaceHost = 'claude' | 'codex'
+export type PaceHost = 'claude' | 'codex' | 'pi' | 'antigravity' | 'hermes'
 /** Whose quotas a session draws on: two providers' `five_hour` never mix */
-export type PaceProvider = 'claude' | 'codex'
+export type PaceProvider = 'claude' | 'codex' | 'antigravity'
+/** Each provider's name, as every view says it */
+export const PROVIDER_NAME: Record<PaceProvider, string> = { claude: 'Claude', codex: 'Codex', antigravity: 'Antigravity' }
+
 /** How much of the model's context window the session's last reply filled, in tokens */
 export type PaceContext = { tokens: number; window: number }
 
@@ -20,6 +24,11 @@ export type PaceFeed = {
   version: 1
   host: PaceHost
   provider: PaceProvider
+  /**
+   * The account it spends, as a keyed hash of the sign-in's email (core/account.ts): with the provider, the quota.
+   * Absent when the host cannot tell; such a feed shares its provider's quota with every account
+   */
+  account?: string
   session: string
   /** Herdr's terminal id (`HC_TERMINAL_ID`) when the session runs in Herdr */
   terminal?: string
@@ -36,8 +45,8 @@ export const FEED_STALE = 6 * 3600_000
 /** The folder of feeds, relative to the home directory */
 export const FEEDS_DIR = '.local/state/pace/feeds'
 
-const HOSTS: readonly PaceHost[] = ['claude', 'codex']
-const PROVIDERS: readonly PaceProvider[] = ['claude', 'codex']
+export const HOSTS: readonly PaceHost[] = ['claude', 'codex', 'pi', 'antigravity', 'hermes']
+export const PROVIDERS: readonly PaceProvider[] = ['claude', 'codex', 'antigravity']
 const WARM: readonly PaceWarmMode[] = ['off', 'ping', 'compact']
 
 /** One host session's feed file, relative to the home directory; the session id kept to a safe file name */
@@ -72,6 +81,7 @@ function snapshotOfStored(v: unknown): Snapshot | null {
     prompts: numbers(v.prompts),
     cache: cacheOf(v.cache),
     ...(v.noCache === true ? { noCache: true as const } : {}),
+    ...(v.estimated === true ? { estimated: true as const } : {}),
     ...(isObject(v.modelPrompts) ? { modelPrompts: modelPromptsOf(v.modelPrompts) } : {}),
     ...(WARM.includes(v.warm as PaceWarmMode) ? { warm: v.warm as PaceWarmMode } : {}),
     ...(isNumber(v.price) || v.price === null ? { price: v.price as number | null } : {}),
@@ -100,6 +110,7 @@ export function feedOf(text: string): PaceFeed | null {
   return {
     version: 1, host: v.host as PaceHost, provider: v.provider as PaceProvider, session: v.session, cwd: v.cwd, at: v.at,
     snapshot,
+    ...(typeof v.account === 'string' && v.account ? { account: v.account } : {}),
     ...(typeof v.terminal === 'string' ? { terminal: v.terminal } : {}),
     ...(context ? { context } : {}),
   }
@@ -121,7 +132,8 @@ export type FleetAgent = {
  * One provider: its quotas with their pace and rate, the room they leave, the agents drawing on them, and the
  * snapshot all its feeds make together, which the fleet's drawing reads
  */
-export type FleetRow = { provider: PaceProvider; quotas: PaceQuota[]; headroom: Headroom; agents: FleetAgent[]; snapshot: Snapshot }
+/** One quota in the fleet: its provider, its account when known, its name as listed (`Codex account 1 · 1233ab…`) */
+export type FleetRow = { provider: PaceProvider; account?: string; name: string; quotas: PaceQuota[]; headroom: Headroom; agents: FleetAgent[]; snapshot: Snapshot }
 
 const ROOM: readonly Headroom[] = ['push', 'cruise', 'ease', 'hold']
 
@@ -145,18 +157,29 @@ export const agentOf = (f: PaceFeed): FleetAgent => ({
   context: f.context ? { ...f.context, percent: (f.context.tokens / f.context.window) * 100 } : null,
 })
 
-/** The fleet: one row per provider with a live feed, the one with the most room first */
-export function fleetOf(feeds: readonly PaceFeed[], now: number): FleetRow[] {
+/**
+ * The fleet: one row per quota with a live feed, the one with the most room first. A quota is a provider and an
+ * account; a feed that names no account joins the one account its provider has, else its provider's own row.
+ * `accounts` numbers them as pace first saw them; one it has not seen is numbered after them
+ */
+export function fleetOf(feeds: readonly PaceFeed[], now: number, accounts: Accounts = {}): FleetRow[] {
   const live = feeds.filter(f => f.at >= now - FEED_STALE)
   const rows = PROVIDERS.flatMap((provider): FleetRow[] => {
-    const own = live.filter(f => f.provider === provider)
-    if (!own.length) return []
-    const snapshot = harnessOf(own)
-    const snap = snapshotOf(snapshot, now)
-    // A terminal that ran more than one session is its newest one: the others ended there
-    const newest = [...own].sort((a, b) => b.at - a.at)
-    const agents = newest.filter((f, i) => !f.terminal || newest.findIndex(g => g.terminal === f.terminal) === i).map(agentOf)
-    return [{ provider, quotas: snap.quotas, headroom: headroomOf(snap, undefined), agents, snapshot }]
+    const mine = live.filter(f => f.provider === provider)
+    const sole = soleAccount(mine, provider)
+    const keyOf = (f: PaceFeed) => f.account ?? sole ?? ''
+    let reg = accounts
+    for (const id of [...new Set(mine.map(keyOf))].filter(Boolean).sort()) reg = numbered(reg, provider, id)
+    return [...new Set(mine.map(keyOf))].map((account): FleetRow => {
+      const own = mine.filter(f => keyOf(f) === account)
+      const snapshot = harnessOf(own)
+      const snap = snapshotOf(snapshot, now)
+      // A terminal that ran more than one session is its newest one: the others ended there
+      const newest = [...own].sort((a, b) => b.at - a.at)
+      const agents = newest.filter((f, i) => !f.terminal || newest.findIndex(g => g.terminal === f.terminal) === i).map(agentOf)
+      const name = accountLabel(PROVIDER_NAME[provider], reg, provider, account || undefined)
+      return { provider, ...(account ? { account } : {}), name, quotas: snap.quotas, headroom: headroomOf(snap, undefined), agents, snapshot }
+    })
   })
   return rows.sort((a, b) => ROOM.indexOf(a.headroom) - ROOM.indexOf(b.headroom))
 }

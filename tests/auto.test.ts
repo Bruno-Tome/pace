@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { PaceQuota, PaceSnapshot } from '../types'
-import { answerQuestions, decide, effortFor, markerOf, protocol, upkeep, warmModeFor } from '../core/auto.ts'
+import { answerQuestions, decide, effortFor, markerOf, protocol, resumed, upkeep, warmModeFor } from '../core/auto.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const H = 3600_000
@@ -210,5 +210,13 @@ describe('burst', () => {
     expect(decide({ auto: { ...AUTO, burst: true }, snap: fast, answer: '', aborted: false }).kind).toBe('continue')
     const out = snap({ quotas: [quota({ status: 'gassedOut', percent: 100 })] })
     expect(decide({ auto: { ...AUTO, burst: true }, snap: out, answer: '', aborted: false }).kind).toBe('hold')
+  })
+})
+
+describe('a run picked back up', () => {
+  const NOW = Date.UTC(2026, 10, 5, 12, 0, 0)
+  test('resuming picks the run back up, with more turns when it ran out', () => {
+    expect(resumed({ plan: 'PLAN.md', turns: 40, max: 40, paused: true, heldUntil: NOW, why: 'x' })).toEqual({ plan: 'PLAN.md', turns: 41, max: 80 })
+    expect(resumed({ plan: 'PLAN.md', turns: 3, max: 40, paused: true })).toEqual({ plan: 'PLAN.md', turns: 4, max: 40 })
   })
 })
