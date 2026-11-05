@@ -385,11 +385,12 @@ beside Codex.
 **Herdr.** `node scripts/herdr.ts install` builds the mod into `~/.config/herdr-app/mods/pace/` and checks it. Open
 it with `herdr-app do pane.split --direction right --mod pace`. Its panel shows the **fleet**: every harness's quotas
 with their pace, the one with the most room first (`room to push`, `on pace`, `ease off`, `hold off`), and the
-agents on each with their folder, terminal and context use. Under it, each live agent's band. Click an agent to go
+agents on each, a line each: harness, repo, terminal, context use and what it is doing, by Herdr's status of its
+terminal (`working`, `blocked`, `done`, `idle`: what the agent reports to Herdr, ql's included). Click an agent to go
 to it. Two buttons open more of pace as Herdr panes:
 
 - `band ⇥` beside an agent: its band in a pane under it, as Claude Code draws it above the prompt.
-- `Claude charts ⇥`, `Codex charts ⇥`: the harness's `/pace` pane, its charts, rates and suggestions, fed by every
+- `charts ⇥` beside a harness: its `/pace` pane, its charts, rates and suggestions, fed by every
   live session of that harness together. A harness has no one prompt cache, so its pane leaves the cache out.
 
 ## Where the numbers come from

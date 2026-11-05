@@ -33,6 +33,13 @@ describe('an agent in one line', () => {
     expect(text(agentLine(agent({ terminal: null, context: null, at: NOW - 12 * MIN }), NOW))).toBe('codex · pace · 12m ago')
   })
 
+  test('with its status where the host knows it: blocked in the warning color, working in the success color', () => {
+    expect(text(agentLine(agent({}), NOW, 'working'))).toBe('codex · pace · t7 · ctx 25% · working')
+    expect(agentLine(agent({}), NOW, 'blocked').find(s => s.t === 'blocked')!.color).toBe('warning')
+    expect(agentLine(agent({}), NOW, 'working').find(s => s.t === 'working')!.color).toBe('success')
+    expect(agentLine(agent({}), NOW, 'idle').find(s => s.t === 'idle')!.dim).toBe(true)
+  })
+
   test('a context nearly full is a warning', () => {
     const line = agentLine(agent({ context: { tokens: 170_000, window: 200_000, percent: 85 } }), NOW)
     expect(line.find(s => s.t.includes('85%'))!.color).toBe('warning')

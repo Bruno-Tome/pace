@@ -139,8 +139,6 @@ function checkMod(): void {
 /** The load check's cases: a view and one of its steps (see `steps` in adapters/herdr/main.ts) */
 const LOAD: readonly { what: string; view: HerdrView; step: number }[] = [
   { what: 'panel: the fleet', view: { view: 'panel' }, step: 0 },
-  { what: 'panel: a Claude agent\'s band', view: { view: 'panel' }, step: 1 },
-  { what: 'panel: a Codex agent\'s band', view: { view: 'panel' }, step: 12 },
   { what: 'Claude\'s charts', view: { view: 'pane', provider: 'claude' }, step: 0 },
   { what: 'Codex\'s charts', view: { view: 'pane', provider: 'codex' }, step: 0 },
   { what: 'a band', view: { view: 'band', terminal: 't1' }, step: 0 },

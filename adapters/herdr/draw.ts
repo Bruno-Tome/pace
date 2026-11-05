@@ -3,7 +3,7 @@
 
 import type { PaceProvider } from '../../core/host.ts'
 import type { HerdrView } from './open.ts'
-import type { Seg } from '../../core/view.ts'
+import type { AgentStatus, Seg } from '../../core/view.ts'
 
 /** A segment's look in a panel */
 export type Style = { color: string; bold: boolean; pulse: boolean }
@@ -28,7 +28,7 @@ export function styleOf(s: Seg, theme: Readonly<Record<string, string>>): Style 
 
 /** The columns a panel `width` px wide holds at text `size` px: a monospace character is 0.6 of the size */
 export function colsFor(width: number, size: number): number {
-  return Math.max(MIN_COLS, Math.floor((width - 2 * PAD) / (size * 0.6)))
+  return Math.max(MIN_COLS, Math.floor((width - 2 * PAD) / colWidth(size)))
 }
 
 const PROVIDERS: readonly PaceProvider[] = ['claude', 'codex']
@@ -45,3 +45,27 @@ export function viewOf(props: unknown): HerdrView {
 export function rowsFor(height: number, line: number): number {
   return Math.max(1, Math.floor((height - 2 * PAD_Y) / line))
 }
+
+const STATUSES: readonly AgentStatus[] = ['working', 'blocked', 'done', 'idle']
+
+/** What the agent in `terminal` is doing, by Herdr's status of it (what an agent reports, ql's included); none when Herdr does not say */
+export function statusOf(agents: readonly { address: string; status: unknown }[], terminal: string | undefined): AgentStatus | undefined {
+  const status = terminal ? agents.find(a => a.address === terminal)?.status : undefined
+  return STATUSES.includes(status as AgentStatus) ? (status as AgentStatus) : undefined
+}
+
+/** A run of a bar's cells, to draw as a block: filled, empty, or the clock's tick */
+export type Bar = { kind: 'fill' | 'empty' | 'tick'; cells: number }
+
+const BAR_KINDS: Record<string, Bar['kind']> = { '█': 'fill', '░': 'empty', '│': 'tick' }
+
+/** A bar segment as a block of its cells; null for text. `█`, `░` and `│` come from a fallback font wider than the
+ * panel's columns, so a bar drawn as glyphs runs past the room the line was laid out for. */
+export function barOf(s: Seg): Bar | null {
+  const cells = [...s.t]
+  const kind = s.bar ? BAR_KINDS[cells[0] ?? ''] : undefined
+  return kind && cells.every(c => c === cells[0]) ? { kind, cells: cells.length } : null
+}
+
+/** A column's width at text `size` px, as `colsFor` counts it */
+export const colWidth = (size: number) => size * 0.6

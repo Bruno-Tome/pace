@@ -1,7 +1,8 @@
 // pace in Herdr. One mod, three views, by the props a copy is given (see `viewOf`):
 //
 //   the panel   the fleet (every harness's quotas and pace, the one with the most room first, the agents on each)
-//               and each live agent's band; buttons open the other two views as panes
+//               and every live agent in a line: its harness, repo, terminal, context and Herdr's status of it;
+//               buttons open the other two views as panes
 //   a band      `{ view: 'band', terminal }`: one agent's band, as Claude Code draws it above the prompt
 //   a pace pane `{ view: 'pane', provider }`: a harness's charts and rates, as Claude Code's /pace pane draws them,
 //               fed by every live session of that harness together
@@ -19,11 +20,11 @@ import { View, div } from 'gpui-kit'
 import { h_flex, v_flex } from 'gpui-base'
 import { agents, exec, home, panes, props, readTextFile, run, setShared, settings, shared, theme, watchFolder } from 'herdr'
 
-import { colsFor, PAD, PAD_Y, rowsFor, styleOf, viewOf } from './draw.ts'
+import { barOf, colsFor, colWidth, PAD, PAD_Y, rowsFor, statusOf, styleOf, viewOf, type Bar } from './draw.ts'
 import { claimOf, PANES_KEY, viewKey, type HerdrView } from './open.ts'
 import { SEED } from './seed.ts'
-import { agentOf, FEED_STALE, FEEDS_DIR, feedFor, feedOf, fleetOf, type FleetRow, type PaceFeed, type PaceProvider } from '../../core/host.ts'
-import { agentLine, bandLines, fittedLayout, fleetLines, paneLines, type Line } from '../../core/view.ts'
+import { agentOf, FEED_STALE, FEEDS_DIR, feedFor, feedOf, fleetOf, type FleetAgent, type FleetRow, type PaceFeed, type PaceProvider } from '../../core/host.ts'
+import { agentLine, bandLines, fittedLayout, NO_FLEET, paneLines, providerLines, type Line } from '../../core/view.ts'
 
 /** Text size, and a row's height: tight, as a terminal's, so a chart's braille rows meet; px */
 const SIZE = 12
@@ -35,9 +36,18 @@ const PROVIDER_NAME: Record<PaceProvider, string> = { claude: 'Claude', codex: '
 
 const feedsDir = () => `${home()}/${FEEDS_DIR}`
 
+/** A bar's run of cells as a block exactly its columns wide: filled, empty, or the clock's tick as a thin line */
+function barBlock(bar: Bar, color: string, key: string): any {
+  const w = bar.cells * colWidth(SIZE)
+  if (bar.kind === 'tick') return h_flex().id(key).w(w).h(LINE).justify_center().child(div().w(1).h(LINE - 4).bg(color))
+  return div().id(key).w(w).h(LINE - 5).bg(color).opacity(bar.kind === 'empty' ? 0.35 : 1)
+}
+
 function lineOf(line: Line, t: Record<string, string>, key: string): any {
-  return h_flex().id(key).children(line.map((seg, i) => {
+  return h_flex().id(key).items_center().children(line.map((seg, i) => {
     const s = styleOf(seg, t)
+    const bar = barOf(seg)
+    if (bar) return barBlock(bar, s.color, `${key}-${i}`)
     let el = div().id(`${key}-${i}`).text_color(s.color).child(seg.t)
     if (s.bold) el = el.font_bold()
     if (s.pulse) el = el.loop('opacity', { from: 0.4, to: 1, period: 1200 })
@@ -67,8 +77,6 @@ function openPane(view: HerdrView, terminal?: string): void {
   run('pane.split', { direction: terminal ? 'down' : 'right', ...(pane ? { pane } : {}), mod: 'pace', props: view })
 }
 
-/** One live agent as drawn: its feed, its line and its band */
-type Drawn = { feed: PaceFeed; head: Line; band: Line[] }
 
 /** A failure to draw, said where the drawing would be */
 const notDrawn = (error: unknown): Line[] => [[{ t: `not drawn: ${String(error)}`, color: 'error' }]]
@@ -82,8 +90,8 @@ export default class Pace extends View {
   pane: string | null = null
   /** What render shows: the view's lines, worked out by `draw` */
   lines: Line[] = []
-  agents: Drawn[] = []
-  providers: PaceProvider[] = []
+  /** The panel's harnesses: each one's quotas as drawn, and the agents on it */
+  harnesses: { provider: PaceProvider; lines: Line[]; agents: FleetAgent[] }[] = []
 
   init(_props: unknown, cx: any): void {
     if (SEED) {
@@ -155,7 +163,8 @@ export default class Pace extends View {
 
   /**
    * The view's drawing as steps, each small enough for one call: for a band, the band; for a harness's pane, its
-   * charts; for the panel, the fleet and then each agent's band. A step that throws draws why in its place.
+   * charts; for the panel, the fleet. A step that throws draws why in its place. The panel's agents are a line
+   * each, drawn in render, so their status follows Herdr's live.
    */
   steps(now: number): (() => void)[] {
     const live = this.feeds.filter(f => f.at >= now - FEED_STALE)
@@ -177,18 +186,12 @@ export default class Pace extends View {
       }, toLines)]
     }
     if (v.view === 'pane') return [guard(() => { this.lines = this.chartLines(fleetOf(live, now), v.provider, now) }, toLines)]
-    const agents = [...live].sort((a, b) => b.at - a.at)
-    this.agents = agents.map(feed => ({ feed, head: agentLine(agentOf(feed), now), band: [] }))
     return [
       guard(() => {
         const fleet = fleetOf(live, now)
-        this.providers = fleet.map(r => r.provider)
-        this.lines = fleetLines(fleet, now, this.cols)
+        this.harnesses = fleet.map(row => ({ provider: row.provider, lines: providerLines(row, now, this.cols), agents: row.agents }))
+        this.lines = fleet.length ? [] : [NO_FLEET]
       }, toLines),
-      ...agents.map((feed, i) => guard(
-        () => { this.agents[i]!.band = bandLines(feed.snapshot, now, this.cols) },
-        lines => { this.agents[i]!.band = lines },
-      )),
     ]
   }
 
@@ -204,26 +207,34 @@ export default class Pace extends View {
     return [title, [], ...paneLines(row.snapshot, now, fittedLayout(row.snapshot, now, this.cols, this.rows - 2))]
   }
 
-  agentBlock({ feed, head, band }: Drawn, t: Record<string, string>): any {
-    const key = `agent-${feed.host}-${feed.session}`
-    const terminal = feed.terminal
-    const top = h_flex().id(`${key}-head`).justify_between()
-      .child(lineOf(head, t, `${key}-line`))
+  /** An agent's line, with Herdr's status of it: a click goes to it, `band ⇥` opens its band under it */
+  agentRow(a: FleetAgent, now: number, t: Record<string, string>): any {
+    const key = `agent-${a.host}-${a.session}`
+    const terminal = a.terminal ?? undefined
+    const line: Line = [{ t: '  ' }, ...agentLine(a, now, statusOf(agents(), terminal))]
+    return h_flex().id(key).justify_between()
+      .child(lineOf(line, t, `${key}-line`))
       .when(!!terminal, (el: any) => el
         .child(button(`${key}-band`, 'band ⇥', t, () => openPane({ view: 'band', terminal: terminal! }, terminal)))
         .hover((s: any) => s.bg(t.hover))
         .on_click(() => run('agent.focus', { terminal })))
-    return v_flex().id(key).pt(6).children([top, ...band.map((l, i) => lineOf(l, t, `${key}-${i}`))])
   }
 
-  /** The panel's children: the charts' buttons, the fleet, then each agent */
+  /** The panel's children: each harness's quotas and the button to its charts, then its agents, a line each */
   panel(t: Record<string, string>): any[] {
-    const charts = this.providers.map(p => button(`charts-${p}`, `${PROVIDER_NAME[p]} charts ⇥`, t, () => openPane({ view: 'pane', provider: p })))
+    const now = Date.now()
     return [
-      h_flex().id('fleet-head').justify_between().children([heading('Fleet', t), h_flex().id('charts').gap(4).children(charts)]),
+      heading('Fleet', t),
       ...this.lines.map((l, i) => lineOf(l, t, `fleet-${i}`)),
-      ...(this.agents.length ? [heading('Agents', t)] : []),
-      ...this.agents.map(a => this.agentBlock(a, t)),
+      ...this.harnesses.flatMap(({ provider, lines, agents: on }, h) => [
+        ...(h ? [div().id(`gap-${h}`).h(LINE)] : []),
+        h_flex().id(`head-${provider}`).justify_between().children([
+          lineOf(lines[0] ?? [], t, `head-${provider}-line`),
+          button(`charts-${provider}`, 'charts ⇥', t, () => openPane({ view: 'pane', provider })),
+        ]),
+        ...lines.slice(1).map((l, i) => lineOf(l, t, `quota-${provider}-${i}`)),
+        ...on.map(a => this.agentRow(a, now, t)),
+      ]),
     ]
   }
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { colsFor, rowsFor, styleOf, viewOf } from './draw.ts'
+import { barOf, colsFor, rowsFor, statusOf, styleOf, viewOf } from './draw.ts'
 
 /** The theme's colors by name, as Herdr's `theme()` gives them */
 const THEME: Record<string, string> = {
@@ -60,5 +60,28 @@ describe('the rows a pane holds', () => {
     // 612px less 2 × 6px padding at 15px a row: 600 / 15 = 40 rows
     expect(rowsFor(612, 15)).toBe(40)
     expect(rowsFor(0, 15)).toBe(1)
+  })
+})
+
+describe('an agent\'s status in Herdr', () => {
+  test('is the status Herdr gives its terminal, among the ones pace draws', () => {
+    const agents = [{ address: 't7', status: 'blocked' }, { address: 't8', status: 'unknown' }]
+    expect(statusOf(agents, 't7')).toBe('blocked')
+    expect(statusOf(agents, 't8')).toBeUndefined()
+    expect(statusOf(agents, 't9')).toBeUndefined()
+    expect(statusOf(agents, undefined)).toBeUndefined()
+  })
+})
+
+describe('a bar in Herdr', () => {
+  test('is drawn as blocks a column wide each, not glyphs a fallback font widens: fill, empty or the clock\'s tick', () => {
+    expect(barOf({ t: '████', bar: true, color: 'success' })).toEqual({ kind: 'fill', cells: 4 })
+    expect(barOf({ t: '░░', bar: true, dim: true })).toEqual({ kind: 'empty', cells: 2 })
+    expect(barOf({ t: '│', bar: true, color: 'text' })).toEqual({ kind: 'tick', cells: 1 })
+  })
+
+  test('text is text, a bar\'s or not', () => {
+    expect(barOf({ t: '████' })).toBeNull()
+    expect(barOf({ t: ' 30%', bar: true })).toBeNull()
   })
 })

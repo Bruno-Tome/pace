@@ -1050,8 +1050,21 @@ const ROOM: Record<Headroom, Seg> = {
 /** A context this full is close to a compaction */
 const CONTEXT_WARN = 80
 
-/** An agent in one line: its host, its folder, its terminal in Herdr, its context, and its age once a minute old */
-export function agentLine(a: FleetAgent, now: number): Line {
+/** What an agent is doing, where its host knows: Herdr's status of its terminal */
+export type AgentStatus = 'working' | 'blocked' | 'done' | 'idle'
+
+const STATUS_LOOK: Record<AgentStatus, Partial<Seg>> = {
+  working: { color: 'success' },
+  blocked: { color: 'warning', bold: true },
+  done: { color: 'text' },
+  idle: { dim: true },
+}
+
+/**
+ * An agent in one line: its host, its folder, its terminal in Herdr, its context, its age once a minute old, and
+ * what it is doing when the host says
+ */
+export function agentLine(a: FleetAgent, now: number, status?: AgentStatus): Line {
   const dot: Seg = { t: ' · ', dim: true }
   const folder = a.cwd.split('/').filter(Boolean).pop() ?? a.cwd
   const out: Line = [{ t: a.host, bold: true }, dot, { t: folder }]
@@ -1062,26 +1075,35 @@ export function agentLine(a: FleetAgent, now: number): Line {
   }
   const age = Math.floor((now - a.at) / 1000)
   if (age >= 60) out.push(dot, { t: `${compact(age)} ago`, dim: true })
+  if (status) out.push(dot, { t: status, ...STATUS_LOOK[status] })
   return out
 }
 
+/** One provider of the fleet: its name and the room it leaves, then its quotas as the band draws them */
+export function providerLines(f: FleetRow, now: number, cols: number): Line[] {
+  const indent: Seg = { t: '  ' }
+  const rated = ratedOf(f.snapshot, rowsOf(f.snapshot.samples, now), now)
+  const labelW = Math.max(5, ...rated.map(({ row }) => row.short.length))
+  const wide = cols >= 70
+  const lay = (barWidth: number) => columns(rated.map(({ row, r }): [Line, Line] => [[indent, ...quotaLine(row, labelW, barWidth, wide)], rateSegs(r, wide)]))
+  const room = rated.length ? cols - Math.max(...lay(0).map(width)) - 1 : 0
+  return [
+    [{ t: PROVIDER_NAME[f.provider], bold: true }, { t: ' · ', dim: true }, ROOM[f.headroom]],
+    ...(rated.length ? lay(room >= 8 ? Math.min(32, room) : 0) : [[indent, { t: 'no reading yet', dim: true }]]),
+  ]
+}
+
+/** What the fleet says with no feed yet */
+export const NO_FLEET: Line = [{ t: 'No agents yet: pace shows each one here once it reports', dim: true }]
+
 /** The fleet: each provider, the one with the most room first, with its quotas as the band draws them and its agents */
 export function fleetLines(fleet: readonly FleetRow[], now: number, cols: number): Line[] {
-  if (!fleet.length) return [[{ t: 'No agents yet: pace shows each one here once it reports', dim: true }]]
-  const indent: Seg = { t: '  ' }
-  return fleet.flatMap((f, i): Line[] => {
-    const rated = ratedOf(f.snapshot, rowsOf(f.snapshot.samples, now), now)
-    const labelW = Math.max(5, ...rated.map(({ row }) => row.short.length))
-    const wide = cols >= 70
-    const lay = (barWidth: number) => columns(rated.map(({ row, r }): [Line, Line] => [[indent, ...quotaLine(row, labelW, barWidth, wide)], rateSegs(r, wide)]))
-    const room = rated.length ? cols - Math.max(...lay(0).map(width)) - 1 : 0
-    return [
-      ...(i ? [[] as Line] : []),
-      [{ t: PROVIDER_NAME[f.provider], bold: true }, { t: ' · ', dim: true }, ROOM[f.headroom]],
-      ...(rated.length ? lay(room >= 8 ? Math.min(32, room) : 0) : [[indent, { t: 'no reading yet', dim: true }]]),
-      ...f.agents.map(a => [indent, ...agentLine(a, now)]),
-    ]
-  })
+  if (!fleet.length) return [NO_FLEET]
+  return fleet.flatMap((f, i): Line[] => [
+    ...(i ? [[] as Line] : []),
+    ...providerLines(f, now, cols),
+    ...f.agents.map(a => [{ t: '  ' }, ...agentLine(a, now)]),
+  ])
 }
 
 /** The pane's usual layout at `cols`: charts as wide as the room allows up to 72 cells, at their usual heights */

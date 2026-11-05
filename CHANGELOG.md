@@ -14,8 +14,9 @@
 - `bin/band.ts`: the band, live, in any terminal, for the newest feed, a Herdr terminal's agent or a feed file; or
   `--fleet`, every provider's quotas with the agents on each.
 - Herdr: a mod (`node scripts/herdr.ts install`) with the fleet, every provider ordered by the room its quotas leave,
-  and each live agent's band; click an agent to go to it. `band ⇥` opens the agent's band in a Herdr pane under it,
-  and `Claude charts ⇥` / `Codex charts ⇥` the harness's `/pace` pane, charted from all its live sessions together.
+  and the agents on each, a line each with Herdr's status of their terminal; click an agent to go to it. `band ⇥`
+  opens the agent's band in a Herdr pane under it, and `charts ⇥` the harness's `/pace` pane, charted from all its
+  live sessions together.
   The mod draws whichever view its pane's props ask for.
 - `/pace` in Herdr opens pace in a Herdr pane beside the session, ahead of tmux: the harness's charts, or with
   `band` the session's band and with `fleet` the fleet. In Claude Code `/pace` does it; in Codex the hook catches a
@@ -29,6 +30,8 @@
   Codex hook merges the other live Codex sessions'), so the fleet takes the session with the newest reading
   rather than merge eleven copies of one history; the mod draws in steps, one call each; and a quota's price is
   worked out in one pass over the spend. `node scripts/herdr.ts check` now checks each step on a week of feeds.
+- In Herdr a bar is drawn as blocks exactly its columns wide: `█` and `░` come from a fallback font wider than the
+  panel's columns, which pushed the rate off the right edge.
 - Herdr's panes fit their room: rows as tight as a terminal's, so a chart's braille rows meet, and the charts
   grow to fill the pane's height as Claude Code's docked pane does. The rule moved to `fittedLayout` in
   `core/view.ts`, which both use.
