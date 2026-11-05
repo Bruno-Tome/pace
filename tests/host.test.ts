@@ -29,6 +29,34 @@ describe('a feed', () => {
     expect(feedOf(JSON.stringify(written))).toEqual(written)
   })
 
+  test('reads back an Antigravity conversation\'s, its quotas Antigravity\'s own', () => {
+    const written = feed({ host: 'antigravity', provider: 'antigravity', session: 'conv-1', snapshot: { ...fiveHour(NOW, 50), noCache: true } })
+    expect(feedOf(JSON.stringify(written))).toEqual(written)
+  })
+
+  test('reads back a Hermes session\'s, in a chat as a bot or at the terminal', () => {
+    const written = feed({ host: 'hermes', provider: 'codex', session: '20261105_120000_ab12', snapshot: { ...fiveHour(NOW, 50), noCache: true } })
+    expect(feedOf(JSON.stringify(written))).toEqual(written)
+  })
+
+  test('reads back the account it spends, and reads a feed with none as before', () => {
+    const written = feed({ account: '1233abcd5678ef90' })
+    expect(feedOf(JSON.stringify(written))).toEqual(written)
+    expect(feedOf(JSON.stringify({ ...written, account: 7 }))!.account).toBeUndefined()
+  })
+
+  test('reads back a pi session\'s, which names the provider whose quota it spends', () => {
+    // pi signed in with ChatGPT spends Codex's quota
+    const written = feed({ host: 'pi', provider: 'codex', session: 'p1', context: { tokens: 9_000, window: 272_000 }, snapshot: { ...fiveHour(NOW, 50), noCache: true } })
+    expect(feedFile('pi', 'p1')).toBe('.local/state/pace/feeds/pi-p1.json')
+    expect(feedOf(JSON.stringify(written))).toEqual(written)
+  })
+
+  test('says when its host estimates its quotas from spend, and keeps the spend it estimates from', () => {
+    const written = feed({ host: 'pi', provider: 'codex', snapshot: { samples: [], prompts: [NOW - H], cache: null, noCache: true, estimated: true, spend: [{ t: NOW - H, id: 'p1', usd: 3.2 }] } })
+    expect(feedOf(JSON.stringify(written))).toEqual(written)
+  })
+
   test('is dropped when it does not parse as one', () => {
     expect(feedOf('{not json')).toBeNull()
     expect(feedOf(JSON.stringify({ ...feed({}), version: 2 }))).toBeNull()
@@ -54,6 +82,27 @@ describe('a feed', () => {
 })
 
 describe('the fleet', () => {
+  test('one row per quota: two accounts of one provider are two rows, each named by number and id', () => {
+    const fleet = fleetOf([
+      feed({ host: 'codex', provider: 'codex', account: 'aaaa000011112222', session: 'a', snapshot: fiveHour(NOW, 30) }),
+      feed({ host: 'codex', provider: 'codex', account: 'bbbb000011112222', session: 'b', snapshot: fiveHour(NOW, 80) }),
+    ], NOW, { codex: ['bbbb000011112222', 'aaaa000011112222'] })
+    expect(fleet.map(r => [r.account, r.name])).toEqual([['aaaa000011112222', 'Codex account 2 · aaaa00…'], ['bbbb000011112222', 'Codex account 1 · bbbb00…']])
+  })
+
+  test('a feed that names no account joins the one account its provider has; with none named, the row is the provider\'s', () => {
+    const fleet = fleetOf([
+      feed({ host: 'codex', provider: 'codex', account: 'aaaa000011112222', session: 'a', snapshot: fiveHour(NOW, 30) }),
+      feed({ host: 'pi', provider: 'codex', session: 'p', snapshot: fiveHour(NOW - 1000, 30) }),
+      feed({ host: 'claude', provider: 'claude', session: 'k', snapshot: fiveHour(NOW, 10) }),
+    ], NOW)
+    const codex = fleet.find(r => r.provider === 'codex')!
+    expect(fleet.length).toBe(2)
+    expect(codex.agents.map(a => a.host).sort()).toEqual(['codex', 'pi'])
+    expect(codex.name).toBe('Codex account 1 · aaaa00…')
+    expect(fleet.find(r => r.provider === 'claude')!.name).toBe('Claude')
+  })
+
   test('one row per provider: two hosts\' 5-hour windows never mix', () => {
     const fleet = fleetOf([
       feed({ session: 'a', snapshot: fiveHour(NOW, 30) }),

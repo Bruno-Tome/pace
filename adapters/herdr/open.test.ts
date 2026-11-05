@@ -25,8 +25,12 @@ describe('what /pace opens in Herdr', () => {
     expect(paceViewOf('fleet', 'claude', 't4')).toEqual({ view: 'panel' })
   })
 
-  test('nothing for an argument it does not open in Herdr', () => {
-    expect(paceViewOf('window', 'claude', 't4')).toBeNull()
+  test('pane and window open the charts in Herdr too: in Herdr every view goes through it first', () => {
+    expect(paceViewOf('pane', 'claude', 't4')).toEqual({ view: 'pane', provider: 'claude' })
+    expect(paceViewOf('window', 'codex', 't4')).toEqual({ view: 'pane', provider: 'codex' })
+  })
+
+  test('nothing for an argument that is not a view', () => {
     expect(paceViewOf('auto plan.md', 'claude', 't4')).toBeNull()
   })
 })
@@ -34,6 +38,9 @@ describe('what /pace opens in Herdr', () => {
 describe('a pace pane already open', () => {
   test('each view has one key: a harness\'s charts, an agent\'s band, the fleet', () => {
     expect(viewKey({ view: 'pane', provider: 'codex' })).toBe('pane:codex')
+    // Two accounts on one provider are two panes
+    expect(viewKey({ view: 'pane', provider: 'codex', account: '1233abcd5678ef90' })).toBe('pane:codex:1233abcd5678ef90')
+    expect(paceViewOf('', 'codex', 't4', '1233abcd5678ef90')).toEqual({ view: 'pane', provider: 'codex', account: '1233abcd5678ef90' })
     expect(viewKey({ view: 'band', terminal: 't8' })).toBe('band:t8')
     expect(viewKey({ view: 'panel' })).toBe('panel')
   })

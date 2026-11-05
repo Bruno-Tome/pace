@@ -49,6 +49,12 @@ describe('bin/band.ts', () => {
     expect(plain(run(dir, ['--terminal', 't1']).stdout)).toContain('waiting for t1')
   })
 
+  test('--pane draws the feed\'s charts, as /pace\'s pane does, for a host with no pane of its own', () => {
+    const out = plain(run(home([codex(Date.now())]), ['--pane']).stdout)
+    expect(out).toContain('codex · api · t7')
+    expect(out).toContain('resets in')
+  })
+
   test('--fleet draws every provider with its agents', () => {
     const out = plain(run(home([codex(Date.now())]), ['--fleet']).stdout)
     expect(out).toContain('Codex · ')

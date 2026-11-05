@@ -1,6 +1,6 @@
 ---
 name: pace
-description: Open pace beside this Codex session in Herdr - its quota charts, its band, or the fleet of every agent. Use only when the user invokes $pace, $pace band or $pace fleet.
+description: pace's commands in Codex - its quota charts, its band, the fleet of every agent, the plan's timeline and auto mode. Use only when the user invokes $pace, alone or with arguments.
 ---
 
 # pace
@@ -8,8 +8,9 @@ description: Open pace beside this Codex session in Herdr - its quota charts, it
 pace's hook normally answers `$pace` before you see it. If you are reading this, it did not (the hook is not
 installed or not yet trusted in `/hooks`), so open the view yourself:
 
-1. Take the argument the user gave after `$pace`: nothing, `band` or `fleet`. Anything else: say pace takes
-   `band` or `fleet` and stop.
+1. Take the argument the user gave after `$pace`. Only a view opens without the hook: nothing, `band` or `fleet`.
+   For anything else (auto mode, a plan, `pane`, `window`), say that `$pace` needs pace's hook in
+   `~/.codex/config.toml`, trusted in `/hooks`, and stop.
 2. Run exactly one command, with that argument (or none):
 
    ```sh

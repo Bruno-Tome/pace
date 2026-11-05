@@ -423,3 +423,29 @@ test('a pane given rows grows its charts to fill them, each between its usual he
   // Plenty: no chart taller than 16 rows
   expect(lines(1000)).toBeLessThan(1000)
 })
+
+test('a reading pi estimated from its spend reads as one: ~ before its percent, in the band and the status line', () => {
+  // 25% of the 5-hour window by the estimate, half the window gone
+  const s: Snapshot = {
+    samples: [{ at: NOW, quotas: { five_hour: { percent: 25, resetsAt: NOW + 2.5 * H, estimated: true } } }],
+    prompts: [], cache: null, noCache: true,
+  }
+  const band = bandLines(s, NOW, 100).map(l => l.map(x => x.t).join('')).join('\n')
+  expect(band).toContain('~25%')
+  expect(statusRow(s, NOW, 100).map(x => x.t).join('')).toContain('~25%')
+  expect(lineText(s, NOW)).toContain('~25%')
+})
+
+test('a host that estimates its quotas shows each window\'s spend and reset until it knows what a window holds', () => {
+  // $3.20 since the 5-hour window opened an hour ago; nothing says yet what it holds
+  const s: Snapshot = {
+    samples: [], prompts: [NOW - H], cache: null, noCache: true, estimated: true,
+    spend: [{ t: NOW - H, id: 'p1', usd: 3.2 }],
+  }
+  const band = bandLines(s, NOW, 100).map(l => l.map(x => x.t).join('')).join('\n')
+  expect(band).toContain('5h')
+  expect(band).toContain('$3.20 spent')
+  expect(band).toContain('↻ 4h')
+  expect(band).toContain('% after a limit is reached')
+  expect(lineText(s, NOW)).toContain('5h $3.20')
+})

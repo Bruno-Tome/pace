@@ -3,8 +3,9 @@
 // Under pace is quota lost at the reset; over pace is quota run out before it. The throttle reads the same verdicts
 // every other surface reads (each quota's status and rate level), never a second opinion.
 
-import type { PaceGear, PaceQuota, PaceSnapshot } from '../types'
+import type { PaceGear, PaceGears, PaceQuota, PaceSnapshot } from '../types'
 import { forModel } from './auto.ts'
+import { CLAUDE_LADDER, gearOf, type Ladder } from './gears.ts'
 
 /** How hard the quotas let ultra pace drive, from most room to none */
 export type Headroom = 'push' | 'cruise' | 'ease' | 'hold'
@@ -44,23 +45,22 @@ export type GearBounds = { floor: string; ceiling: string; model: string; effort
 /** Decisions in a row a headroom with more room must hold before the gear climbs */
 const CLIMB_AFTER = 2
 
-const EFFORTS: readonly PaceGear['effort'][] = ['low', 'medium', 'high', 'xhigh', 'max']
-const lighter = (e: PaceGear['effort']) => EFFORTS[Math.max(0, EFFORTS.indexOf(e) - 1)]!
-
 /** The gears, lightest first */
 const NOTCHES = ['ease', 'cruise', 'push'] as const
 type Notch = (typeof NOTCHES)[number]
 
-function gearAt(notch: Notch, b: GearBounds): PaceGear {
-  if (notch === 'push') return { model: b.ceiling, effort: 'xhigh', subagents: 3, subagentModel: 'sonnet', fanout: true }
-  if (notch === 'cruise') return { model: b.model, effort: b.effort, subagents: 2, subagentModel: 'sonnet', fanout: false }
-  return { model: b.floor, effort: lighter(b.effort), subagents: 1, subagentModel: 'haiku', fanout: false }
-}
+/** A notch on the ladder (core/gears.ts): Claude's unless the host offers its own */
+const gearAt = (notch: Notch, b: GearBounds, ladder: Ladder = CLAUDE_LADDER): PaceGear => gearOf(notch, ladder, b)
 
 /** The notch a gear sits at, by what never waits on the cache: its subagents and fan-out; `cruise` if none fits */
-function notchOf(g: PaceGear, b: GearBounds): number {
+function notchOf(g: PaceGear, b: GearBounds, ladder: Ladder = CLAUDE_LADDER): number {
+  if (!ladder.sub) {
+    // A ladder with no subagents: told apart by model and thinking
+    const i = NOTCHES.findIndex(n => { const at = gearAt(n, b, ladder); return at.model === g.model && at.effort === g.effort })
+    return i < 0 ? 1 : i
+  }
   const i = NOTCHES.findIndex(n => {
-    const at = gearAt(n, b)
+    const at = gearAt(n, b, ladder)
     return at.subagents === g.subagents && at.subagentModel === g.subagentModel && at.fanout === g.fanout
   })
   return i < 0 ? 1 : i
@@ -72,18 +72,18 @@ function notchOf(g: PaceGear, b: GearBounds): number {
  * cache has lapsed or a handoff starts a fresh context; the main model changes only then, since a new model starts
  * with a cold cache.
  */
-export function gearFor(headroom: Headroom, bounds: GearBounds, current: { gear: PaceGear; streak: number; cold: boolean }): { gear: PaceGear; streak: number } {
+export function gearFor(headroom: Headroom, bounds: GearBounds, current: { gear: PaceGear; streak: number; cold: boolean }, ladder: Ladder = CLAUDE_LADDER): { gear: PaceGear; streak: number } {
   if (headroom === 'hold') return { gear: current.gear, streak: 0 }
-  const at = notchOf(current.gear, bounds)
+  const at = notchOf(current.gear, bounds, ladder)
   const want = NOTCHES.indexOf(headroom)
   const streak = want > at ? current.streak + 1 : 0
   const next = want <= at ? want : streak >= CLIMB_AFTER ? at + 1 : at
-  const gear = gearAt(NOTCHES[next]!, bounds)
+  const gear = gearAt(NOTCHES[next]!, bounds, ladder)
   return { gear: current.cold ? gear : { ...gear, model: current.gear.model }, streak: next > at ? 0 : streak }
 }
 
 /** The gear a run starts in: cruise, the user's model and effort, until the headroom says otherwise */
-export const startingGear = (b: GearBounds): PaceGear => gearAt('cruise', b)
+export const startingGear = (b: GearBounds, ladder: Ladder = CLAUDE_LADDER): PaceGear => gearAt('cruise', b, ladder)
 
 /** The model families pace ranks, lightest first; a model of none of them is left as named */
 const FAMILIES = ['haiku', 'sonnet', 'opus', 'fable'] as const
@@ -121,4 +121,29 @@ export const notchName = (g: PaceGear): 'push' | 'cruise' | 'ease' =>
 export function gearText(g: PaceGear): string {
   const model = familyOf(g.model) ?? g.model
   return `${notchName(g)} · ${model} ${g.effort} · ${g.subagents} agent${g.subagents === 1 ? '' : 's'}`
+}
+
+/** The rung of `ladder` a name the user gave stands for: the first model holding it; `fallback` for none */
+const rungOf = (ladder: Ladder, name: string | undefined, fallback: string) => (name && ladder.models.find(m => m.toLowerCase().includes(name.toLowerCase()))) || fallback
+
+/**
+ * Gears for a run on a host other than Claude Code (pi, an ACP agent): cruising on the user's model and thinking,
+ * ranging from `floor` (the ladder's second rung by default, as Claude's floor is sonnet) to `ceiling` (its top)
+ */
+export function startGears(ladder: Ladder, model: string, effort: string, floor?: string, ceiling?: string): PaceGears {
+  const ms = ladder.models.length ? ladder.models : [model]
+  const bounds = { floor: rungOf(ladder, floor, ms[Math.min(1, ms.length - 1)]!), ceiling: rungOf(ladder, ceiling, ms[ms.length - 1]!), model, effort }
+  return { ...bounds, gear: gearAt('cruise', bounds, ladder), streak: 0 }
+}
+
+/**
+ * The next turn's gears, and what the host has to set for them: the model only once the cache is cold (a new model
+ * starts with a cold cache), the thinking level at once
+ */
+export function shiftGears(g: PaceGears, headroom: Headroom, ladder: Ladder, cold: boolean): { gears: PaceGears; set: { model?: string; effort?: string } } {
+  const { gear, streak } = gearFor(headroom, g, { gear: g.gear, streak: g.streak, cold }, ladder)
+  return {
+    gears: { ...g, gear, streak },
+    set: { ...(gear.model !== g.gear.model ? { model: gear.model } : {}), ...(gear.effort !== g.gear.effort ? { effort: gear.effort } : {}) },
+  }
 }

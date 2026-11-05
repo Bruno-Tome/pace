@@ -53,6 +53,17 @@ describe('reading a ql feed', () => {
 })
 
 describe('the agents', () => {
+  test('a pi agent counts under the provider its feed names, the one whose quota it spends', () => {
+    const m = fleetModel({
+      pace: [pace({ host: 'codex', provider: 'codex', session: 'c', terminal: 't2' }), pace({ host: 'pi', provider: 'codex', session: 'p', terminal: 't3' })],
+      ql: [],
+      agents: [herdr({ address: 't2', app: 'codex' }), herdr({ address: 't3', app: 'pi' })],
+      now: NOW,
+    })
+    expect(m.agents.find(a => a.key === 't3')).toMatchObject({ host: 'pi', provider: 'codex' })
+    expect(m.providers.find(p => p.provider === 'codex')!.agents).toEqual(['t2', 't3'])
+  })
+
   test('one per Herdr agent, joined to its feeds by terminal: host, state, repo, branch, context and files', () => {
     const m = fleetModel({
       pace: [pace({ host: 'codex', provider: 'codex', session: 'c', terminal: 't2', context: { tokens: 50_000, window: 200_000 } })],
@@ -61,7 +72,7 @@ describe('the agents', () => {
       now: NOW,
     })
     expect(m.agents).toEqual([{
-      key: 't2', address: 't2', host: 'codex', provider: 'codex', title: 'claude', state: 'blocked', since: NOW - 5 * MIN,
+      key: 't2', address: 't2', host: 'codex', provider: 'codex', session: 'c', title: 'claude', state: 'blocked', since: NOW - 5 * MIN,
       cwd: '/work/ql', repo: 'me/ql', branch: 'fix', context: 25, edited: 2, read: 3, stale: false,
     }])
   })
@@ -145,6 +156,22 @@ describe('the views', () => {
     expect(byProvider(m).map(g => [g.title, g.agents.map(a => a.key)])).toEqual([
       ['Claude', ['t1', 't2', 't3']],
       ['No quotas', ['t4']],
+    ])
+  })
+
+  test('by provider, two accounts of one are two groups, each with the agents that spend it', () => {
+    const two = fleetModel({
+      pace: [
+        pace({ host: 'codex', provider: 'codex', account: 'aaaa000011112222', session: 'a', terminal: 't1', snapshot: quotas(30, 30) }),
+        pace({ host: 'codex', provider: 'codex', account: 'bbbb000011112222', session: 'b', terminal: 't2', snapshot: quotas(70, 70) }),
+      ],
+      ql: [],
+      agents: [herdr({ address: 't1', app: 'codex', title: 'codex' }), herdr({ address: 't2', app: 'codex', title: 'codex' })],
+      now: NOW,
+    })
+    expect(byProvider(two).map(g => [g.title, g.agents.map(a => a.key)])).toEqual([
+      ['Codex account 1 · aaaa00…', ['t1']],
+      ['Codex account 2 · bbbb00…', ['t2']],
     ])
   })
 

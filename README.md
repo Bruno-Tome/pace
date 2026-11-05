@@ -26,7 +26,7 @@ sessions, and modes that keep a long run on pace with no one at the keyboard.
 - [Commands](#commands)
 - [Options](#options)
 - [For other mods](#for-other-mods)
-- [Codex and Herdr](#codex-and-herdr)
+- [Codex, pi and Herdr](#codex-pi-and-herdr)
 - [Where the numbers come from](#where-the-numbers-come-from)
 - [How it is built](#how-it-is-built)
 - [Development](#development)
@@ -55,7 +55,7 @@ The band appears above the prompt after the first reply. Then:
 
 Outside tmux, `/pace` opens the pane instead; in the Claude desktop app that pane is the split itself.
 
-The same core paces Codex CLI too, and draws every agent side by side in [Herdr](#codex-and-herdr).
+The same core paces Codex CLI and pi too, and draws every agent side by side in [Herdr](#codex-pi-and-herdr).
 
 ## What it shows
 
@@ -324,7 +324,7 @@ snap.advice        // [{ level, text }]
 The snapshot is as of `snap.at`: pace refreshes it after every reply, reading and minute. The full contract is in
 [`types/index.d.ts`](types/index.d.ts).
 
-## Codex and Herdr
+## Codex, pi and Herdr
 
 pace's core is host-agnostic. Each host session writes a **feed**,
 `~/.local/state/pace/feeds/<host>-<session>.json`: its readings, prompts, spend and context, where it runs, and
@@ -361,13 +361,60 @@ timeout = 10
 [[hooks.Stop.hooks]]
 type = "command"
 command = "node /path/to/pace/adapters/codex/hook.ts"
-async = true
-timeout = 10
+timeout = 600
+
+[[hooks.Interrupt]]
+[[hooks.Interrupt.hooks]]
+type = "command"
+command = "node /path/to/pace/adapters/codex/hook.ts"
+timeout = 3
 ```
 
-The hook needs Node 23.6 or later, prints nothing (Codex would add it to the conversation) and never fails a turn.
-It was built against the rollouts Codex 0.161 writes; the rollout is not a stable interface, so a line it cannot
-read is skipped.
+The Stop hook runs synchronously, with up to ten minutes: auto mode keeps Codex going from it and waits out a short
+hold in it. The hook needs Node 23.6 or later and never fails a turn. It says nothing to the model; a warning shows
+in Codex's UI, once per window. It reads the rollouts Codex 0.161 to 0.166 write; the rollout is not a stable
+interface, so a line it cannot read is skipped.
+
+**`/pace` in Codex.** Codex refuses an unknown slash command, so `/pace` comes as the custom prompt `/prompts:pace`
+or the skill `$pace` (`node scripts/codex.ts install`), and the hook answers it: the answer shows in place of the
+prompt, which never reaches the model. In Herdr every view opens there first. Elsewhere `/pace` opens the charts in
+a tmux split, `band` and `fleet` likewise, `window` in a macOS terminal window; outside tmux they are drawn into the
+answer. `/pace plan [file] [file]` and `timeline` show the plan's timeline the same way. Auto mode runs in Codex:
+`/pace auto [plan] [turns]` sends the prompt on with auto mode's instructions, and at each turn's end the Stop hook
+sends the next prompt, ends the run when the plan is done or blocked, waits out a hold of up to nine minutes, and
+pauses a longer one until `/pace auto resume`; an interrupt pauses it too. `auto off`, `auto resume` and `auto burst
+[off]` work as in Claude Code. What Codex's hooks cannot do is said plainly: ultra pace (it changes the model and the
+effort turn by turn), on pace mode (it lowers the effort and compacts), warm mode (Codex reports no cache), and the
+band's and the status line's preferences (Codex has neither).
+
+**pi.** pace runs inside [pi](https://pi.dev) as an extension: the band above pi's editor and the quotas in its
+footer. Install it with `node scripts/pi.ts install`, which puts a one-line `~/.pi/agent/extensions/pace.ts` that
+loads this repo's `adapters/pi/extension.ts`, then restart pi or `/reload`. A pi session paces a quota only on a
+subscription sign-in: ChatGPT spends Codex's quota, Claude spends Claude's, so in the fleet pi's agents count under
+that provider. On an API key pi has no quota to pace, and pace stays out of the way.
+
+`/pace` is a pi command and answers in a notification, never in the conversation. In Herdr every view opens beside
+pi first, and over pi when Herdr cannot; elsewhere `/pace` opens the charts over pi (q or Escape
+closes them), `/pace fleet` the fleet, and `/pace split` in tmux the band in a split. `/pace hide` and `show`,
+`/pace line on` and `off` (the footer entry) and `/pace refresh` work as in Claude Code, shared by every pi session.
+`/pace on` turns on pace mode: it compacts a heavy context after a run while its cache is warm, keeps a large idle
+cache warm, and while the rate would gas a quota out each run goes one thinking level lower, the level coming back when
+the run ends. pi's cache is read from its replies: a reply that reads or writes it starts its hour. `/pace warm
+compact` compacts an idle cache with under ten minutes left; pi cannot ping its cache, so `warm ping` says so.
+Warnings are said once per window, as in Claude Code. Auto mode runs in pi as in Claude Code: `/pace auto [plan]
+[turns]` sends the first prompt with auto mode's instructions in the system prompt, and after each run sends the next,
+holds, pauses or stops as the plan and the quotas say; a handoff compacts, where Claude Code clears. `/pace plan` and
+`timeline` show the plan's timeline in a tmux split beside pi, or over it. Ultra pace is not in pi yet.
+
+pi is told nothing of the quotas, so pace estimates them from what pi spends (each reply's cost at pi's prices). A
+window opens with the first prompt after the last one ended and resets 5 hours (or a week) later; its use is what was
+spent in it over what it holds. What it holds is learned: when pi reaches a usage limit, the window held what was
+spent in it; when a Codex or Claude session is live beside pi, its real readings say it too. Until then the band
+shows each window's spend, its reset and the dollars an hour, with `% after a limit is reached`. Once learned, an
+estimate shows with a `~` (`5h ~42%`), and a real reading from the last ten minutes stands in its place. What is
+learned is kept for every pi session in `~/.local/state/pace/pi/<provider>.json`. Usage pace does not see (Codex on
+another machine, chatgpt.com) moves the real quota without moving the estimate, so a limit reached sooner than the
+estimate says resets what a window holds.
 
 **`/pace` in Herdr.** In a session running in Herdr, `/pace` opens the harness's charts in a Herdr pane beside
 it, ahead of tmux; `/pace band` opens the session's band under it and `/pace fleet` the fleet panel. Claude Code's
@@ -416,6 +463,8 @@ tab running `claude` or `codex --no-daemon` with the task. It never types into a
   credential.
 - **Spend:** the session's cost ledger, what `/cost` totals.
 - **Codex:** the `token_count` events in the session's rollout (`~/.codex/sessions/…`), read by the hook.
+- **pi:** estimates from each reply's cost, learned from a usage limit reached or a live feed's real readings (see
+  [pi](#codex-pi-and-herdr)). pi makes no request for pace.
 - **Limits:** usage pace can't see (claude.ai, another machine) moves a quota with no spend recorded, which makes
   a dollar look dearer. Readings are whole points, so a quota's price waits for 8 points of movement.
 
@@ -426,7 +475,8 @@ Files it writes in `~/.claude`: `pace-row.txt` (status-line row), and for each s
 and `pace-keys-<session>.json` (the window's feed and keys), `pace-view-<session>.command` (the window's launcher)
 and `pace-plan-<session>.json` (the plan sidebar's feed). Auto mode asks Claude to keep
 `.pace/handoff.md` in your project. In `~/.local/state/pace/`: `feeds/<host>-<session>.json` (each session's feed)
-and, for Codex, `codex/<session>.json` (how far into its rollout the hook has read).
+and, for Codex, `codex/<session>.json` (how far into its rollout the hook has read); for pi, `pi/<provider>.json`
+(what a window holds, as learned).
 
 ## How it is built
 
@@ -477,7 +527,7 @@ tsc -p .                     # the types
 
 # the core suite and the adapters' tests on Node
 node --import ./testing/register.ts --test tests/*.test.ts adapters/*/*.test.ts
-node --test testing/*.node-test.ts scripts/*.node-test.ts adapters/codex/*.node-test.ts bin/*.node-test.ts
+node --test testing/*.node-test.ts scripts/*.node-test.ts adapters/codex/*.node-test.ts adapters/pi/*.node-test.ts bin/*.node-test.ts
 
 node scripts/herdr.ts check  # the Herdr mod, and the core suite inside Herdr's runtime
 ```

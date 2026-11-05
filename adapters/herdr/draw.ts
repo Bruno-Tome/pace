@@ -32,13 +32,15 @@ export function colsFor(width: number, size: number): number {
   return Math.max(MIN_COLS, Math.floor((width - 2 * PAD) / colWidth(size)))
 }
 
-const PROVIDERS: readonly PaceProvider[] = ['claude', 'codex']
+const PROVIDERS: readonly PaceProvider[] = ['claude', 'codex', 'antigravity']
 
 /** The view a copy's props ask for (a `HerdrView`, as /pace opens it); the fleet panel for none, or for props it cannot read */
 export function viewOf(props: unknown): HerdrView {
   const p = typeof props === 'object' && props != null ? (props as Record<string, unknown>) : {}
   if (p.view === 'band' && typeof p.terminal === 'string' && p.terminal) return { view: 'band', terminal: p.terminal }
-  if (p.view === 'pane' && PROVIDERS.includes(p.provider as PaceProvider)) return { view: 'pane', provider: p.provider as PaceProvider }
+  if (p.view === 'pane' && PROVIDERS.includes(p.provider as PaceProvider)) {
+    return { view: 'pane', provider: p.provider as PaceProvider, ...(typeof p.account === 'string' && /^[0-9a-f]{16}$/.test(p.account) ? { account: p.account } : {}) }
+  }
   return { view: 'panel' }
 }
 

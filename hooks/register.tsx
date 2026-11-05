@@ -18,9 +18,12 @@ import type { ElementConstructor, EngineInterface as Engine, Register, RenderEle
 
 import type { Pace, PaceAuto, PaceCacheInfo, PaceCacheTtl, PaceGear, PaceSnapshot, PacePrefs, PaceReading, PaceSample, PaceSpend, PaceUltra, PaceWarmMode } from '../types'
 import { alertsOf } from '../core/alerts.ts'
+import { AUTO_TURNS, commandOf, DEFAULT_PLAN, ULTRA_TURNS, USAGE, type PaceCommand } from '../core/command.ts'
+import { route, type Host, type PaceAction, type Surface } from '../core/api.ts'
+import { accountId, numbered, type Accounts } from '../core/account.ts'
 import { feedFile, type PaceFeed } from '../core/host.ts'
 import { ALREADY_OPEN, herdrOpen, herdrReuse, paceViewOf, registryIn, sharedFile } from '../adapters/herdr/open.ts'
-import { keysFile, planFeedFile, ROW_FILE, stateFile, viewFile } from './files.ts'
+import { ACCOUNTS_FILE, KEY_FILE, keysFile, planFeedFile, ROW_FILE, stateFile, viewFile } from './files.ts'
 import { isSessionKey, isStale, prefsFrom, sessionKey, sessionOf, sharedOf } from '../core/prefs.ts'
 import { answerQuestions, continuePrompt, decide, effortFor, forModel, HANDOFF_FILE, pacingNote, protocol, startPrompt, upkeep, warmModeFor, type Decision } from '../core/auto.ts'
 import { addPrice, priceOf, replyEquivalents, ttlSeconds, warmAction } from '../core/cache.ts'
@@ -37,7 +40,6 @@ import { bandLines, fittedLayout, paneLayout, lineText, pairWidth, paneLines, pi
 
 const PANE = 'pace'
 /** The plan `/pace auto` works through when it is given none */
-const DEFAULT_PLAN = 'ROADMAP.md'
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
 const MIN = 60_000
 const DEFAULT_PREFS: PacePrefs = { band: true, line: true, warm: 'off' }
@@ -279,10 +281,42 @@ async function writeState($: Engine, s: Snapshot, now: number): Promise<void> {
 }
 
 /** Writes this session's host feed, for the band beside other hosts and Herdr's fleet: aside, then moved into place */
+/** The account this session's feed names, worked out once per email; undefined signed out */
+let accountCache: { email: string; id: string } | undefined
+
+/**
+ * The account Claude Code is signed in with (.agents/decisions/0017-quota-is-provider-and-account.md): the email in
+ * ~/.claude.json hashed under pace's key (core/account.ts), the key made on first use, the account numbered as
+ * first seen. No email is written
+ */
+async function accountOf($: Engine, home: string): Promise<string | undefined> {
+  const root = await $.fs.read(`${home}/.claude.json`).then(t => JSON.parse(String(t)) as { oauthAccount?: { emailAddress?: unknown } }).catch(() => null)
+  const email = root?.oauthAccount?.emailAddress
+  if (typeof email !== 'string' || !email.includes('@')) return undefined
+  if (accountCache?.email === email) return accountCache.id
+  const keyPath = `${home}/${KEY_FILE}`
+  let key = String(await $.fs.read(keyPath).catch(() => '')).trim()
+  if (!/^[0-9a-f]{64}$/.test(key)) {
+    key = [...crypto.getRandomValues(new Uint8Array(32))].map(b => b.toString(16).padStart(2, '0')).join('')
+    await $.fs.write(keyPath, key)
+    await $.process.run(['/bin/chmod', '600', keyPath]).catch(() => null)
+  }
+  const id = accountId(email, key)
+  const accountsPath = `${home}/${ACCOUNTS_FILE}`
+  const before = await $.fs.read(accountsPath).then(t => JSON.parse(String(t)) as Accounts).catch((): Accounts => ({}))
+  const after = numbered(before && typeof before === 'object' ? before : {}, 'claude', id)
+  if (after !== before) await $.fs.write(accountsPath, JSON.stringify(after))
+  accountCache = { email, id }
+  return id
+}
+
 async function writeFeed($: Engine, s: Snapshot, now: number): Promise<void> {
   const terminal = await $.env.get('HC_TERMINAL_ID')
+  const home = await homeOf($)
+  if (!home) return
+  const account = await accountOf($, home)
   const feed: Omit<PaceFeed, 'at'> = {
-    version: 1, host: 'claude', provider: 'claude', session: spendId,
+    version: 1, host: 'claude', provider: 'claude', ...(account ? { account } : {}), session: spendId,
     ...(terminal ? { terminal } : {}),
     cwd,
     snapshot: { ...s, samples: s.samples.filter(x => x.at >= now - STATE_SPAN) },
@@ -290,8 +324,6 @@ async function writeFeed($: Engine, s: Snapshot, now: number): Promise<void> {
   }
   const text = JSON.stringify(feed)
   if (text === lastFeed && now - lastFeedAt < MIN) return
-  const home = await homeOf($)
-  if (!home) return
   const path = `${home}/${feedFile('claude', spendId)}`
   await $.fs.write(`${path}.tmp`, JSON.stringify({ ...feed, at: now }))
   await $.process.run(['/bin/mv', `${path}.tmp`, path])
@@ -365,15 +397,15 @@ async function openSplit($: Engine): Promise<'opened' | 'open' | false> {
 async function openHerdr($: Engine, arg: string): Promise<string | null> {
   const terminal = await $.env.get('HC_TERMINAL_ID')
   const herdrOnly = arg === 'band' || arg === 'fleet'
-  if (!terminal) return herdrOnly ? `/pace ${arg} opens in Herdr, and this session is not running in Herdr` : null
-  const view = paceViewOf(arg, 'claude', terminal)
+  if (!terminal) return null
+  const view = paceViewOf(arg, 'claude', terminal, accountCache?.id)
   if (!view) return null
   const shared = sharedFile((await $.env.get('HERDR_APP_HOME')) || `${await homeOf($)}/.config/herdr-app`)
   const reuse = herdrReuse(await $.fs.read(shared).then(t => registryIn(String(t))).catch(() => ({})), view)
   if (reuse && (await $.process.run(reuse).catch(() => null))?.exitCode === 0) return ALREADY_OPEN
   for (const argv of herdrOpen(terminal, view)) {
     const r = await $.process.run(argv).catch(() => null)
-    if (r?.exitCode !== 0) return herdrOnly ? 'Could not open pace in Herdr: is herdr-app on the PATH?' : null
+    if (r?.exitCode !== 0) return null
   }
   return `Pace opened in Herdr${herdrOnly ? `: ${arg}` : ''}`
 }
@@ -624,10 +656,6 @@ const AUTO_PANE = 'pace-auto'
 const PLAN_PANE = 'pace-plan'
 /** Columns the plan sidebar takes in tmux */
 const SIDEBAR_COLUMNS = 46
-/** Turns auto mode takes before it stops to let the person look */
-const AUTO_TURNS = 40
-/** Turns ultra pace takes before it stops: more than auto mode, since it plans and reviews as well as works */
-const ULTRA_TURNS = 80
 /** The model ultra pace drops to at its lightest, unless told otherwise */
 const ULTRA_FLOOR = 'sonnet'
 /** A plan waiting on the onboarding pane's Start, and ultra pace's run on it */
@@ -1030,28 +1058,15 @@ function drawOnboarding($: Engine, e: RenderInput<'Pane'>): RenderElement {
 }
 
 /** `/pace on | off | auto …`: on pace mode and auto mode; null for any other argument */
-async function modeCommand($: Engine, raw: string): Promise<string | null> {
-  const arg = raw.toLowerCase()
-  if (arg === 'on' || arg === 'off') {
-    await setPrefs($, p => ({ ...p, onPace: arg === 'on' }))
-    return arg === 'on'
-      ? 'On pace mode on: compacts a heavy context while its cache is warm, keeps an idle cache warm, and warns before a quota gasses out'
-      : 'On pace mode off'
-  }
-  if (arg === 'ultra' || arg.startsWith('ultra ')) return ultraCommand($, raw.slice(5).trim())
-  if (arg !== 'auto' && !arg.startsWith('auto ')) return null
-  const rest = raw.slice(4).trim()
-  if (rest.toLowerCase() === 'off') {
-    holdTimer?.cancel()
-    await setAuto($, null)
-    return 'Auto mode off'
-  }
-  if (rest.toLowerCase() === 'resume') return resumeAuto($)
-  if (/^burst( on| off)?$/i.test(rest)) return burstCommand($, !/off$/i.test(rest))
-  const m = /^(\S+)(?:\s+(\d+))?$/.exec(rest || DEFAULT_PLAN)
-  if (!m) return 'Use /pace auto [plan file] [turns], /pace auto off or /pace auto resume'
-  const plan = m[1]!
-  const max = m[2] ? Math.max(1, Number(m[2])) : AUTO_TURNS
+/** `/pace auto off` and `/pace ultra off` */
+async function stopCommand($: Engine, ultra: boolean): Promise<string> {
+  holdTimer?.cancel()
+  await setAuto($, null)
+  return ultra ? 'Ultra pace off' : 'Auto mode off'
+}
+
+/** `/pace auto [plan] [turns]`: the first run of all shows what auto mode does before it starts */
+async function autoCommand($: Engine, plan: string, max: number): Promise<string> {
   if (!((await read($, prefsA)) ?? DEFAULT_PREFS).onboarded) {
     pendingPlan = { plan, max }
     await $.ui.open({ id: AUTO_PANE, title: 'Pace · auto mode', rows: 12, focus: true, closeOnEscape: true })
@@ -1095,29 +1110,22 @@ async function burstCommand($: Engine, on: boolean): Promise<string> {
     : 'Burst off: auto mode holds again while the rate would gas a quota out'
 }
 
-/** `/pace ultra [plan] [turns] [floor..ceiling] | off | resume` */
-async function ultraCommand($: Engine, rest: string): Promise<string> {
-  if (rest.toLowerCase() === 'off') {
-    holdTimer?.cancel()
-    await setAuto($, null)
-    return 'Ultra pace off'
-  }
-  if (rest.toLowerCase() === 'resume') return resumeAuto($)
-  if (rest.toLowerCase() === 'preview') {
-    await update($, previewA, () => 0)
-    const now = await $.clock.now()
-    await update($, previewA, () => now + PREVIEW_MS)
-    timers.push($.clock.after(PREVIEW_MS, () => { void update($, previewA, () => 0).catch(() => {}) }))
-    return `Preview: ultra pace in push on the band for ${PREVIEW_MS / 1000} seconds`
-  }
-  const m = /^(\S+)?(?:\s+(\d+))?(?:\s+([\w.-]+)\.\.([\w.-]+))?$/.exec(rest)
-  if (!m) return 'Use /pace ultra [plan file] [turns] [floor..ceiling], /pace ultra off or /pace ultra resume'
-  const plan = m[1] ?? DEFAULT_PLAN
-  const max = m[2] ? Math.max(1, Number(m[2])) : ULTRA_TURNS
+/** `/pace ultra preview`: ultra pace's push on the band for a while */
+async function previewCommand($: Engine): Promise<string> {
+  await update($, previewA, () => 0)
+  const now = await $.clock.now()
+  await update($, previewA, () => now + PREVIEW_MS)
+  timers.push($.clock.after(PREVIEW_MS, () => { void update($, previewA, () => 0).catch(() => {}) }))
+  return `Preview: ultra pace in push on the band for ${PREVIEW_MS / 1000} seconds`
+}
+
+/** `/pace ultra [plan] [turns] [floor..ceiling]` */
+async function ultraCommand($: Engine, c: Extract<PaceCommand, { kind: 'ultra' }>): Promise<string> {
+  const { plan, max } = c
   const goal = goalOf(await fileText($, plan).catch(() => ''))
   if (!goal) return `${plan} has no ## Goal: ultra pace works toward one. Add the goal, its Done when lines and a Check: command`
-  const ceiling = m[4] ?? (await modelOf($)) ?? ULTRA_FLOOR
-  const models = { floor: m[3] ?? ULTRA_FLOOR, ceiling }
+  const ceiling = c.ceiling ?? (await modelOf($)) ?? ULTRA_FLOOR
+  const models = { floor: c.floor ?? ULTRA_FLOOR, ceiling }
   const ultra: PaceUltra = {
     goal: goal.text, check: goal.check, phase: 'plan', sinceReview: 0, quietReviews: 0, checkFails: 0, models,
     gear: startingGear({ ...models, model: ceiling, effort: lastEffort }), headroomStreak: 0,
@@ -1137,72 +1145,91 @@ async function ultraCommand($: Engine, rest: string): Promise<string> {
 
 /** `/pace …` run: what it answers, from the prompt or from a button in the window; `columns` sizes the pane */
 async function paceCommand($: Engine, args: string, columns: number): Promise<string> {
-  const raw = args.trim().replace(/\s+/g, ' ')
-  const arg = raw.toLowerCase()
-  const mode = await modeCommand($, raw)
-  if (mode != null) return mode
-  if (arg === 'hide' || arg === 'show') {
-    await setPrefs($, p => ({ ...p, band: arg === 'show' }))
-    return arg === 'show' ? 'Pace band shown' : 'Pace band hidden; /pace show brings it back'
-  }
-  if (arg === 'line on' || arg === 'line off') {
-    await setPrefs($, p => ({ ...p, line: arg === 'line on' }))
-    return `Pace status line ${arg === 'line on' ? 'on' : 'off'}`
-  }
-  if (arg.startsWith('warm ')) {
-    const mode = arg.slice(5) as PaceWarmMode
-    if (mode !== 'off' && mode !== 'compact' && mode !== 'ping') return 'Use /pace warm compact, ping or off'
-    await setPrefs($, p => ({ ...p, warm: mode }))
-    warmActions = 0
-    return mode === 'off'
-      ? 'Warm mode off'
-      : `Warm mode ${mode}: with under 10 minutes of cache left and Claude idle, ${mode === 'compact' ? 'runs /compact (once until your next prompt)' : 'pings the cache through a fork (up to 3 times until your next prompt)'}`
-  }
-  if (arg === 'refresh') {
-    const ok = await refreshAll($)
-    return ok ? 'Pace figures refreshed' : 'Could not reach the usage endpoint; showing the latest local figures'
-  }
-  if (arg === 'plan' || arg.startsWith('plan ')) {
-    planShown = raw.slice(4).trim() || null
-    const where = await openPlan($)
-    return `Plan timeline opened ${where === 'split' ? 'in a tmux sidebar' : 'in a pane'}: ${(await shownPlans($)).map(p => p.plan).join(' beside ')}`
-  }
-  if (arg === 'timeline') {
-    // The split's timeline button: the plan's timeline under the Pace split, closed again when it is open; the
-    // sidebar beside Claude without a split
-    if (planSplit && (await $.process.run(['tmux', 'display-message', '-p', '-t', planSplit, '#{pane_id}'])).exitCode === 0) {
-      await killPanes($, [planSplit])
-      return 'Plan timeline closed'
+  const c = commandOf(args)
+  const a = route(c, await claudeHost($))
+  switch (a.kind) {
+    case 'say': return a.text
+    case 'prefs': {
+      const { band, line, onPace, warm } = a.prefs
+      await setPrefs($, p => ({ ...p, ...(band != null ? { band } : {}), ...(line != null ? { line } : {}), ...(onPace != null ? { onPace } : {}), ...(warm ? { warm } : {}) }))
+      if (warm) warmActions = 0
+      return a.text
     }
-    if (splitPane && (await openPlanSplit($, true).catch(() => false))) return `Plan timeline opened under the Pace split: ${(await shownPlans($)).map(p => p.plan).join(' beside ')}`
-    const where = await openPlan($)
-    return `Plan timeline opened ${where === 'split' ? 'in a tmux sidebar' : 'in a pane'}: ${(await shownPlans($)).map(p => p.plan).join(' beside ')}`
+    case 'stop': return stopCommand($, a.ultra)
+    case 'resume': return resumeAuto($)
+    case 'burst': return burstCommand($, a.on)
+    case 'auto': return autoCommand($, a.plan, a.max)
+    case 'ultra': return ultraCommand($, a)
+    case 'preview': return previewCommand($)
+    case 'refresh': {
+      const ok = await refreshAll($)
+      return ok ? a.text : 'Could not reach the usage endpoint; showing the latest local figures'
+    }
+    case 'close':
+      // The viewer quitting: its timeline pane goes with it, and the next /pace opens a fresh split
+      await killPanes($, [planSplit])
+      splitPane = undefined
+      feeding = false
+      return 'Pace split closed'
+    case 'open':
+      if (a.view === 'plan') return c.kind === 'timeline' ? timelineCommand($) : planCommand($, c.kind === 'plan' ? c.files : [])
+      await tick($)
+      return openAt($, a, columns)
   }
-  if (arg === 'close') {
-    // The viewer quitting: its timeline pane goes with it, and the next /pace opens a fresh split
+}
+
+/** Claude Code as pace's host: Herdr and tmux where it runs in them, its pane, a window, the band, the status line, toasts; pace drives it all */
+async function claudeHost($: Engine): Promise<Host> {
+  const surfaces: Surface[] = [...((await $.env.get('HC_TERMINAL_ID')) ? ['herdr' as const] : []), ...((await inTmux($)) ? ['split' as const] : []), 'pane', 'window', 'band', 'status', 'toast']
+  return { name: 'Claude Code', input: 'prompt', surfaces, drives: ['prompt', 'compact', 'clear', 'effort', 'model', 'ping'], cache: true }
+}
+
+async function planCommand($: Engine, files: readonly string[]): Promise<string> {
+  planShown = files.join(' ') || null
+  const where = await openPlan($)
+  return `Plan timeline opened ${where === 'split' ? 'in a tmux sidebar' : 'in a pane'}: ${(await shownPlans($)).map(p => p.plan).join(' beside ')}`
+}
+
+/** The split's timeline button: the plan's timeline under the Pace split, closed again when it is open; the sidebar beside Claude without a split */
+async function timelineCommand($: Engine): Promise<string> {
+  if (planSplit && (await $.process.run(['tmux', 'display-message', '-p', '-t', planSplit, '#{pane_id}'])).exitCode === 0) {
     await killPanes($, [planSplit])
-    splitPane = undefined
-    feeding = false
-    return 'Pace split closed'
+    return 'Plan timeline closed'
   }
-  if (arg && arg !== 'pane' && arg !== 'window' && arg !== 'split' && arg !== 'band' && arg !== 'fleet') return `Unknown argument "${arg}": use ${USAGE}`
-  await tick($)
-  const herdr = arg === 'pane' || arg === 'window' ? null : await openHerdr($, arg).catch(() => null)
-  if (herdr) return herdr
-  if (arg === 'window') {
-    let opened = false
-    try { opened = await openWindow($) } catch {}
-    if (opened) return 'Pace window opened; q closes it'
-  } else if (arg !== 'pane') {
-    let split: 'opened' | 'open' | false = false
-    try { split = await openSplit($) } catch {}
-    if (split === 'opened') return 'Pace opened in a tmux split; q there closes it'
-    if (split === 'open') return 'Pace is already open in a tmux split'
+  if (splitPane && (await openPlanSplit($, true).catch(() => false))) return `Plan timeline opened under the Pace split: ${(await shownPlans($)).map(p => p.plan).join(' beside ')}`
+  return planCommand($, [])
+}
+
+/** A view opened where core/api.ts routed it: Herdr, a tmux split or a window, each falling back to Claude's own pane */
+async function openAt($: Engine, a: Extract<PaceAction, { kind: 'open' }>, columns: number): Promise<string> {
+  switch (a.surface) {
+    case 'herdr': {
+      const opened = await openHerdr($, a.view === 'pane' ? '' : a.view).catch(() => null)
+      if (opened) return opened
+      if (a.fallback?.kind === 'open') return openAt($, a.fallback, columns)
+      return `Could not open pace in Herdr: is herdr-app on the PATH?${a.fallback?.kind === 'say' ? ` ${a.fallback.text}` : ''}`
+    }
+    case 'split': {
+      let split: 'opened' | 'open' | false = false
+      try { split = await openSplit($) } catch {}
+      if (split === 'opened') return 'Pace opened in a tmux split; q there closes it'
+      if (split === 'open') return 'Pace is already open in a tmux split'
+      return openPane($, columns, 'Not inside tmux; ')
+    }
+    case 'window': {
+      let opened = false
+      try { opened = await openWindow($) } catch {}
+      return opened ? 'Pace window opened; q closes it' : openPane($, columns, 'Could not open a terminal window; ')
+    }
+    default: return openPane($, columns, a.note ? `${a.note}; ` : '')
   }
+}
+
+/** Claude's own pace pane, saying `why` it opened there instead */
+async function openPane($: Engine, columns: number, why: string): Promise<string> {
   const lines = paneLines(await snapshot($), await $.clock.now(), paneLayout(Math.max(40, columns - 4), DEFAULT_PREFS))
   await $.ui.open({ id: PANE, title: 'Pace', rows: lines.length + 4, columns: 80, focus: true, closeOnEscape: true })
-  if (surface !== 'terminal') return arg === 'pane' ? 'Pace pane opened' : 'Pace split opened in a pane'
-  const why = arg === 'window' ? 'Could not open a terminal window; ' : arg === 'split' ? 'Not inside tmux; ' : ''
+  if (surface !== 'terminal') return 'Pace pane opened'
   return `${why}Pace pane opened${why ? ' here' : ''}`
 }
 
@@ -1211,8 +1238,6 @@ function say($: Engine, text: string): {} {
   $.ui.toast(text)
   return {}
 }
-
-const USAGE = 'split | pane | window | band | fleet | refresh | timeline | close | on | off | auto [plan] [turns] | auto off | auto resume | auto burst [off] | ultra [plan] [turns] [floor..ceiling] | ultra off | ultra resume | ultra preview | plan [file] [file] | hide | show | line on | line off | warm compact | warm ping | warm off'
 
 export const register: Register = (on, options) => {
   placement = options.placement === 'status' ? 'status' : 'above'
@@ -1319,7 +1344,8 @@ export const register: Register = (on, options) => {
     let step = e
     if (e.agentId === undefined && ultra) {
       mainModel = mainModelFor(ultra.gear, mainModel, !published || coldAt(published, await $.clock.now()))
-      step = { ...e, model: requestModel(mainModel, e.model), ...(e.effort != null ? { effort: ultra.gear.effort } : {}) }
+      // Claude Code's gears come from Claude's ladder (core/gears.ts), so the effort is one of its own
+      step = { ...e, model: requestModel(mainModel, e.model), ...(e.effort != null ? { effort: ultra.gear.effort as NonNullable<typeof e.effort> } : {}) }
     } else if (prefs.onPace && published && e.effort != null) {
       step = { ...e, effort: effortFor(forModel(published, e.model), e.effort) }
     }

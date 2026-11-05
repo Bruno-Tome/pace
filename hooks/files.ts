@@ -10,3 +10,7 @@ export const viewFile = (session: string) => `.claude/pace-view-${session}.comma
 export const keysFile = (session: string) => `.claude/pace-keys-${session}.json`
 /** The plan sidebar's feed for one session, a `PlanFeed`: the mod writes it, bin/plan-viewer.ts reads it */
 export const planFeedFile = (session: string) => `.claude/pace-plan-${session}.json`
+
+/** pace's key for hashing account emails, and the accounts numbered as first seen (adapters/account.ts writes the same) */
+export const KEY_FILE = '.local/state/pace/key'
+export const ACCOUNTS_FILE = '.local/state/pace/accounts.json'

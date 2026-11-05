@@ -1,7 +1,7 @@
-import { expect, test } from 'claude-code/testing'
+import { describe, expect, test } from 'claude-code/testing'
 
 import type { PaceUltra } from '../types'
-import { prefsFrom } from '../core/prefs.ts'
+import { autoOf, prefsFrom } from '../core/prefs.ts'
 
 const ULTRA: PaceUltra = {
   goal: 'pace ships 1.0 with CI green.', check: 'claude plugin test .',
@@ -49,4 +49,13 @@ test('a fan-out\'s reports read back with it; a run stored before them reads wit
   const out = { agentIds: ['a1', 'a2'], steps: ['x', 'y'] }
   expect(prefsFrom({}, { at: 0, auto: { ...RUN, ultra: { ...ULTRA, fanout: { ...out, reported: ['a1'] } } } }).auto?.ultra?.fanout).toEqual({ ...out, reported: ['a1'] })
   expect(prefsFrom({}, { at: 0, auto: { ...RUN, ultra: { ...ULTRA, fanout: out } } }).auto?.ultra?.fanout).toEqual(out)
+})
+
+describe('auto mode\'s run with gears', () => {
+  test('reads back the gears an ultra run shifts on a host other than Claude Code', () => {
+    const gear = { model: 'm', effort: 'low', subagents: 1, subagentModel: '', fanout: false }
+    const gears = { floor: 'm', ceiling: 'n', model: 'n', effort: 'medium', gear, streak: 1 }
+    expect(autoOf({ plan: 'P.md', turns: 2, max: 80, gears })).toEqual({ plan: 'P.md', turns: 2, max: 80, gears })
+    expect(autoOf({ plan: 'P.md', turns: 2, max: 80, gears: { floor: 3 } })).toEqual({ plan: 'P.md', turns: 2, max: 80 })
+  })
 })

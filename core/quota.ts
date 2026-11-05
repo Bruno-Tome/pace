@@ -13,24 +13,29 @@ export const WEEK = 7 * 86400
 // Quotas by key
 // ----------------------------------------------------------------------
 
-/** `five_hour`, `seven_day` (all models) and `seven_day_<model>` (one model's week) */
+/**
+ * `five_hour`, `seven_day` (all models), `seven_day_<model>` (one model's week) and `five_hour_<model>` (one model's
+ * 5-hour window, as Antigravity has)
+ */
 export const isWeekly = (key: string) => key.startsWith('seven_day')
-export const isPerModel = (key: string) => key.startsWith('seven_day_')
+const isModelFive = (key: string) => key.startsWith('five_hour_')
+export const isPerModel = (key: string) => key.startsWith('seven_day_') || isModelFive(key)
 
 export const windowOf = (key: string) => (isWeekly(key) ? WEEK : FIVE_HOURS)
 
-const modelOf = (key: string, name?: string) => name ?? key.slice('seven_day_'.length).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+const modelOf = (key: string, name?: string) => name ?? key.replace(/^(seven_day|five_hour)_/, '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 
 export function quotaName(key: string, name?: string): string {
   if (key === 'five_hour') return '5-hour window'
   if (key === 'seven_day') return 'Week · all models'
+  if (isModelFive(key)) return `5-hour · ${modelOf(key, name)}`
   return `Week · ${modelOf(key, name)}`
 }
 
 export function shortName(key: string, name?: string): string {
   if (key === 'five_hour') return '5h'
   if (key === 'seven_day') return '7d'
-  return `${modelOf(key, name)} wk`
+  return `${modelOf(key, name)} ${isModelFive(key) ? '5h' : 'wk'}`
 }
 
 /**
@@ -38,6 +43,7 @@ export function shortName(key: string, name?: string): string {
  * week (`seven_day_fable`) only when the model is that one; every quota while the model is not known yet
  */
 export function drawsOn(key: string, model: string | undefined): boolean {
+  if (model && isModelFive(key)) return model.toLowerCase().replace(/[^a-z0-9]+/g, '_').includes(key.slice('five_hour_'.length))
   if (!model || !key.startsWith('seven_day_')) return true
   const family = key.slice('seven_day_'.length).split('_')[0]!
   return model.toLowerCase().includes(family)
@@ -61,7 +67,7 @@ export const theName = (name: string) => `the ${name.startsWith('5-hour') ? name
 /** A week's model alone, for advice: `Fable`, `All models` */
 export const modelName = (key: string, name?: string) => (isPerModel(key) ? modelOf(key, name) : key === 'seven_day' ? 'All models' : '5-hour')
 
-const order = (key: string) => (key === 'five_hour' ? 0 : key === 'seven_day' ? 1 : 2)
+const order = (key: string) => (key === 'five_hour' ? 0 : key === 'seven_day' ? 1 : isModelFive(key) ? 2 : 3)
 
 /**
  * Each history's quotas, worked out once: a drawing asks for them again and again of the same history, and a week
@@ -74,7 +80,7 @@ export function quotaKeys(samples: readonly PaceSample[]): string[] {
   const known = knownKeys.get(samples)
   if (known) return [...known]
   const keys = new Set<string>()
-  for (const s of samples) for (const [k, r] of Object.entries(s.quotas)) if (r.resetsAt != null && (k === 'five_hour' || isWeekly(k))) keys.add(k)
+  for (const s of samples) for (const [k, r] of Object.entries(s.quotas)) if (r.resetsAt != null && (k === 'five_hour' || isModelFive(k) || isWeekly(k))) keys.add(k)
   const sorted = [...keys].sort((a, b) => order(a) - order(b) || (a < b ? -1 : 1))
   knownKeys.set(samples, sorted)
   return [...sorted]

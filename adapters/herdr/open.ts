@@ -4,11 +4,16 @@
 import type { PaceProvider } from '../../core/host.ts'
 
 /** A view of the pace mod, as the props of its pane: a harness's charts, one agent's band, or the fleet panel */
-export type HerdrView = { view: 'pane'; provider: PaceProvider } | { view: 'band'; terminal: string } | { view: 'panel' }
+/** A pace pane in Herdr: a quota's charts (its provider, and its account when known), an agent's band, the fleet */
+export type HerdrView = { view: 'pane'; provider: PaceProvider; account?: string } | { view: 'band'; terminal: string } | { view: 'panel' }
 
-/** What /pace opens in Herdr, by its argument: the harness's charts alone, `band` or `fleet`; null for the rest */
-export function paceViewOf(arg: string, provider: PaceProvider, terminal: string): HerdrView | null {
-  if (arg === '' || arg === 'split') return { view: 'pane', provider }
+/**
+ * What /pace opens in Herdr, by its argument: the harness's charts for `/pace`, `split`, `pane` and `window`, the band
+ * for `band`, the fleet for `fleet`; null for what is not a view. In Herdr every view goes through it first
+ * (.agents/decisions/0001-herdr-first.md)
+ */
+export function paceViewOf(arg: string, provider: PaceProvider, terminal: string, account?: string): HerdrView | null {
+  if (arg === '' || arg === 'split' || arg === 'pane' || arg === 'window') return { view: 'pane', provider, ...(account ? { account } : {}) }
   if (arg === 'band') return { view: 'band', terminal }
   if (arg === 'fleet') return { view: 'panel' }
   return null
@@ -36,7 +41,7 @@ export const PANES_KEY = 'pace.panes'
 
 /** A view's key in the registry: `pane:claude`, `band:t8`, `panel` */
 export function viewKey(view: HerdrView): string {
-  if (view.view === 'pane') return `pane:${view.provider}`
+  if (view.view === 'pane') return `pane:${view.provider}${view.account ? `:${view.account}` : ''}`
   if (view.view === 'band') return `band:${view.terminal}`
   return 'panel'
 }

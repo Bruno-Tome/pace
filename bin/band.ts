@@ -4,6 +4,7 @@
 //   node bin/band.ts [feed file]       that feed's band; without one, the newest live feed's
 //   node bin/band.ts --terminal <id>   the band of the agent in that Herdr terminal (HC_TERMINAL_ID)
 //   node bin/band.ts --fleet           every provider's quotas, the one with the most room first, with its agents
+//   --pane                             the feed's charts, as /pace's pane draws them, for a host with no pane (Codex)
 //   --once                             draws once and exits, for a script or a test
 //
 // Reads the feeds in ~/.local/state/pace/feeds/, redraws when they change, every second for the clocks, and on
@@ -14,11 +15,12 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import { agentOf, FEEDS_DIR, feedFor, feedOf, fleetOf, type PaceFeed } from '../core/host.ts'
-import { agentLine, bandLines, fleetLines, toAnsi, type Line } from '../core/view.ts'
+import { agentLine, bandLines, fleetLines, paneLayout, paneLines, toAnsi, type Line } from '../core/view.ts'
 
 const args = process.argv.slice(2)
 const once = args.includes('--once')
 const fleet = args.includes('--fleet')
+const pane = args.includes('--pane')
 const terminal = args.includes('--terminal') ? args[args.indexOf('--terminal') + 1] : undefined
 const file = args.find((a, i) => !a.startsWith('--') && args[i - 1] !== '--terminal')
 const dir = join(homedir(), FEEDS_DIR)
@@ -42,7 +44,7 @@ function frame(now: number, cols: number): Line[] {
   // A file given is drawn however old it is: it was asked for by name
   const feed = file ? (all[0] ?? null) : feedFor(all, now, terminal)
   if (!feed) return [[{ t: terminal ? `waiting for ${terminal}: no live feed from it yet` : 'waiting for an agent: no live feed yet', dim: true }]]
-  return [agentLine(agentOf(feed), now), ...bandLines(feed.snapshot, now, cols)]
+  return [agentLine(agentOf(feed), now), ...(pane ? paneLines(feed.snapshot, now, paneLayout(cols)) : bandLines(feed.snapshot, now, cols))]
 }
 
 function draw(): void {

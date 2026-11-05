@@ -20,7 +20,9 @@ These are not optional. A change that skips one is not done.
 5. **The contract moves on purpose.** A change to `types/index.d.ts` or a stored shape is additive, documented
    in `CHANGELOG.md` under *Unreleased*, and read back safely from older data.
 6. **Nothing in the transcript, nothing off the machine.** `/pace` answers in toasts and panes, never in the
-   conversation. No telemetry: the only network call is the usage endpoint, and warm mode's one-word ping.
+   conversation. No telemetry: the only network call is the usage endpoint, and warm mode's one-word ping. A call
+   on loopback to a harness's own server (Antigravity's, for its quotas) stays on the machine and is allowed
+   ([ADR 0020](decisions/0020-antigravity-cli.md)). An account is a keyed hash of its email; no email is written.
 7. **Ask before what can't be undone.** Commits, pushes, deleting files and anything that leaves the machine wait
    for the user.
 
@@ -66,7 +68,8 @@ Writing the test:
 ## Architecture
 
 pace is a core of pure functions, host-agnostic, with a thin adapter for each host it runs under: Claude Code,
-Codex and Herdr. [hosts.md](hosts.md) is the spec for the hosts.
+Codex, pi and Herdr. [hosts.md](hosts.md) is the spec for the hosts; the decisions that shape them are in
+[decisions/](decisions/README.md), the first being that [Herdr comes first](decisions/0001-herdr-first.md) for every command.
 
 ```
 hooks/register.tsx  the Claude Code adapter: hooks, commands, state atoms, the shared store. The only module that
@@ -84,29 +87,51 @@ core/auto.ts        auto mode and on pace mode, as decisions the shell carries o
 core/throttle.ts    ultra pace's headroom and the gear it allows
 core/ultra.ts       ultra pace, as decisions on top of auto mode's
 core/alerts.ts      warnings, keyed so each is said once per window
-core/host.ts        the feed every host writes (PaceFeed), and the fleet: providers side by side
+core/api.ts         the one surface hosts call (ADRs 0018, 0022): a host declares its surfaces and what it can do
+                    to its agent; route() turns a /pace command into what it does there, stepOf() auto mode's
+                    decision, warmStep() warm mode's, viewLines() any view for any surface
+core/meter.ts       what a host meters (prompts, readings, spend, cache, context), into its session's feed; the feed
+                    carries its whole quota's history, every harness on the provider and account
+core/account.ts     an account as a keyed hash of its email (HMAC-SHA-256, plain TypeScript), numbered, labelled
+core/gears.ts       ultra pace's ladders: each provider's models and thinking levels, lightest first, and a notch on one
+core/command.ts     /pace's arguments as a command, read once for every host; its defaults and usage
+core/estimate.ts    quotas a host is told nothing of, estimated from its spend: windows, capacities learned
+core/host.ts        the feed every host writes (PaceFeed), and the fleet: one row per quota, provider and account
 core/view.ts        every drawing as lines of styled segments, the fleet's too
 core/chart.ts       braille burn-up charts
 core/plan.ts        the plan's checklist as steps on a timeline
 core/timeline.ts    the plan timeline's animation as frames, shared by the pane and the sidebar
+adapters/account.ts the account a Node adapter's session spends: pace's key made once, the email hashed, numbered
+adapters/acp/       proxy.ts: pace between an ACP client and agent, the traffic as metered events, pure
+adapters/antigravity/ status.ts: GetUserStatus read into readings, the server found, pure; feed.ts: the hook's input
+                    and the shared history, pure; server.ts: the server asked on loopback; hook.ts: the hook
+adapters/hermes/    events.ts: Hermes's providers, windows and its two modes as hosts, pure; plugin/: the Hermes plugin
+                    (Python) that hands its events to bin/pace-hermes.ts
+adapters/views.ts   a view opened where the core routed it, for the Node bridges
 adapters/codex/     rollout.ts: Codex's rollout and hook input, pure; hook.ts: the hook that writes the feed;
                     open.ts: /pace's views opened in Herdr; pace.md and skill/: /prompts:pace and $pace
 adapters/herdr/     main.ts: the Herdr mod, three views; draw.ts: segments as the theme's colors, which view, pure;
                     open.ts: the herdr-app commands /pace runs to open a view beside a session, pure
+adapters/pi/        feed.ts: the quota a pi session spends and its feed, pure; commands.ts: pi's thinking levels,
+                    pure; extension.ts: the pi extension that writes the feed, draws the band and runs /pace
 bin/viewer.ts       the full-screen window, a Node process fed through a state file
 bin/plan-viewer.ts  the plan's timeline as a tmux sidebar, fed through a file per session
 bin/band.ts         the band or the fleet, live, in any terminal, from the feeds
+bin/pace-hermes.ts  the Hermes bridge: the plugin's events in, the core run on them, replies and prompts out
+bin/pace-acp.ts     pace as an ACP proxy: `pace-acp -- <agent>`; meters, answers /pace, runs auto mode
 testing/            expect.ts: the matchers, host-neutral; node.ts and register.ts: the suite on node:test;
                     herdr.ts: the suite inside Herdr; load.ts: feeds the size real use makes
 scripts/herdr.ts    builds the Herdr mod and the check-only core suite; installs or checks them
 scripts/codex.ts    installs /prompts:pace and the pace skill into ~/.codex
+scripts/hermes.ts   installs the Hermes plugin into ~/.hermes/plugins and enables it
+scripts/pi.ts       installs the pi extension into ~/.pi/agent/extensions
 types/index.d.ts    the public contract: stored shapes and `$.pace`
 ```
 
 ### Rules
 
-- **A pure core and thin adapters.** `core/` is pure, and so are `hooks/usage.ts`, `adapters/codex/rollout.ts`
-  and `adapters/herdr/draw.ts`. Of the rest, only `register.tsx` touches `$`; the hook, the bins, the mod and the
+- **A pure core and thin adapters.** `core/` is pure, and so are `hooks/usage.ts`, `adapters/codex/rollout.ts`,
+  `adapters/pi/feed.ts`, `adapters/pi/commands.ts` and `adapters/herdr/draw.ts`. Of the rest, only `register.tsx` touches `$`; the hook, the bins, the mod and the
   scripts do the I/O around pure functions. In the core: values in, values out, no `$`, no
   I/O, no `Date.now()`. Time comes in as `now`, data as a `Snapshot`. This is what makes every rule testable in
   milliseconds.
@@ -160,7 +185,7 @@ claude plugin test .                    # Claude Code: every *.test.ts, in the e
 claude plugin validate .
 npx -y -p typescript tsc -p .           # tsc: the core, the Claude adapter, the pure adapter files
 node --import ./testing/register.ts --test tests/*.test.ts adapters/*/*.test.ts      # the core suite on Node
-node --test testing/*.node-test.ts scripts/*.node-test.ts adapters/codex/*.node-test.ts bin/*.node-test.ts  # Node-only
+node --test testing/*.node-test.ts scripts/*.node-test.ts adapters/*.node-test.ts adapters/*/*.node-test.ts bin/*.node-test.ts  # Node-only
 node scripts/herdr.ts check             # Herdr: the mod, the core suite in a check-only mod, and each of the
                                         # mod's steps on a week of feeds (testing/load.ts) within Herdr's budget
 ```

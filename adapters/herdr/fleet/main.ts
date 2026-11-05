@@ -32,7 +32,7 @@ const TABS: { tab: Tab; label: string; groups: (m: FleetModel) => FleetGroup[] }
 ]
 
 /** How each host starts: Codex without its daemon, so its commands run in the terminal Herdr gave it */
-const ARGV: Record<PaceProvider, string[]> = { claude: ['claude'], codex: ['codex', '--no-daemon'] }
+const ARGV: Record<PaceProvider, string[]> = { claude: ['claude'], codex: ['codex', '--no-daemon'], antigravity: ['agy'] }
 
 const paceDir = () => `${home()}/${FEEDS_DIR}`
 const qlDir = () => `${home()}/${QL_FEEDS_DIR}`

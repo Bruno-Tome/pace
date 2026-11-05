@@ -1,5 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
+import { accountId } from '../../core/account.ts'
 import { feedOf } from '../../core/host.ts'
 import { NOW, reply, world } from './world.ts'
 
@@ -25,4 +26,26 @@ test('under Herdr the feed names the terminal the session runs in', async ($, on
   await $.session.start({ cwd: '/work/pace', surface: 'terminal', isInteractive: true } as any)
   await $.prompt.submit({ text: 'p' } as any)
   expect(feedOf(files[`${FEED}.tmp`] ?? '')!.terminal).toBe('t5')
+})
+
+test('the feed names the account Claude Code is signed in with, as a keyed hash of its email, and none signed out', async ($, on) => {
+  const { files } = world(on)
+  files['/home/u/.claude.json'] = JSON.stringify({ oauthAccount: { emailAddress: 'A@b.co' } })
+  files['/home/u/.local/state/pace/key'] = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff'
+  await $.session.start({ cwd: '/work/pace', surface: 'terminal', isInteractive: true } as any)
+  await $.prompt.submit({ text: 'p' } as any)
+  const text = files[`${FEED}.tmp`] ?? ''
+  // The id core/account.ts gives a@b.co under that key: the same in every harness
+  expect(feedOf(text)!.account).toBe(accountId('a@b.co', '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff'))
+  expect(text).not.toContain('a@b.co')
+  expect(files['/home/u/.local/state/pace/accounts.json']).toContain(feedOf(text)!.account!)
+})
+
+test('pace makes its key on first use when there is none', async ($, on) => {
+  const { files } = world(on)
+  files['/home/u/.claude.json'] = JSON.stringify({ oauthAccount: { emailAddress: 'a@b.co' } })
+  await $.session.start({ cwd: '/work/pace', surface: 'terminal', isInteractive: true } as any)
+  await $.prompt.submit({ text: 'p' } as any)
+  expect(files['/home/u/.local/state/pace/key']).toMatch(/^[0-9a-f]{64}$/)
+  expect(feedOf(files[`${FEED}.tmp`] ?? '')!.account).toMatch(/^[0-9a-f]{16}$/)
 })
