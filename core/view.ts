@@ -1053,7 +1053,7 @@ const CONTEXT_WARN = 80
 /** What an agent is doing, where its host knows: Herdr's status of its terminal */
 export type AgentStatus = 'working' | 'blocked' | 'done' | 'idle'
 
-const STATUS_LOOK: Record<AgentStatus, Partial<Seg>> = {
+export const STATUS_LOOK: Record<AgentStatus, Partial<Seg>> = {
   working: { color: 'success' },
   blocked: { color: 'warning', bold: true },
   done: { color: 'text' },

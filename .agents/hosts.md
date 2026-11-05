@@ -18,6 +18,7 @@ The same pace, the same rules and nearly the same drawing, wherever the agent ru
 core/                 the pure core, host-agnostic: everything hooks/ holds today but register.tsx, the clients
                       and the Claude-specific parts. Pure; times in ms.
   host.ts             the contract a host's feed meets (PaceFeed), and the fleet: hosts side by side
+  fleet.ts            the fleet across hosts: Herdr's agents joined to pace's and ql's feeds, its views and pick
 hooks/                the Claude Code adapter, where Claude Code's plugin layout wants it: register.tsx,
                       band-client.tsx, plan-client.tsx, files.ts and usage.ts (the usage endpoint's and
                       ~/.claude.json's readings)
@@ -25,6 +26,7 @@ adapters/codex/       hook.ts: a Codex hook (Node) that reads the session's roll
                       rollout.ts: pure rollout and hook-input parsing; fixtures.ts: the shapes Codex 0.161 writes
 adapters/herdr/       main.ts: the Herdr mod; draw.ts: segments as the theme's colors and which view (pure); built
                       to plain JS by scripts/herdr.ts
+  fleet/              main.ts: the fleet mod (panel and the Send work dialog), its own build, mods/fleet
 bin/                  viewer.ts and plan-viewer.ts as today, plus band.ts: the band or the fleet, live, in any terminal
 testing/              expect.ts: claude-code/testing's matchers, host-neutral; node.ts: describe and test on
                       node:test, register.ts mapping the module name to it; herdr.ts: a collecting runner for Herdr
@@ -93,6 +95,20 @@ Codex has hooks but no custom prompt area, status line or pane (its `tui.status_
   provider}`, a harness's `/pace` pane from the fleet's merged snapshot (every live session of it, no cache).
 - The mod works the drawing out when the feeds change and on its clock, never in `render`: Herdr interrupts a
   render that runs long, and every agent's week of readings is real work.
+
+## The fleet across hosts
+
+- `core/fleet.ts`: `fleetModel({pace, ql, agents, now})`, pure. `agents` are Herdr's, each with its pane's folder
+  and branch and its `ctx` label. One member per Herdr agent, joined by terminal to the newest live pace and ql feed
+  of it; a live feed with no terminal is a member outside Herdr, pace's and ql's of one session together. Herdr's
+  status wins over a feed's. ql's feed is read by its shape (`qlFeedOf`): pace and ql share no code.
+- Providers come from `fleetOf`, each with its 5-hour and weekly use, the room left in the tighter one, its agents
+  and how many work. Stale: its newest reading is older than the 5-hour window. The pick: live first, then
+  headroom, then room left, then fewer agents working.
+- Views: `byProvider`, `byRepo` (a clash: two agents on one repo and branch), `byUrgency`; `groupLines` and
+  `memberLine` draw them with view.ts's segments.
+- The mod never types into a running agent: Send work opens a new tab (`tab.new {folder, argv, task}`) after a
+  second click. Codex starts as `codex --no-daemon`.
 
 ## Tests: green on every host
 

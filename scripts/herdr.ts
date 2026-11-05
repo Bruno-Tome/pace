@@ -2,13 +2,14 @@
 // types (node:module's stripTypeScriptTypes) from each module and every relative module it imports, into one
 // folder, with imports pointed at the built .js files.
 //
-//   node scripts/herdr.ts check     builds the mod, and the core suite as a check-only mod, each into a scratch
-//                                   folder, and runs `herdr-app check` on both: the core's tests pass inside
+//   node scripts/herdr.ts check     builds each mod, and the core suite as a check-only mod, each into a scratch
+//                                   folder, and runs `herdr-app check` on each: the core's tests pass inside
 //                                   Herdr's own runtime. Then the load check: the mod started on feeds the size
 //                                   real use makes, each step of each view checked on its own, so a step that
 //                                   runs past Herdr's time budget fails here rather than draw nothing in the app
-//   node scripts/herdr.ts install   builds the mod into ~/.config/herdr-app/mods/pace/ (HERDR_APP_HOME first) and
-//                                   checks it there; files of an earlier build are written over, never deleted
+//   node scripts/herdr.ts install   builds the mods (MODS: pace and the fleet) into ~/.config/herdr-app/mods/<name>/
+//                                   (HERDR_APP_HOME first) and checks each there; files of an earlier build are
+//                                   written over, never deleted
 
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -58,11 +59,19 @@ function build(out: string, files: readonly string[], extra: Readonly<Record<str
   for (const [path, text] of Object.entries(extra)) writeFileSync(join(out, path), text)
 }
 
-/** The mod's own files: adapters/herdr/ and the core it reaches, its main.js the adapter's */
-function buildMod(out: string): void {
-  build(out, reach(['adapters/herdr/main.ts']), {
-    'main.js': "// pace in Herdr. Built by scripts/herdr.ts from the pace repo; edits here are overwritten.\nexport { default } from './adapters/herdr/main.js'\n",
-    'mod.json': `${JSON.stringify({ place: 'right', size: 420, title: 'Pace' }, null, 2)}\n`,
+/** The mods built from this repo: pace, and the fleet across hosts; each from its adapter and the core it reaches */
+export const MODS = [
+  { name: 'pace', entry: 'adapters/herdr/main.ts', json: { place: 'right', size: 420, title: 'Pace' } },
+  { name: 'fleet', entry: 'adapters/herdr/fleet/main.ts', json: { place: 'right', size: 460, title: 'Fleet' } },
+] as const
+
+type Mod = (typeof MODS)[number]
+
+/** A mod's own files: its adapter and the core it reaches, its main.js the adapter's */
+function buildMod(out: string, mod: Mod): void {
+  build(out, reach([mod.entry]), {
+    'main.js': `// ${mod.name} in Herdr. Built by scripts/herdr.ts from the pace repo; edits here are overwritten.\nexport { default } from './${mod.entry.replace(/\.ts$/, '.js')}'\n`,
+    'mod.json': `${JSON.stringify(mod.json, null, 2)}\n`,
   })
 }
 
@@ -126,13 +135,15 @@ function checkSuite(): void {
   }
 }
 
-function checkMod(): void {
-  const out = mkdtempSync(join(tmpdir(), 'pace-herdr-mod-'))
-  try {
-    buildMod(out)
-    check(out, 'mod')
-  } finally {
-    rmSync(out, { recursive: true, force: true })
+function checkMods(): void {
+  for (const mod of MODS) {
+    const out = mkdtempSync(join(tmpdir(), `pace-herdr-${mod.name}-`))
+    try {
+      buildMod(out, mod)
+      check(out, `mod ${mod.name}`)
+    } finally {
+      rmSync(out, { recursive: true, force: true })
+    }
   }
 }
 
@@ -147,7 +158,7 @@ const LOAD: readonly { what: string; view: HerdrView; step: number }[] = [
 function checkLoad(): void {
   const out = mkdtempSync(join(tmpdir(), 'pace-herdr-load-'))
   try {
-    buildMod(out)
+    buildMod(out, MODS[0])
     const feeds = loadFeeds(Date.now())
     for (const { what, view, step } of LOAD) {
       const seed = { view, cols: 80, rows: 60, feeds, step }
@@ -157,19 +168,29 @@ function checkLoad(): void {
   } finally {
     rmSync(out, { recursive: true, force: true })
   }
+  const fleet = mkdtempSync(join(tmpdir(), 'pace-herdr-fleet-load-'))
+  try {
+    buildMod(fleet, MODS[1])
+    writeFileSync(join(fleet, 'adapters/herdr/fleet/seed.js'), `export const SEED = ${JSON.stringify({ pace: loadFeeds(Date.now()) })}\n`)
+    check(fleet, 'load: the fleet')
+  } finally {
+    rmSync(fleet, { recursive: true, force: true })
+  }
 }
 
 function install(): void {
-  const out = join(modsFolder(), 'pace')
-  mkdirSync(out, { recursive: true })
-  buildMod(out)
-  check(out, `mod installed in ${out}`)
+  for (const mod of MODS) {
+    const out = join(modsFolder(), mod.name)
+    mkdirSync(out, { recursive: true })
+    buildMod(out, mod)
+    check(out, `mod installed in ${out}`)
+  }
 }
 
 if (import.meta.main) {
   const command = process.argv[2]
   if (command === 'check') {
-    checkMod()
+    checkMods()
     checkSuite()
     checkLoad()
   } else if (command === 'install') {
