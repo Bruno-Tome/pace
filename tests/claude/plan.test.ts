@@ -1,9 +1,9 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import type { PaceAuto } from '../types'
-import { goalOf, lockBroken, planChanges, revisionsOf, stepsOf } from '../hooks/plan.ts'
-import { followOffset, planFrame, scrollBy } from '../hooks/timeline.ts'
-import { planLines, type Line } from '../hooks/view.ts'
+import type { PaceAuto } from '../../types'
+import { goalOf, lockBroken, planChanges, revisionsOf, stepsOf } from '../../core/plan.ts'
+import { followOffset, planFrame, scrollBy } from '../../core/timeline.ts'
+import { planLines, type Line } from '../../core/view.ts'
 import { NOW } from './world.ts'
 
 const PLAN = [

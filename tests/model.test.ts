@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { PaceSample } from '../types'
-import { rateOf, rowsOf, type Snapshot } from '../hooks/model.ts'
-import { addSpend } from '../hooks/spend.ts'
+import { rateOf, rowsOf, type Snapshot } from '../core/model.ts'
+import { addSpend } from '../core/spend.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const MIN = 60_000

@@ -12,6 +12,8 @@ import * as Q from './quota.ts'
 import { bar, budgetText, buckets, rateText, scoreText, sparkline, type Cell, type RateVerdict } from './rate.ts'
 import { sessionsOf, usdPerPrompt } from './spend.ts'
 import { gearText, notchName } from './throttle.ts'
+import type { FleetAgent, FleetRow } from './host.ts'
+import type { Headroom } from './throttle.ts'
 
 const MIN = 60_000
 
@@ -200,14 +202,16 @@ export function bandLines(s: Snapshot, now: number, cols: number): Line[] {
   const top = adviceOf(s, now)[0]
   const labelW = Math.max(5, ...shown.map(r => r.short.length))
   const advice: Line = top ? [{ t: `⚑ ${top.short}`, color: SUGGESTION_COLOR[top.level], pulse: top.level === 'urgent' }] : []
-  const cacheRow = (barWidth: number): [Line, Line] => [cacheLine(s.cache, now, labelW, barWidth, wide, s.price), advice]
+  // A host with no prompt cache keeps the row for the advice alone, and drops it when there is none
+  const cacheRow = (barWidth: number): [Line, Line][] =>
+    s.noCache ? (top ? [[[], advice]] : []) : [[cacheLine(s.cache, now, labelW, barWidth, wide, s.price), advice]]
   if (!shown.length) {
-    return columns([[[{ t: 'usage appears after the first reply', dim: true }], rateSegs(verdictOf(s, rows, now), wide)], cacheRow(0)])
+    return columns([[[{ t: 'usage appears after the first reply', dim: true }], rateSegs(verdictOf(s, rows, now), wide)], ...cacheRow(0)])
   }
   const rated = ratedOf(s, rows, now)
   const lay = (barWidth: number): [Line, Line][] => [
     ...rated.map(({ row, r }): [Line, Line] => [quotaLine(row, labelW, barWidth, wide), rateSegs(r, wide)]),
-    cacheRow(barWidth),
+    ...cacheRow(barWidth),
   ]
   // The bar takes what the widest row's words leave, the bar's own trailing space included
   const room = cols - Math.max(...columns(lay(0)).map(width)) - 1
@@ -457,24 +461,26 @@ function restLines(s: Snapshot, now: number, o: PaneLayout): Line[] {
   if (advice) out.push(...wrapped({ t: '' }, advice, o.cols, { color: v.level === 'ok' || v.level === 'idle' ? 'subtle' : l.color }))
   blank()
 
-  // Cache & tokens
-  out.push([{ t: 'Cache & tokens', bold: true }])
-  const c = s.cache
-  if (c) {
-    const left = cacheLeft(c, now)
-    const cost = nextCost(c.tokens, c.ttl)
-    const size = c.window > 0 ? `${formatTokens(c.tokens)} of ${formatTokens(c.window)} (${Math.round((c.tokens / c.window) * 100)}%)` : formatTokens(c.tokens)
-    const barWidth = Math.max(10, Math.min(40, o.cols - 34))
-    out.push(...wrapSegs([
-      ...cacheLine(c, now, 5, barWidth, false).map(x => ({ ...x, whole: true })),
-      { t: left ? ` left of ${c.ttl}` : ` · lapsed ${Q.formatDuration((now - c.at) / 1000 - ttlSeconds(c.ttl))} ago`, dim: true },
-    ], o.cols))
-    const usd = (tokens: number) => (s.price != null ? ` (${formatUsd(tokens * s.price)})` : '')
-    out.push(...wrapSegs([{ t: `context ${size} · next prompt ≈${formatTokens(cost.warm)} tk${usd(cost.warm)} warm, ≈${formatTokens(cost.cold)}${usd(cost.cold)} cold (${Math.round(cost.cold / Math.max(1, cost.warm))}×)`, dim: true }], o.cols))
-  } else out.push([{ t: 'The cache timer starts with the next reply.', dim: true }])
-  const warm = s.warm ?? 'off'
-  out.push(...wrapSegs([{ t: 'warm mode ', dim: true }, warm === 'off' ? { t: 'off', dim: true } : { t: warm, color: 'success', bold: true }, { t: `  · ${warm === 'off' ? '' : 'acts under 10m left, while idle · '}${o.keyed ? '[w] steps it' : warm === 'off' ? '/pace warm compact | ping' : '/pace warm off'}`, dim: true }], o.cols))
-  blank()
+  // Cache & tokens, where the host has a prompt cache
+  if (!s.noCache) {
+    out.push([{ t: 'Cache & tokens', bold: true }])
+    const c = s.cache
+    if (c) {
+      const left = cacheLeft(c, now)
+      const cost = nextCost(c.tokens, c.ttl)
+      const size = c.window > 0 ? `${formatTokens(c.tokens)} of ${formatTokens(c.window)} (${Math.round((c.tokens / c.window) * 100)}%)` : formatTokens(c.tokens)
+      const barWidth = Math.max(10, Math.min(40, o.cols - 34))
+      out.push(...wrapSegs([
+        ...cacheLine(c, now, 5, barWidth, false).map(x => ({ ...x, whole: true })),
+        { t: left ? ` left of ${c.ttl}` : ` · lapsed ${Q.formatDuration((now - c.at) / 1000 - ttlSeconds(c.ttl))} ago`, dim: true },
+      ], o.cols))
+      const usd = (tokens: number) => (s.price != null ? ` (${formatUsd(tokens * s.price)})` : '')
+      out.push(...wrapSegs([{ t: `context ${size} · next prompt ≈${formatTokens(cost.warm)} tk${usd(cost.warm)} warm, ≈${formatTokens(cost.cold)}${usd(cost.cold)} cold (${Math.round(cost.cold / Math.max(1, cost.warm))}×)`, dim: true }], o.cols))
+    } else out.push([{ t: 'The cache timer starts with the next reply.', dim: true }])
+    const warm = s.warm ?? 'off'
+    out.push(...wrapSegs([{ t: 'warm mode ', dim: true }, warm === 'off' ? { t: 'off', dim: true } : { t: warm, color: 'success', bold: true }, { t: `  · ${warm === 'off' ? '' : 'acts under 10m left, while idle · '}${o.keyed ? '[w] steps it' : warm === 'off' ? '/pace warm compact | ping' : '/pace warm off'}`, dim: true }], o.cols))
+    blank()
+  }
 
   const advices = adviceOf(s, now)
   if (advices.length) {
@@ -1027,3 +1033,68 @@ export function sideBySide(left: readonly Line[], right: readonly Line[], width:
 
 /** How wide each of two plans is drawn in `cols` */
 export const pairWidth = (cols: number) => Math.max(20, Math.floor((cols - PAIR_GAP.length) / 2))
+
+// ----------------------------------------------------------------------
+// The fleet: every host's agents, by the provider they draw on
+// ----------------------------------------------------------------------
+
+const PROVIDER_NAME: Record<FleetRow['provider'], string> = { claude: 'Claude', codex: 'Codex' }
+
+const ROOM: Record<Headroom, Seg> = {
+  push: { t: 'room to push', color: 'success' },
+  cruise: { t: 'on pace', color: 'text' },
+  ease: { t: 'ease off', color: 'warning' },
+  hold: { t: 'hold off', color: 'error', bold: true },
+}
+
+/** A context this full is close to a compaction */
+const CONTEXT_WARN = 80
+
+/** An agent in one line: its host, its folder, its terminal in Herdr, its context, and its age once a minute old */
+export function agentLine(a: FleetAgent, now: number): Line {
+  const dot: Seg = { t: ' · ', dim: true }
+  const folder = a.cwd.split('/').filter(Boolean).pop() ?? a.cwd
+  const out: Line = [{ t: a.host, bold: true }, dot, { t: folder }]
+  if (a.terminal) out.push(dot, { t: a.terminal, dim: true })
+  if (a.context) {
+    const pct = Math.round(a.context.percent)
+    out.push(dot, { t: `ctx ${pct}%`, ...(pct >= CONTEXT_WARN ? { color: 'warning' } : { dim: true }) })
+  }
+  const age = Math.floor((now - a.at) / 1000)
+  if (age >= 60) out.push(dot, { t: `${compact(age)} ago`, dim: true })
+  return out
+}
+
+/** The fleet: each provider, the one with the most room first, with its quotas as the band draws them and its agents */
+export function fleetLines(fleet: readonly FleetRow[], now: number, cols: number): Line[] {
+  if (!fleet.length) return [[{ t: 'No agents yet: pace shows each one here once it reports', dim: true }]]
+  const indent: Seg = { t: '  ' }
+  return fleet.flatMap((f, i): Line[] => {
+    const rated = ratedOf(f.snapshot, rowsOf(f.snapshot.samples, now), now)
+    const labelW = Math.max(5, ...rated.map(({ row }) => row.short.length))
+    const wide = cols >= 70
+    const lay = (barWidth: number) => columns(rated.map(({ row, r }): [Line, Line] => [[indent, ...quotaLine(row, labelW, barWidth, wide)], rateSegs(r, wide)]))
+    const room = rated.length ? cols - Math.max(...lay(0).map(width)) - 1 : 0
+    return [
+      ...(i ? [[] as Line] : []),
+      [{ t: PROVIDER_NAME[f.provider], bold: true }, { t: ' · ', dim: true }, ROOM[f.headroom]],
+      ...(rated.length ? lay(room >= 8 ? Math.min(32, room) : 0) : [[indent, { t: 'no reading yet', dim: true }]]),
+      ...f.agents.map(a => [indent, ...agentLine(a, now)]),
+    ]
+  })
+}
+
+/** The pane's usual layout at `cols`: charts as wide as the room allows up to 72 cells, at their usual heights */
+export const paneLayout = (cols: number, prefs?: PacePrefs): PaneLayout =>
+  ({ cols, chartWidth: Math.max(16, Math.min(72, cols - 6)), chartHeight, ...(prefs ? { prefs } : {}) })
+
+/** A pane `rows` tall: the charts grow to share the rows the rest leaves, each between its usual height and 16 rows */
+export function fittedLayout(s: Snapshot, now: number, cols: number, rows: number, prefs?: PacePrefs): PaneLayout {
+  const base = paneLayout(cols, prefs)
+  const at = (h: number) => paneLines(s, now, { ...base, chartHeight: () => h }).length
+  const fixed = at(0)
+  const charts = at(1) - fixed
+  if (charts <= 0) return base
+  const h = Math.min(16, Math.floor((rows - fixed) / charts))
+  return { ...base, chartHeight: (row: Row) => Math.max(chartHeight(row), h) }
+}

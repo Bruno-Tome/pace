@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { drawsOn, isPerModel, isWeekly, modelName, theName } from '../hooks/quota.ts'
+import { drawsOn, isPerModel, isWeekly, modelName, theName } from '../core/quota.ts'
 
 describe('which quotas a model draws on', () => {
   test('the 5-hour window and the all-models week, whatever the model', () => {

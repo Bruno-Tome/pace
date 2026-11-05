@@ -6,9 +6,9 @@
 
 import { readFileSync } from 'node:fs'
 
-import { stepsOf } from '../hooks/plan.ts'
-import { FRAME_MS, followOffset, keyOf, planFrame, scrollBy, type PlanFeed } from '../hooks/timeline.ts'
-import { pairWidth, planLines, sideBySide, toAnsi, type Seg } from '../hooks/view.ts'
+import { stepsOf } from '../core/plan.ts'
+import { FRAME_MS, followOffset, keyOf, planFrame, scrollBy, type PlanFeed } from '../core/timeline.ts'
+import { pairWidth, planLines, sideBySide, toAnsi, type Seg } from '../core/view.ts'
 
 const feedPath = process.argv[2]
 if (!feedPath) {

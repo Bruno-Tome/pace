@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { isSessionKey, isStale, sessionKey, sessionOf, sharedOf } from '../hooks/prefs.ts'
+import { isSessionKey, isStale, sessionKey, sessionOf, sharedOf } from '../core/prefs.ts'
 
 const DAY = 24 * 60 * 60_000
 const NOW = 1_700_000_000_000

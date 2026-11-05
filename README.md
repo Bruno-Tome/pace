@@ -26,6 +26,7 @@ sessions, and modes that keep a long run on pace with no one at the keyboard.
 - [Commands](#commands)
 - [Options](#options)
 - [For other mods](#for-other-mods)
+- [Codex and Herdr](#codex-and-herdr)
 - [Where the numbers come from](#where-the-numbers-come-from)
 - [How it is built](#how-it-is-built)
 - [Development](#development)
@@ -53,6 +54,8 @@ The band appears above the prompt after the first reply. Then:
 | `/pace window` | macOS, and Node 23.6 or later on your `PATH` |
 
 Outside tmux, `/pace` opens the pane instead; in the Claude desktop app that pane is the split itself.
+
+The same core paces Codex CLI too, and draws every agent side by side in [Herdr](#codex-and-herdr).
 
 ## What it shows
 
@@ -321,12 +324,81 @@ snap.advice        // [{ level, text }]
 The snapshot is as of `snap.at`: pace refreshes it after every reply, reading and minute. The full contract is in
 [`types/index.d.ts`](types/index.d.ts).
 
+## Codex and Herdr
+
+pace's core is host-agnostic. Each host session writes a **feed**,
+`~/.local/state/pace/feeds/<host>-<session>.json`: its readings, prompts, spend and context, where it runs, and
+under Herdr the terminal it runs in (`HC_TERMINAL_ID`). Every Claude Code session writes one. A feed not written for
+6 hours counts as a session gone.
+
+**Codex CLI.** Codex has no prompt area or pane for a plugin to draw in, so pace reads it from the outside: a hook
+reads the session's rollout as Codex writes it (`rate_limits.primary` is the 5-hour window, `secondary` the week;
+the last reply's tokens are the context) and counts each prompt submitted. Codex reports no dollars or prompt
+cache, so its band paces on readings and prompts alone and leaves the cache's row out. Add the hook to
+`~/.codex/config.toml`, with the path to your clone of pace, then trust it in Codex's `/hooks`:
+
+```toml
+[[hooks.SessionStart]]
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "node /path/to/pace/adapters/codex/hook.ts"
+timeout = 10
+
+[[hooks.UserPromptSubmit]]
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "node /path/to/pace/adapters/codex/hook.ts"
+timeout = 10
+
+[[hooks.PostToolUse]]
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = "node /path/to/pace/adapters/codex/hook.ts"
+async = true
+timeout = 10
+
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+type = "command"
+command = "node /path/to/pace/adapters/codex/hook.ts"
+async = true
+timeout = 10
+```
+
+The hook needs Node 23.6 or later, prints nothing (Codex would add it to the conversation) and never fails a turn.
+It was built against the rollouts Codex 0.161 writes; the rollout is not a stable interface, so a line it cannot
+read is skipped.
+
+**`/pace` in Herdr.** In a session running in Herdr, `/pace` opens the harness's charts in a Herdr pane beside
+it, ahead of tmux; `/pace band` opens the session's band under it and `/pace fleet` the fleet panel. Claude Code's
+`/pace` does it itself. Codex has no commands of its own, so the hook catches a prompt that is exactly `/pace`,
+`/pace band` or `/pace fleet`, opens the view and stops the prompt before the model. A view already open in a pane
+is focused rather than opened again: each pace pane records its view in Herdr's shared state (`pace.panes`). Codex's TUI refuses a slash
+command it does not know, so `node scripts/codex.ts install` adds two that send one: the custom prompt
+`/prompts:pace` and the skill `$pace`, each with `band` or `fleet` after it if you like. The hook catches either
+with no model turn; if the hook is not trusted yet, the skill runs `node adapters/codex/open.ts` itself.
+
+**The band in any terminal.** `node bin/band.ts` draws the newest live feed's band, live; `--terminal <id>` draws
+the agent in that Herdr terminal; a feed file's path draws that feed; `--fleet` draws the fleet. Put it in a pane
+beside Codex.
+
+**Herdr.** `node scripts/herdr.ts install` builds the mod into `~/.config/herdr-app/mods/pace/` and checks it. Open
+it with `herdr-app do pane.split --direction right --mod pace`. Its panel shows the **fleet**: every harness's quotas
+with their pace, the one with the most room first (`room to push`, `on pace`, `ease off`, `hold off`), and the
+agents on each with their folder, terminal and context use. Under it, each live agent's band. Click an agent to go
+to it. Two buttons open more of pace as Herdr panes:
+
+- `band ⇥` beside an agent: its band in a pane under it, as Claude Code draws it above the prompt.
+- `Claude charts ⇥`, `Codex charts ⇥`: the harness's `/pace` pane, its charts, rates and suggestions, fed by every
+  live session of that harness together. A harness has no one prompt cache, so its pane leaves the cache out.
+
 ## Where the numbers come from
 
 - **Quotas:** the session's rate-limit readings after each reply, Claude Code's usage cache in `~/.claude.json`,
   and Anthropic's usage endpoint (for per-model quotas), called with Claude Code's own login. pace never sees the
   credential.
 - **Spend:** the session's cost ledger, what `/cost` totals.
+- **Codex:** the `token_count` events in the session's rollout (`~/.codex/sessions/…`), read by the hook.
 - **Limits:** usage pace can't see (claude.ai, another machine) moves a quota with no spend recorded, which makes
   a dollar look dearer. Readings are whole points, so a quota's price waits for 8 points of movement.
 
@@ -336,7 +408,8 @@ pace has no telemetry. Its only requests are the usage-endpoint call (the one `/
 Files it writes in `~/.claude`: `pace-row.txt` (status-line row), and for each session `pace-state-<session>.json`
 and `pace-keys-<session>.json` (the window's feed and keys), `pace-view-<session>.command` (the window's launcher)
 and `pace-plan-<session>.json` (the plan sidebar's feed). Auto mode asks Claude to keep
-`.pace/handoff.md` in your project.
+`.pace/handoff.md` in your project. In `~/.local/state/pace/`: `feeds/<host>-<session>.json` (each session's feed)
+and, for Codex, `codex/<session>.json` (how far into its rollout the hook has read).
 
 ## How it is built
 
@@ -344,26 +417,32 @@ One hooks module keeps the data and talks to the engine. Everything else is a pu
 clock, so every rule is tested without a live session.
 
 ```
-hooks/register.tsx     the only module that touches `$`: hooks, commands, state, the shared store
+hooks/register.tsx     the Claude Code adapter, the only module that touches `$`: hooks, commands, state, the store
    │  builds a Snapshot: samples, prompts, spend, cache, modes
    ▼
-hooks/model.ts         what is drawn: each quota's row, the rate against it, advice, $.pace's snapshot
+core/model.ts          what is drawn: each quota's row, the rate against it, advice, $.pace's snapshot
    ├─ quota.ts         readings, windows, statuses, names
    ├─ rate.ts          the prompting rate, bars and sparklines
    ├─ spend.ts         the shared spend, and pacing in dollars an hour
    └─ cache.ts         the prompt cache's timer and what the next prompt costs
    ▼
-hooks/view.ts          every drawing as lines of styled segments: band, status line, pane, window
+core/view.ts           every drawing as lines of styled segments: band, status line, pane, window, fleet
    ├─ chart.ts         braille burn-up charts
-   ├─ band-client.tsx  the band's animation on the surface's frame clock
+   ├─ hooks/band-client.tsx  the band's animation on the surface's frame clock
    ├─ timeline.ts      the plan timeline's animation, as frames
-   ├─ plan-client.tsx  the timeline in a pane, on the surface's frame clock
+   ├─ hooks/plan-client.tsx  the timeline in a pane, on the surface's frame clock
    ├─ bin/plan-viewer.ts the timeline as a tmux sidebar, run by Node
-   └─ bin/viewer.ts    the full-screen window, run by Node in a tmux split or a terminal window
-hooks/auto.ts          auto mode and on pace mode, as decisions
-hooks/plan.ts          the plan's checklist as steps: done, under way, next
-hooks/alerts.ts        the once-per-window warnings
+   ├─ bin/viewer.ts    the full-screen window, run by Node in a tmux split or a terminal window
+   └─ bin/band.ts      the band or the fleet, live, in any terminal
+core/host.ts           the feed every host writes, and the fleet: providers side by side
+core/auto.ts           auto mode and on pace mode, as decisions
+core/plan.ts           the plan's checklist as steps: done, under way, next
+core/alerts.ts         the once-per-window warnings
+hooks/usage.ts         Claude Code's usage readings: the usage endpoint and ~/.claude.json
 hooks/files.ts         the files pace writes in ~/.claude, shared with the viewer
+adapters/codex/        the Codex adapter: rollout.ts reads the rollout and hook input, hook.ts writes the feed
+adapters/herdr/        the Herdr mod, built to plain JS by scripts/herdr.ts
+testing/               claude-code/testing's describe, test and expect on Node and inside Herdr
 types/index.d.ts       the public contract: stored shapes and $.pace
 ```
 
@@ -374,10 +453,19 @@ done) are in [`.agents/README.md`](.agents/README.md).
 
 ```
 claude --plugin-dir .        # run it from this folder
-claude plugin test .         # the tests
+claude plugin test .         # the tests, in Claude Code's engine
 claude plugin validate .     # what the engine would refuse
 tsc -p .                     # the types
+
+# the core suite and the adapters' tests on Node
+node --import ./testing/register.ts --test tests/*.test.ts adapters/*/*.test.ts
+node --test testing/*.node-test.ts scripts/*.node-test.ts adapters/codex/*.node-test.ts bin/*.node-test.ts
+
+node scripts/herdr.ts check  # the Herdr mod, and the core suite inside Herdr's runtime
 ```
+
+A `*.test.ts` runs on every host, so it imports only its own relative files and `claude-code/testing`. A test that
+needs Node (files, processes) is a `*.node-test.ts`, which Claude Code does not load.
 
 Every change is made test first: a failing test that shows the behavior or the bug, then the smallest change that
 turns it green, then cleanup with the suite still green.

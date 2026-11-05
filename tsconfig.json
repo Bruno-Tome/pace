@@ -3,5 +3,22 @@
   "compilerOptions": {
     "allowImportingTsExtensions": true,
     "noEmit": true
-  }
+  },
+  "include": [
+    "hooks",
+    "core",
+    "types",
+    "tests",
+    "testing/expect.ts",
+    "testing/herdr.ts",
+    "adapters/codex/rollout.ts",
+    "adapters/codex/fixtures.ts",
+    "adapters/codex/rollout.test.ts",
+    "adapters/herdr/draw.ts",
+    "adapters/herdr/draw.test.ts",
+    "adapters/herdr/open.ts",
+    "adapters/herdr/open.test.ts",
+    "testing/load.ts",
+    "adapters/herdr/seed.ts"
+  ]
 }

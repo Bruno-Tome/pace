@@ -17,20 +17,23 @@ import { atom, read, update } from 'claude-code'
 import type { ElementConstructor, EngineInterface as Engine, Register, RenderElement, RenderInput, TextProps } from 'claude-code'
 
 import type { Pace, PaceAuto, PaceCacheInfo, PaceCacheTtl, PaceGear, PaceSnapshot, PacePrefs, PaceReading, PaceSample, PaceSpend, PaceUltra, PaceWarmMode } from '../types'
-import { alertsOf } from './alerts.ts'
+import { alertsOf } from '../core/alerts.ts'
+import { feedFile, type PaceFeed } from '../core/host.ts'
+import { ALREADY_OPEN, herdrOpen, herdrReuse, paceViewOf, registryIn, sharedFile } from '../adapters/herdr/open.ts'
 import { keysFile, planFeedFile, ROW_FILE, stateFile, viewFile } from './files.ts'
-import { isSessionKey, isStale, prefsFrom, sessionKey, sessionOf, sharedOf } from './prefs.ts'
-import { answerQuestions, continuePrompt, decide, effortFor, forModel, HANDOFF_FILE, pacingNote, protocol, startPrompt, upkeep, warmModeFor, type Decision } from './auto.ts'
-import { addPrice, priceOf, replyEquivalents, ttlSeconds, warmAction } from './cache.ts'
-import { snapshotOf, type Snapshot } from './model.ts'
-import * as Q from './quota.ts'
-import { goalOf, lockBroken, planChanges, revisionsOf, stepsOf } from './plan.ts'
-import { coldAt, mainModelFor, notchName, requestModel, spawnAllowed, startingGear, subagentModelFor } from './throttle.ts'
-import { closingPrompt, decideUltra, fanoutPrompt, gearNote, integratePrompt, planPrompt, ultraProtocol, workPrompt, type UltraDecision, type UltraInput } from './ultra.ts'
-import { nowRow, type PlanFeed } from './timeline.ts'
-import { mergeModelPrompts, mergePrompts } from './rate.ts'
-import { addSpend, mergeSpend, spendModel } from './spend.ts'
-import { bandLines, chartHeight, lineText, pairWidth, paneLines, picked, planLines, press, sideBySide, splitParts, statusRow, toAnsi, type Feed, type Seg, type UiState } from './view.ts'
+import { isSessionKey, isStale, prefsFrom, sessionKey, sessionOf, sharedOf } from '../core/prefs.ts'
+import { answerQuestions, continuePrompt, decide, effortFor, forModel, HANDOFF_FILE, pacingNote, protocol, startPrompt, upkeep, warmModeFor, type Decision } from '../core/auto.ts'
+import { addPrice, priceOf, replyEquivalents, ttlSeconds, warmAction } from '../core/cache.ts'
+import { snapshotOf, type Snapshot } from '../core/model.ts'
+import * as Q from '../core/quota.ts'
+import { parseClaudeJson, parseUsage } from './usage.ts'
+import { goalOf, lockBroken, planChanges, revisionsOf, stepsOf } from '../core/plan.ts'
+import { coldAt, mainModelFor, notchName, requestModel, spawnAllowed, startingGear, subagentModelFor } from '../core/throttle.ts'
+import { closingPrompt, decideUltra, fanoutPrompt, gearNote, integratePrompt, planPrompt, ultraProtocol, workPrompt, type UltraDecision, type UltraInput } from '../core/ultra.ts'
+import { nowRow, type PlanFeed } from '../core/timeline.ts'
+import { mergeModelPrompts, mergePrompts } from '../core/rate.ts'
+import { addSpend, mergeSpend, spendModel } from '../core/spend.ts'
+import { bandLines, fittedLayout, paneLayout, lineText, pairWidth, paneLines, picked, planLines, press, sideBySide, splitParts, statusRow, toAnsi, type Feed, type Seg, type UiState } from '../core/view.ts'
 
 const PANE = 'pace'
 /** The plan `/pace auto` works through when it is given none */
@@ -103,23 +106,12 @@ function drawBand($: Engine, e: RenderInput<'AbovePrompt'>, snap: Snapshot, now:
   )
 }
 
-const paneLayout = (cols: number, prefs: PacePrefs) => ({ cols, chartWidth: Math.max(16, Math.min(72, cols - 6)), chartHeight, prefs })
-
-/** Docked, the charts grow to share the rows the rest leaves, each between their usual height and 16 rows */
-function dockedLayout(s: Snapshot, now: number, cols: number, rows: number, prefs: PacePrefs) {
-  const at = (h: number) => paneLines(s, now, { ...paneLayout(cols, prefs), chartHeight: () => h }).length
-  const fixed = at(0)
-  const charts = at(1) - fixed
-  if (charts <= 0) return paneLayout(cols, prefs)
-  const h = Math.min(16, Math.floor((rows - fixed) / charts))
-  return { ...paneLayout(cols, prefs), chartHeight: (row: Parameters<typeof chartHeight>[0]) => Math.max(chartHeight(row), h) }
-}
 
 function drawPane($: Engine, e: RenderInput<'Pane'>, s: Snapshot, prefs: PacePrefs, now: number): RenderElement {
   const { Box, Text } = $.ui.resolve(e)
   const cols = e.props.bodyColumns ?? 60
   const rows = e.props.scroll?.bodyRows
-  const layout = e.props.placement === 'dock' && rows ? dockedLayout(s, now, cols, rows, prefs) : paneLayout(cols, prefs)
+  const layout = e.props.placement === 'dock' && rows ? fittedLayout(s, now, cols, rows, prefs) : paneLayout(cols, prefs)
   const lines = paneLines(s, now, layout)
   return (
     <Box flexDirection="column">
@@ -199,6 +191,9 @@ let terminalApp = 'Terminal'
 let lastLine: string | undefined | null = null
 let lastRow: string | undefined
 let lastState: string | undefined
+/** The host feed last written, without its time, and when: rewritten when it changes, and each minute to stay live */
+let lastFeed: string | undefined
+let lastFeedAt = 0
 /** The window was opened from this session: keep its state file current */
 let feeding = false
 /** The last window key handled, by its id (the time it was pressed) */
@@ -237,6 +232,7 @@ async function refreshLine($: Engine): Promise<void> {
   const text = prefs.line ? lineText(s, now) : undefined
   try { await refreshRow($, s, prefs, now) } catch {}
   try { await writeState($, s, now) } catch {}
+  try { await writeFeed($, s, now) } catch {}
   if (text === lastLine) return
   lastLine = text
   $.ui.status(text)
@@ -280,6 +276,27 @@ async function writeState($: Engine, s: Snapshot, now: number): Promise<void> {
   if (!home) return
   await $.fs.write(`${home}/${stateFile(spendId)}`, text)
   lastState = text
+}
+
+/** Writes this session's host feed, for the band beside other hosts and Herdr's fleet: aside, then moved into place */
+async function writeFeed($: Engine, s: Snapshot, now: number): Promise<void> {
+  const terminal = await $.env.get('HC_TERMINAL_ID')
+  const feed: Omit<PaceFeed, 'at'> = {
+    version: 1, host: 'claude', provider: 'claude', session: spendId,
+    ...(terminal ? { terminal } : {}),
+    cwd,
+    snapshot: { ...s, samples: s.samples.filter(x => x.at >= now - STATE_SPAN) },
+    ...(s.cache ? { context: { tokens: s.cache.tokens, window: s.cache.window } } : {}),
+  }
+  const text = JSON.stringify(feed)
+  if (text === lastFeed && now - lastFeedAt < MIN) return
+  const home = await homeOf($)
+  if (!home) return
+  const path = `${home}/${feedFile('claude', spendId)}`
+  await $.fs.write(`${path}.tmp`, JSON.stringify({ ...feed, at: now }))
+  await $.process.run(['/bin/mv', `${path}.tmp`, path])
+  lastFeed = text
+  lastFeedAt = now
 }
 
 const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
@@ -339,6 +356,26 @@ async function openSplit($: Engine): Promise<'opened' | 'open' | false> {
   if (r.exitCode !== 0) return false
   splitPane = r.stdout.trim() || undefined
   return 'opened'
+}
+
+/**
+ * Opens what `/pace <arg>` asks for in Herdr beside this session, when it runs in Herdr: Claude's charts, its band
+ * or the fleet. What to answer; null to go on to tmux and the pane, where Herdr is not there or did not open it.
+ */
+async function openHerdr($: Engine, arg: string): Promise<string | null> {
+  const terminal = await $.env.get('HC_TERMINAL_ID')
+  const herdrOnly = arg === 'band' || arg === 'fleet'
+  if (!terminal) return herdrOnly ? `/pace ${arg} opens in Herdr, and this session is not running in Herdr` : null
+  const view = paceViewOf(arg, 'claude', terminal)
+  if (!view) return null
+  const shared = sharedFile((await $.env.get('HERDR_APP_HOME')) || `${await homeOf($)}/.config/herdr-app`)
+  const reuse = herdrReuse(await $.fs.read(shared).then(t => registryIn(String(t))).catch(() => ({})), view)
+  if (reuse && (await $.process.run(reuse).catch(() => null))?.exitCode === 0) return ALREADY_OPEN
+  for (const argv of herdrOpen(terminal, view)) {
+    const r = await $.process.run(argv).catch(() => null)
+    if (r?.exitCode !== 0) return herdrOnly ? 'Could not open pace in Herdr: is herdr-app on the PATH?' : null
+  }
+  return `Pace opened in Herdr${herdrOnly ? `: ${arg}` : ''}`
 }
 
 /** The last answer a command from the window got, for its feed */
@@ -428,7 +465,7 @@ async function sampleCache($: Engine): Promise<void> {
   if (!home) return
   const path = `${home}/.claude.json`
   if (!(await $.fs.exists(path))) return
-  const s = Q.parseClaudeJson(await $.fs.read(path), await $.clock.now())
+  const s = parseClaudeJson(await $.fs.read(path), await $.clock.now())
   if (s) await addFresh($, s)
 }
 
@@ -438,7 +475,7 @@ async function sampleUsageApi($: Engine): Promise<boolean> {
   if (!auth?.handle || auth.kind !== 'bearer') return false
   const r = await $.http.fetch(USAGE_URL, { auth: auth.handle, headers: { 'anthropic-beta': 'oauth-2025-04-20' } })
   if (!r.ok) return false
-  const quotas = Q.parseUsage(JSON.parse(r.text))
+  const quotas = parseUsage(JSON.parse(r.text))
   if (!Object.keys(quotas).length) return false
   lastFetch = await $.clock.now()
   await addFresh($, { at: lastFetch, quotas })
@@ -1148,8 +1185,10 @@ async function paceCommand($: Engine, args: string, columns: number): Promise<st
     feeding = false
     return 'Pace split closed'
   }
-  if (arg && arg !== 'pane' && arg !== 'window' && arg !== 'split') return `Unknown argument "${arg}": use ${USAGE}`
+  if (arg && arg !== 'pane' && arg !== 'window' && arg !== 'split' && arg !== 'band' && arg !== 'fleet') return `Unknown argument "${arg}": use ${USAGE}`
   await tick($)
+  const herdr = arg === 'pane' || arg === 'window' ? null : await openHerdr($, arg).catch(() => null)
+  if (herdr) return herdr
   if (arg === 'window') {
     let opened = false
     try { opened = await openWindow($) } catch {}
@@ -1173,7 +1212,7 @@ function say($: Engine, text: string): {} {
   return {}
 }
 
-const USAGE = 'split | pane | window | refresh | timeline | close | on | off | auto [plan] [turns] | auto off | auto resume | auto burst [off] | ultra [plan] [turns] [floor..ceiling] | ultra off | ultra resume | ultra preview | plan [file] [file] | hide | show | line on | line off | warm compact | warm ping | warm off'
+const USAGE = 'split | pane | window | band | fleet | refresh | timeline | close | on | off | auto [plan] [turns] | auto off | auto resume | auto burst [off] | ultra [plan] [turns] [floor..ceiling] | ultra off | ultra resume | ultra preview | plan [file] [file] | hide | show | line on | line off | warm compact | warm ping | warm off'
 
 export const register: Register = (on, options) => {
   placement = options.placement === 'status' ? 'status' : 'above'

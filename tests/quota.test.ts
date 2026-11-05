@@ -2,9 +2,10 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { PaceSample } from '../types'
 import {
-  appendSample, asOf, mergeSamples, outlook, paceOf, paceSummary, parseClaudeJson, parseUsage, quotaKeys, quotaName,
+  appendSample, asOf, mergeSamples, outlook, paceOf, paceSummary, quotaKeys, quotaName,
   shortName, statusLabel, trajectoryOf, viewOf, viewSummary, windowOf,
-} from '../hooks/quota.ts'
+} from '../core/quota.ts'
+import { parseClaudeJson, parseUsage } from '../hooks/usage.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const MIN = 60_000
@@ -122,6 +123,16 @@ test('a malformed reading in a stored history is dropped, not thrown over', () =
   const good: PaceSample = { at: NOW, quotas: { five_hour: { percent: 10, resetsAt: NOW + H } } }
   const junk = [{ t: NOW - H, w: { five_hour: { u: 5 } } }, null, { at: 'x', quotas: {} }, { at: NOW - 2 * H, quotas: { five_hour: { percent: 'a' } } }] as any[]
   expect(mergeSamples(junk, [good])).toEqual([good])
+})
+
+test('a repeat is judged against the last reading of the same quotas, whatever was read between', () => {
+  const five = (at: number, percent: number): PaceSample => ({ at, quotas: { five_hour: { percent, resetsAt: NOW + H } } })
+  const week = (at: number, percent: number): PaceSample => ({ at, quotas: { seven_day: { percent, resetsAt: NOW + 50 * H } } })
+  // The 5-hour window read again unchanged a minute later, a week's reading in between: dropped as a repeat
+  expect(mergeSamples([five(NOW, 10), week(NOW + 30_000, 40)], [five(NOW + MIN, 10)])).toEqual([five(NOW, 10), week(NOW + 30_000, 40)])
+  // Moved, it is kept; a week's reading unchanged since its own last one is dropped though a 5-hour one came between
+  expect(mergeSamples([week(NOW, 40), five(NOW + MIN, 10)], [five(NOW + 2 * MIN, 12), week(NOW + 3 * MIN, 40)]))
+    .toEqual([week(NOW, 40), five(NOW + MIN, 10), five(NOW + 2 * MIN, 12)])
 })
 
 test('a reading that is not a number, NaN or Infinity, is dropped rather than read as on pace', () => {

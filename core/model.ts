@@ -17,6 +17,8 @@ export type Snapshot = {
   /** The same prompts by the model they went to, where it was known */
   modelPrompts?: Readonly<Record<string, readonly number[]>>
   cache: PaceCacheInfo | null
+  /** The host reports no prompt cache (Codex): the band leaves the cache's row out */
+  noCache?: true
   warm?: PaceWarmMode
   /** Dollars per input-token equivalent, from the session's replies; absent before one was priced */
   price?: number | null

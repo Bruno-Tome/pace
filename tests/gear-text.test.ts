@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { PaceGear } from '../types'
-import { gearText, notchName, startingGear } from '../hooks/throttle.ts'
+import { gearText, notchName, startingGear } from '../core/throttle.ts'
 
 const PUSH: PaceGear = { model: 'claude-opus-5-5', effort: 'xhigh', subagents: 3, subagentModel: 'sonnet', fanout: true }
 const CRUISE: PaceGear = { model: 'opus', effort: 'high', subagents: 2, subagentModel: 'sonnet', fanout: false }

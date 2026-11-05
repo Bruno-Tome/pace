@@ -56,7 +56,7 @@ function ultraOf(v: unknown): PaceUltra | null {
 }
 
 /** An auto mode run as stored, or null where it does not parse; an ultra pace part that does not is left out */
-function autoOf(v: unknown): PaceAuto | null {
+export function autoOf(v: unknown): PaceAuto | null {
   if (!isObject(v) || typeof v.plan !== 'string' || typeof v.turns !== 'number' || typeof v.max !== 'number') return null
   const num = (k: string) => (typeof v[k] === 'number' ? { [k]: v[k] as number } : {})
   const ultra = ultraOf(v.ultra)

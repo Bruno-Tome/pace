@@ -8,7 +8,7 @@
 import { readFileSync, watchFile, writeFileSync } from 'node:fs'
 
 import { keysFile, stateFile } from '../hooks/files.ts'
-import { click, press, screenOf, type Feed, type Hit, type UiState } from '../hooks/view.ts'
+import { click, press, screenOf, type Feed, type Hit, type UiState } from '../core/view.ts'
 
 const path = process.argv[2]
 const keysPath = process.argv[3]

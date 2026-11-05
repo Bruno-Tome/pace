@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { PaceReading } from '../types'
-import { bar, mergeModelPrompts, movedPerHour, rateSince, sparkline } from '../hooks/rate.ts'
+import { bar, mergeModelPrompts, movedPerHour, rateSince, sparkline } from '../core/rate.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const MIN = 60_000

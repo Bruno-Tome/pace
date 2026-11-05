@@ -1,5 +1,5 @@
 // The quotas: what a reading says about a rate-limit window, how its usage stands against the clock, and the
-// readings themselves (parsed, kept, merged). Pure; times are ms timestamps, window lengths seconds.
+// readings themselves (built, kept, merged). Pure; times are ms timestamps, window lengths seconds.
 
 import type { PaceReading, PaceSample } from '../types'
 
@@ -63,11 +63,21 @@ export const modelName = (key: string, name?: string) => (isPerModel(key) ? mode
 
 const order = (key: string) => (key === 'five_hour' ? 0 : key === 'seven_day' ? 1 : 2)
 
+/**
+ * Each history's quotas, worked out once: a drawing asks for them again and again of the same history, and a week
+ * of readings is a lot to go through each time. Keyed by the array, so a history the caller drops is dropped here.
+ */
+const knownKeys = new WeakMap<readonly PaceSample[], readonly string[]>()
+
 /** The quotas a history knows, in drawing order: one is known once a reading of it carried a reset time */
 export function quotaKeys(samples: readonly PaceSample[]): string[] {
+  const known = knownKeys.get(samples)
+  if (known) return [...known]
   const keys = new Set<string>()
   for (const s of samples) for (const [k, r] of Object.entries(s.quotas)) if (r.resetsAt != null && (k === 'five_hour' || isWeekly(k))) keys.add(k)
-  return [...keys].sort((a, b) => order(a) - order(b) || (a < b ? -1 : 1))
+  const sorted = [...keys].sort((a, b) => order(a) - order(b) || (a < b ? -1 : 1))
+  knownKeys.set(samples, sorted)
+  return [...sorted]
 }
 
 /** A quota's latest reading and when it was taken */
@@ -244,45 +254,10 @@ const resetOf = (v: unknown): number | undefined => {
 
 const percentOf = (v: number) => Math.min(Math.max(v, 0), 100)
 
-const reading = (percent: number, reset: unknown, name?: string): PaceReading => {
+/** A reading from a host's report: its percent held to 0–100, its reset in seconds, ms or an ISO time */
+export const readingOf = (percent: number, reset: unknown, name?: string): PaceReading => {
   const resetsAt = resetOf(reset)
   return { percent: percentOf(percent), ...(resetsAt != null ? { resetsAt } : {}), ...(name ? { name } : {}) }
-}
-
-/**
- * The usage endpoint's answer (what `/usage` reads): windows by key at the top (`five_hour`, `seven_day`,
- * `seven_day_<model>`, each `{ utilization, resets_at }`) and a `limits` list (`{ kind, percent, resets_at, scope }`),
- * whose entries win, a model's week keyed `seven_day_<model>` and named for it.
- */
-export function parseUsage(root: unknown): Record<string, PaceReading> {
-  const out: Record<string, PaceReading> = {}
-  if (!root || typeof root !== 'object') return out
-  for (const [k, v] of Object.entries(root as Record<string, unknown>)) {
-    const o = v as { utilization?: unknown; resets_at?: unknown } | null
-    if (o && typeof o === 'object' && typeof o.utilization === 'number') out[k] = reading(o.utilization, o.resets_at)
-  }
-  const limits = (root as { limits?: unknown }).limits
-  for (const l of Array.isArray(limits) ? limits : []) {
-    const o = l as { kind?: unknown; percent?: unknown; resets_at?: unknown; scope?: { model?: { display_name?: unknown } } } | null
-    if (!o || typeof o.percent !== 'number') continue
-    const name = typeof o.scope?.model?.display_name === 'string' ? o.scope.model.display_name : undefined
-    const key = o.kind === 'session' ? 'five_hour'
-      : o.kind === 'weekly_all' ? 'seven_day'
-      : o.kind === 'weekly_scoped' && name ? `seven_day_${name.toLowerCase().replace(/\s+/g, '_')}`
-      : null
-    if (key) out[key] = reading(o.percent, o.resets_at, name)
-  }
-  return out
-}
-
-/** Claude Code's own copy of that answer in `~/.claude.json`, while it is under an hour old */
-export function parseClaudeJson(text: string, now: number): PaceSample | null {
-  let root: { cachedUsageUtilization?: { fetchedAtMs?: unknown; utilization?: unknown } }
-  try { root = JSON.parse(text) } catch { return null }
-  const c = root?.cachedUsageUtilization
-  if (!c || typeof c.fetchedAtMs !== 'number' || now - c.fetchedAtMs < 0 || now - c.fetchedAtMs > 3600_000) return null
-  const quotas = parseUsage(c.utilization)
-  return Object.keys(quotas).length ? { at: c.fetchedAtMs, quotas } : null
 }
 
 /** Readings kept */
@@ -325,9 +300,14 @@ export function mergeSamples(a: readonly PaceSample[], b: readonly PaceSample[])
     byAt.set(s.at, prev ? { at: s.at, quotas: { ...prev.quotas, ...s.quotas } } : s)
   }
   const out: PaceSample[] = []
+  // The last reading kept of each set of quotas, by its keys: a repeat is judged against that one
+  const lastOf = new Map<string, PaceSample>()
   for (const s of [...byAt.values()].sort((x, y) => x.at - y.at)) {
-    const last = [...out].reverse().find(x => sameQuotas(x, s))
-    if (!last || !repeats(last, s)) out.push(s)
+    const set = Object.keys(s.quotas).sort().join()
+    const last = lastOf.get(set)
+    if (last && repeats(last, s)) continue
+    out.push(s)
+    lastOf.set(set, s)
   }
   return out.slice(-KEEP)
 }

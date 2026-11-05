@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import type { PaceUltra } from '../types'
-import { prefsFrom } from '../hooks/prefs.ts'
+import { prefsFrom } from '../core/prefs.ts'
 
 const ULTRA: PaceUltra = {
   goal: 'pace ships 1.0 with CI green.', check: 'claude plugin test .',

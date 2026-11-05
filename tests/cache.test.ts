@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { cacheLeft, nextCost, suggestions, warmAction } from '../hooks/cache.ts'
+import { cacheLeft, nextCost, suggestions, warmAction } from '../core/cache.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const MIN = 60_000

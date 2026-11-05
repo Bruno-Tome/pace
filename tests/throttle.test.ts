@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { PaceGear, PaceQuota, PaceSnapshot } from '../types'
-import { coldAt, gearFor, headroomOf, mainModelFor, requestModel, spawnAllowed, subagentModelFor, type GearBounds } from '../hooks/throttle.ts'
+import { coldAt, gearFor, headroomOf, mainModelFor, requestModel, spawnAllowed, subagentModelFor, type GearBounds } from '../core/throttle.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const H = 3600_000

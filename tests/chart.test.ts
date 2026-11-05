@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { chart, chartSvg } from '../hooks/chart.ts'
+import { chart, chartSvg } from '../core/chart.ts'
 
 /** The chart's rows as plain text, and as the layer of each cell */
 const text = (rows: ReturnType<typeof chart>) => rows.map(r => r.map(x => x.t).join(''))

@@ -3,8 +3,8 @@
 
 import type { ClientModule } from 'claude-code'
 
-import { FRAME_MS, planFrame } from './timeline.ts'
-import type { Line } from './view.ts'
+import { FRAME_MS, planFrame } from '../core/timeline.ts'
+import type { Line } from '../core/view.ts'
 
 type Props = { lines: Line[]; done: number }
 /** `f`: the frame; `done`: the steps done as last drawn; `popAt`: the frame the last step was ticked off on */

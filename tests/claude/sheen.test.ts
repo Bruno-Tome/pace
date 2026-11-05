@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { POWERS, sheenAt } from '../hooks/band-client.tsx'
+import { POWERS, sheenAt } from '../../hooks/band-client.tsx'
 
 /** The cells the sheen lights over one sweep's frames, for a bar `width` cells wide */
 const swept = (width: number, power: (typeof POWERS)[keyof typeof POWERS]) => {

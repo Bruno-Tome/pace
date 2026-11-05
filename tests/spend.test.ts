@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { PaceSample } from '../types'
-import { rateOf, rowsOf } from '../hooks/model.ts'
-import { addSpend, mergeSpend, quotaPerDollar, sessionsOf, spendIn, spendModel, spendVerdict, usdPerPrompt } from '../hooks/spend.ts'
+import { rateOf, rowsOf } from '../core/model.ts'
+import { addSpend, mergeSpend, quotaPerDollar, sessionsOf, spendIn, spendModel, spendVerdict, usdPerPrompt } from '../core/spend.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const MIN = 60_000
@@ -132,4 +132,38 @@ describe('whose spend it is', () => {
   test('dollars several models earned go to none, so they count against every quota', () => {
     expect(spendModel(['claude-opus-5-5', 'claude-haiku-5-5'], 'claude-opus-5-5')).toBeUndefined()
   })
+})
+
+test('a quota\'s price over a week of readings and spend is what summing the spend between each pair of readings makes', () => {
+  // The rule as written: for each pair of readings of one window, the dollars spent between them, every bucket summed
+  const reference = (samples: readonly PaceSample[], key: string, list: Parameters<typeof spendIn>[0], now: number) => {
+    const from = Math.max(now - 7 * 24 * H, list[0]!.t - H)
+    let points = 0
+    let usd = 0
+    let prev: { at: number; percent: number; resetsAt: number } | null = null
+    for (const s of samples) {
+      const r = s.quotas[key]
+      if (!r || r.resetsAt == null || s.at < from || s.at > now) continue
+      if (prev && Math.abs(r.resetsAt - prev.resetsAt) <= 90_000 && r.percent >= prev.percent) {
+        const spent = spendIn(list, prev.at, s.at)
+        if (spent > 0 || r.percent === prev.percent) {
+          points += r.percent - prev.percent
+          usd += spent
+        }
+      }
+      prev = { at: s.at, percent: r.percent, resetsAt: r.resetsAt }
+    }
+    return points >= 8 && usd >= 1 ? points / usd : null
+  }
+  // A reading every 5 minutes for 8 days, the 5-hour window climbing to 80% and resetting; spend in hours and minutes
+  const samples: PaceSample[] = []
+  for (let at = NOW - 8 * 24 * H; at <= NOW; at += 5 * MIN) {
+    const start = Math.floor(at / (5 * H)) * 5 * H
+    samples.push({ at, quotas: { five_hour: { percent: Math.round(((at - start) / (5 * H)) * 80), resetsAt: start + 5 * H } } })
+  }
+  const spend = [
+    ...Array.from({ length: 168 }, (_, i) => ({ t: NOW - 2 * H - (168 - i) * H, id: 'a', usd: 1 + (i % 5), h: true as const })),
+    ...Array.from({ length: 120 }, (_, i) => ({ t: NOW - (120 - i) * MIN, id: 'a', usd: 0.05 })),
+  ]
+  near(quotaPerDollar(samples, 'five_hour', spend, NOW), reference(samples, 'five_hour', spend, NOW)!)
 })

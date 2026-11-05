@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import type { PaceQuota, PaceSnapshot } from '../types'
-import { alertsOf } from '../hooks/alerts.ts'
+import { alertsOf } from '../core/alerts.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const H = 3600_000

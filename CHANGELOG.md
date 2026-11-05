@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+- pace runs beyond Claude Code. Every session writes a feed, `~/.local/state/pace/feeds/<host>-<session>.json`
+  (a `PaceFeed`, version 1: host, provider, session, Herdr terminal when there is one, folder, time, snapshot and
+  context use), written aside then moved into place, whenever it changes and once a minute to stay live. Feeds are read
+  defensively and dropped after 6 hours without a write.
+- Codex CLI: `adapters/codex/hook.ts`, a Codex hook for `SessionStart`, `UserPromptSubmit`, `PostToolUse` and
+  `Stop`, reads the session's rollout on from where it left off and writes the session's feed. Its readings are
+  Codex's `codex` rate limit (`primary` the 5-hour window, `secondary` the week); the `premium` limit Codex
+  0.153–0.155 wrote with no windows is skipped. The README has the config to add; pace never writes Codex's
+  config itself.
+- `bin/band.ts`: the band, live, in any terminal, for the newest feed, a Herdr terminal's agent or a feed file; or
+  `--fleet`, every provider's quotas with the agents on each.
+- Herdr: a mod (`node scripts/herdr.ts install`) with the fleet, every provider ordered by the room its quotas leave,
+  and each live agent's band; click an agent to go to it. `band ⇥` opens the agent's band in a Herdr pane under it,
+  and `Claude charts ⇥` / `Codex charts ⇥` the harness's `/pace` pane, charted from all its live sessions together.
+  The mod draws whichever view its pane's props ask for.
+- `/pace` in Herdr opens pace in a Herdr pane beside the session, ahead of tmux: the harness's charts, or with
+  `band` the session's band and with `fleet` the fleet. In Claude Code `/pace` does it; in Codex the hook catches a
+  `/pace` prompt (sent by the custom prompt `adapters/codex/pace.md`, `/prompts:pace`), opens the view and blocks
+  the prompt before the model. A `/pace` prompt is not counted as a prompt. In Codex, `node scripts/codex.ts
+  install` adds `/prompts:pace` and the skill `$pace`; the hook catches `$pace` too, and the skill falls back to
+  running `node adapters/codex/open.ts` when the hook is not trusted. A view already open is focused rather
+  than opened again: each pace pane records its view under its pane in Herdr's shared state, `pace.panes`.
+- Herdr's panes no longer open empty. Drawing every session's week of history ran past the time Herdr gives a
+  mod for one call, and Herdr kept the empty first frame. A feed now carries its harness's whole history (the
+  Codex hook merges the other live Codex sessions'), so the fleet takes the session with the newest reading
+  rather than merge eleven copies of one history; the mod draws in steps, one call each; and a quota's price is
+  worked out in one pass over the spend. `node scripts/herdr.ts check` now checks each step on a week of feeds.
+- Herdr's panes fit their room: rows as tight as a terminal's, so a chart's braille rows meet, and the charts
+  grow to fill the pane's height as Claude Code's docked pane does. The rule moved to `fittedLayout` in
+  `core/view.ts`, which both use.
+- A host with no prompt cache (Codex) gets no cache row on its band: the core `Snapshot` gains `noCache`.
+- The pure core moved from `hooks/` to `core/`; Claude Code's usage parsers are `hooks/usage.ts`. No change for
+  the user.
+- The core suite also runs on Node (`testing/node.ts`) and inside Herdr's runtime (`node scripts/herdr.ts check`).
+  Tests that need Claude Code's engine are in `tests/claude/`.
+- Merging readings no longer slows with their number: each set of quotas' last reading is kept by key rather than
+  searched for.
 - The split comes to the Claude desktop app. There `/pace` (and `/pace split`, which no longer answers "Not
   inside tmux") opens a pane that is the split: its title and run, the `on` / `off` / `do` command bar as native
   buttons lit while on, each key its hotkey, and the body under it. `auto…`, `ultra…` and `plan…` show a list of

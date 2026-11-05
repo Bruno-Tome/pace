@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
-import type { Snapshot } from '../hooks/model.ts'
-import { bandLines, click, lineText, paneLines, picked, press, screen, screenOf, sideBySide, splitParts, statusRow, type Line, type Feed, type UiState } from '../hooks/view.ts'
+import type { Snapshot } from '../core/model.ts'
+import { bandLines, chartHeight, click, fittedLayout, lineText, paneLines, picked, press, screen, screenOf, sideBySide, splitParts, statusRow, type Line, type Feed, type UiState } from '../core/view.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const H = 3600_000
@@ -391,4 +391,35 @@ test('a plan picked starts the run it was picked for; a blank path cancels', () 
   expect(picked({ picking: 'ultra' }, ' PLAN.md ')).toEqual({ ui: {}, send: 'ultra PLAN.md' })
   expect(picked({ picking: 'plan' }, 'ROADMAP.md').send).toBe('plan ROADMAP.md')
   expect(picked({ picking: 'auto' }, '  ')).toEqual({ ui: {} })
+})
+
+test('a host with no prompt cache gets no cache row on the band, only its quotas', () => {
+  const s: Snapshot = { samples: [{ at: NOW, quotas: { five_hour: { percent: 30, resetsAt: NOW + 2.5 * H } } }], prompts: [], cache: null }
+  const texts = (lines: Line[]) => lines.map(l => l.map(x => x.t).join(''))
+  expect(texts(bandLines(s, NOW, 100)).join('\n')).toContain('cache')
+  const lines = texts(bandLines({ ...s, noCache: true }, NOW, 100))
+  expect(lines.length).toBe(1)
+  expect(lines.join('\n')).not.toContain('cache')
+})
+
+test('a pane for a host with no prompt cache leaves the cache and warm mode out, its charts and rate kept', () => {
+  const layout = { cols: 100, chartWidth: 60, chartHeight: () => 5 }
+  const text = (s: Snapshot) => paneLines(s, NOW, layout).map(l => l.map(x => x.t).join('')).join('\n')
+  expect(text(STATE)).toContain('Cache & tokens')
+  const without = text({ ...STATE, noCache: true })
+  expect(without).not.toContain('Cache & tokens')
+  expect(without).not.toContain('warm mode')
+  expect(without).toContain('Prompting')
+  expect(without).toContain('5-hour window')
+})
+
+test('a pane given rows grows its charts to fill them, each between its usual height and 16 rows', () => {
+  const lines = (rows: number) => paneLines(STATE, NOW, fittedLayout(STATE, NOW, 100, rows)).length
+  // Room to spare: the charts take it, so the lines come to the rows given, give or take a chart's rounding
+  expect(lines(80)).toBeGreaterThan(paneLines(STATE, NOW, fittedLayout(STATE, NOW, 100, 0)).length)
+  expect(lines(80)).toBeLessThanOrEqual(80)
+  // Too few rows: the charts keep their usual height rather than shrink
+  expect(lines(10)).toBe(paneLines(STATE, NOW, { cols: 100, chartWidth: 72, chartHeight }).length)
+  // Plenty: no chart taller than 16 rows
+  expect(lines(1000)).toBeLessThan(1000)
 })

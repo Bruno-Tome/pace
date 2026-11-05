@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { keyOf } from '../hooks/timeline.ts'
+import { keyOf } from '../core/timeline.ts'
 
 test('the arrows and the page keys are scroll keys', () => {
   expect(keyOf('\x1b[A')).toBe('up')

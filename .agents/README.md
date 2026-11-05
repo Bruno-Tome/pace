@@ -10,8 +10,10 @@ These are not optional. A change that skips one is not done.
 
 1. **Red first.** No production code without a failing test that asks for it. See
    [Test-driven development](#test-driven-development-red-first).
-2. **Green on all three.** `claude plugin test .`, `claude plugin validate .` and `tsc -p .` pass before a change
-   is called done. Run them and read the output; never claim a result you did not see.
+2. **Green on every host.** Claude Code (`claude plugin test .`, `claude plugin validate .`, `tsc -p .`), Node (the
+   core suite and the Node-only tests) and Herdr (`node scripts/herdr.ts check`) pass before a change is called
+   done; the commands are under [Checks](#checks). Run them and read the output; never claim a result you did not
+   see.
 3. **Never weaken a test to get green.** Do not delete, skip, loosen or rewrite an assertion to fit the code.
    If a test is wrong, say why in the change and fix the test on its own, red first like any other change.
 4. **Small and in scope.** Change what the task asks for. Note anything else you find; do not fix it on the way.
@@ -43,8 +45,14 @@ Choosing the test:
 - **A rule** (a level, a status, a budget, a merge) gets a unit test against the pure function that owns it:
   `tests/rate.test.ts`, `tests/spend.test.ts`, `tests/alerts.test.ts`, `tests/auto.test.ts`, and so on.
 - **What the user sees** (the band, the pane, a toast, a command) gets an integration test through the engine
-  with the fake world in `tests/world.ts`: submit prompts, move the clock, measure a reading, mount the surface
-  and read what was drawn.
+  with the fake world in `tests/claude/world.ts`: submit prompts, move the clock, measure a reading, mount the
+  surface and read what was drawn. Tests that need the engine live in `tests/claude/`.
+- **A host adapter's I/O** (the Codex hook, `bin/band.ts`, the Herdr build) gets an end-to-end test on Node: run
+  it in a scratch home and read what it wrote.
+- **Where a test runs.** A `*.test.ts` runs on every host: Claude Code loads every one under the repo, so it
+  imports only its own relative files and `claude-code/testing`, with the matchers `testing/expect.ts` has. A test
+  that needs Node (files, processes) is a `*.node-test.ts`, which Claude Code does not load, and imports
+  `testing/node.ts` itself.
 - A bug that shows on screen usually wants both: the integration test that reproduces it, and a unit test that
   pins the rule.
 
@@ -57,34 +65,49 @@ Writing the test:
 
 ## Architecture
 
-pace is one hooks module around a core of pure functions.
+pace is a core of pure functions, host-agnostic, with a thin adapter for each host it runs under: Claude Code,
+Codex and Herdr. [hosts.md](hosts.md) is the spec for the hosts.
 
 ```
-register.tsx    the shell: hooks, commands, state atoms, the shared store. The only module that touches `$`.
-model.ts        the core's entry: rows, the rate against each quota, advice, the public snapshot
-quota.ts        readings and windows, statuses, names
-rate.ts         the prompting rate; bar and sparkline primitives
-spend.ts        the shared spend; pacing in dollars an hour
-cache.ts        the prompt cache's timer and the next prompt's cost
-auto.ts         auto mode and on pace mode, as decisions the shell carries out
-throttle.ts     ultra pace's headroom and the gear it allows
-ultra.ts        ultra pace, as decisions on top of auto mode's
-alerts.ts       warnings, keyed so each is said once per window
-files.ts        the files pace writes in ~/.claude, shared with bin/viewer.ts
-view.ts         every drawing as lines of styled segments
-chart.ts        braille burn-up charts
-band-client.tsx the band's animation, on the client's frame clock
-plan.ts         the plan's checklist as steps on a timeline
-timeline.ts     the plan timeline's animation as frames, shared by the pane and the sidebar
-plan-client.tsx the timeline in a pane, on the client's frame clock
-bin/viewer.ts   the full-screen window, a Node process fed through a state file
-bin/plan-viewer.ts the plan's timeline as a tmux sidebar, fed through a file per session
-types/index.d.ts the public contract: stored shapes and `$.pace`
+hooks/register.tsx  the Claude Code adapter: hooks, commands, state atoms, the shared store. The only module that
+                    touches `$`.
+hooks/usage.ts      Claude Code's usage readings: the usage endpoint's answer and ~/.claude.json
+hooks/files.ts      the files pace writes in ~/.claude, shared with bin/viewer.ts
+hooks/band-client.tsx the band's animation, on the client's frame clock
+hooks/plan-client.tsx the timeline in a pane, on the client's frame clock
+core/model.ts       the core's entry: rows, the rate against each quota, advice, the public snapshot
+core/quota.ts       readings and windows, statuses, names
+core/rate.ts        the prompting rate; bar and sparkline primitives
+core/spend.ts       the shared spend; pacing in dollars an hour
+core/cache.ts       the prompt cache's timer and the next prompt's cost
+core/auto.ts        auto mode and on pace mode, as decisions the shell carries out
+core/throttle.ts    ultra pace's headroom and the gear it allows
+core/ultra.ts       ultra pace, as decisions on top of auto mode's
+core/alerts.ts      warnings, keyed so each is said once per window
+core/host.ts        the feed every host writes (PaceFeed), and the fleet: providers side by side
+core/view.ts        every drawing as lines of styled segments, the fleet's too
+core/chart.ts       braille burn-up charts
+core/plan.ts        the plan's checklist as steps on a timeline
+core/timeline.ts    the plan timeline's animation as frames, shared by the pane and the sidebar
+adapters/codex/     rollout.ts: Codex's rollout and hook input, pure; hook.ts: the hook that writes the feed;
+                    open.ts: /pace's views opened in Herdr; pace.md and skill/: /prompts:pace and $pace
+adapters/herdr/     main.ts: the Herdr mod, three views; draw.ts: segments as the theme's colors, which view, pure;
+                    open.ts: the herdr-app commands /pace runs to open a view beside a session, pure
+bin/viewer.ts       the full-screen window, a Node process fed through a state file
+bin/plan-viewer.ts  the plan's timeline as a tmux sidebar, fed through a file per session
+bin/band.ts         the band or the fleet, live, in any terminal, from the feeds
+testing/            expect.ts: the matchers, host-neutral; node.ts and register.ts: the suite on node:test;
+                    herdr.ts: the suite inside Herdr; load.ts: feeds the size real use makes
+scripts/herdr.ts    builds the Herdr mod and the check-only core suite; installs or checks them
+scripts/codex.ts    installs /prompts:pace and the pace skill into ~/.codex
+types/index.d.ts    the public contract: stored shapes and `$.pace`
 ```
 
 ### Rules
 
-- **A pure core and a thin shell.** Everything except `register.tsx` is pure: values in, values out, no `$`, no
+- **A pure core and thin adapters.** `core/` is pure, and so are `hooks/usage.ts`, `adapters/codex/rollout.ts`
+  and `adapters/herdr/draw.ts`. Of the rest, only `register.tsx` touches `$`; the hook, the bins, the mod and the
+  scripts do the I/O around pure functions. In the core: values in, values out, no `$`, no
   I/O, no `Date.now()`. Time comes in as `now`, data as a `Snapshot`. This is what makes every rule testable in
   milliseconds.
 - **Decisions, not actions.** Logic that would act returns what to do instead: `decide()` in `auto.ts` returns a
@@ -130,11 +153,27 @@ Write code that reads like the code around it.
 - **Docs move with the code.** A change the user can see updates the README and the changelog in the same
   change.
 
+## Checks
+
+```
+claude plugin test .                    # Claude Code: every *.test.ts, in the engine
+claude plugin validate .
+npx -y -p typescript tsc -p .           # tsc: the core, the Claude adapter, the pure adapter files
+node --import ./testing/register.ts --test tests/*.test.ts adapters/*/*.test.ts      # the core suite on Node
+node --test testing/*.node-test.ts scripts/*.node-test.ts adapters/codex/*.node-test.ts bin/*.node-test.ts  # Node-only
+node scripts/herdr.ts check             # Herdr: the mod, the core suite in a check-only mod, and each of the
+                                        # mod's steps on a week of feeds (testing/load.ts) within Herdr's budget
+```
+
+Node 23.6 or later runs these (it strips the types); the Herdr check needs `herdr-app` on the `PATH`. Modules a
+Herdr mod builds from import only relative `.ts` files, never `node:` or a package.
+
 ## Definition of done
 
 - [ ] A test was written first and seen to fail for the right reason.
 - [ ] `claude plugin test .` passes, with the new test among the passes.
 - [ ] `claude plugin validate .` passes.
 - [ ] `tsc -p .` is clean.
+- [ ] The core suite and the Node-only tests pass on Node, and `node scripts/herdr.ts check` passes.
 - [ ] The README and `CHANGELOG.md` say what changed, if a user or another mod can see it.
 - [ ] The diff holds only what the task asked for.

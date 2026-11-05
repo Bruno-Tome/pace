@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { formatTokens, formatUsd } from '../hooks/cache.ts'
-import { clockAt, formatDuration } from '../hooks/quota.ts'
+import { formatTokens, formatUsd } from '../core/cache.ts'
+import { clockAt, formatDuration } from '../core/quota.ts'
 
 describe('durations', () => {
   test('in the two largest units, a zero second unit left out', () => {

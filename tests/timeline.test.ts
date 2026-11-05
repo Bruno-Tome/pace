@@ -1,9 +1,9 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { PaceAuto } from '../types'
-import { stepsOf } from '../hooks/plan.ts'
-import { followOffset, nowRow } from '../hooks/timeline.ts'
-import { planLines, type Line } from '../hooks/view.ts'
+import { stepsOf } from '../core/plan.ts'
+import { followOffset, nowRow } from '../core/timeline.ts'
+import { planLines, type Line } from '../core/view.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const RUN: PaceAuto = { plan: 'PLAN.md', turns: 5, max: 40 }

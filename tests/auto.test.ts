@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { PaceQuota, PaceSnapshot } from '../types'
-import { answerQuestions, decide, effortFor, markerOf, protocol, upkeep, warmModeFor } from '../hooks/auto.ts'
+import { answerQuestions, decide, effortFor, markerOf, protocol, upkeep, warmModeFor } from '../core/auto.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const H = 3600_000

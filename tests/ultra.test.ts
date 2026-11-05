@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { PaceAuto, PaceGear, PaceQuota, PaceSnapshot, PaceUltra } from '../types'
-import type { Step } from '../hooks/plan.ts'
-import { decideUltra, fanoutPrompt, ultraProtocol, type UltraInput } from '../hooks/ultra.ts'
+import type { Step } from '../core/plan.ts'
+import { decideUltra, fanoutPrompt, ultraProtocol, type UltraInput } from '../core/ultra.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const H = 3600_000

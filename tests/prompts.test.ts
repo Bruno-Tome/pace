@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { PaceGear } from '../types'
-import { HANDOFF_FILE } from '../hooks/auto.ts'
+import { HANDOFF_FILE } from '../core/auto.ts'
 import {
   closingPrompt,
   FANOUT_DIR,
@@ -13,7 +13,7 @@ import {
   ultraProtocol,
   verifyPrompt,
   workPrompt,
-} from '../hooks/ultra.ts'
+} from '../core/ultra.ts'
 
 const PLAN = 'PLAN.md'
 const GEAR: PaceGear = { model: 'opus', effort: 'high', subagents: 2, subagentModel: 'sonnet', fanout: false }

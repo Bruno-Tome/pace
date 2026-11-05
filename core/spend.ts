@@ -85,6 +85,16 @@ const MIN_POINTS = 8
 export function quotaPerDollar(samples: readonly PaceSample[], key: string, spend: readonly Spend[], now: number): number | null {
   if (!spend.length) return null
   const from = Math.max(now - 7 * DAY, spend[0]!.t - HOUR)
+  // One pass: the readings come in time order, so each pair needs only the buckets that start from an hour before
+  // it (a bucket covers an hour at most) to its end, found from where the last pair's search began
+  const sorted = [...spend].sort((a, b) => a.t - b.t)
+  let lo = 0
+  const spentBetween = (a: number, b: number): number => {
+    while (lo < sorted.length && sorted[lo]!.t + HOUR <= a) lo++
+    let end = lo
+    while (end < sorted.length && sorted[end]!.t <= b) end++
+    return spendIn(sorted.slice(lo, end), a, b)
+  }
   let points = 0
   let usd = 0
   let prev: { at: number; r: PaceReading } | null = null
@@ -92,7 +102,7 @@ export function quotaPerDollar(samples: readonly PaceSample[], key: string, spen
     const r = s.quotas[key]
     if (!r || s.at < from || s.at > now) continue
     if (prev && r.resetsAt != null && prev.r.resetsAt != null && Math.abs(r.resetsAt - prev.r.resetsAt) <= 90_000 && r.percent >= prev.r.percent) {
-      const spent = spendIn(spend, prev.at, s.at)
+      const spent = spentBetween(prev.at, s.at)
       // Moved with nothing spent here: usage pace cannot see (claude.ai, another machine) would make a dollar look dearer
       if (spent > 0 || r.percent === prev.r.percent) {
         points += r.percent - prev.r.percent
