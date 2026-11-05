@@ -18,7 +18,7 @@ import { headroomOf, shiftGears, startGears } from '../core/throttle.ts'
 import { plainText, plansFor, route, stepOf, viewLines, type Host, type PaceAction } from '../core/api.ts'
 import { continuePrompt, decide, protocol, resumed, startPrompt } from '../core/auto.ts'
 import { commandOf } from '../core/command.ts'
-import { FEED_STALE, FEEDS_DIR, feedFile, feedOf, type PaceFeed, type PaceHost, type PaceProvider } from '../core/host.ts'
+import { feedFile, HOSTS, PROVIDERS, type PaceFeed, type PaceHost, type PaceProvider } from '../core/host.ts'
 import { meter } from '../core/meter.ts'
 import { snapshotOf } from '../core/model.ts'
 import { accountFor } from '../adapters/account.ts'
@@ -42,6 +42,11 @@ function argsOf(argv: readonly string[]): { host: PaceHost; provider: PaceProvid
 }
 
 const { host, provider, command } = argsOf(process.argv.slice(2))
+// A feed no reader accepts would be metered and never shown: refuse it at the start
+if (!PROVIDERS.includes(provider) || !HOSTS.includes(host) || !command.length) {
+  process.stderr.write(`pace-acp [--host h] [--provider p] -- <agent command>\n--provider takes ${PROVIDERS.slice(0, -1).join(', ')} or ${PROVIDERS.at(-1)}; --host takes ${HOSTS.join(', ')}\n`)
+  process.exit(2)
+}
 const home = homedir()
 const token = provider === 'antigravity' ? process.env.ANTIGRAVITY_CSRF_TOKEN || randomBytes(16).toString('hex') : undefined
 const agent = spawn(command[0]!, command.slice(1), { stdio: ['pipe', 'pipe', 'inherit'], env: { ...process.env, ...(token ? { ANTIGRAVITY_CSRF_TOKEN: token } : {}) } })
@@ -121,7 +126,8 @@ function acpHost(session?: string): Host {
   const o = session ? state.options[session] : undefined
   const surfaces: Host['surfaces'] = [...(process.env.HC_TERMINAL_ID ? ['herdr' as const] : []), ...(process.env.TMUX ? ['split' as const] : []), 'answer', ...(process.platform === 'darwin' ? ['window' as const] : [])]
   const drives: Host['drives'] = ['prompt', ...(o?.model ? ['model' as const] : []), ...(o?.thought ? ['effort' as const] : [])]
-  return { name: host === 'antigravity' ? 'Antigravity' : `this ${host} agent`, input: 'prompt', surfaces, drives, cache: false }
+  // The proxy keeps no modes of its own: auto mode and ultra pace live in the feed, on pace and warm mode nowhere yet
+  return { name: host === 'antigravity' ? 'Antigravity' : `this ${host} agent`, input: 'prompt', surfaces, drives, cache: false, keeps: [] }
 }
 
 /** A view opened where the core routed it (adapters/views.ts); what to say back */

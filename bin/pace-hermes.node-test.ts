@@ -37,7 +37,8 @@ async function bridge(dir: string, events: object[]): Promise<any[]> {
 const NOW = Date.now()
 const start = (mode = 'session') => ({ method: 'session/new', params: { session: 'h1', cwd: '/work/pace', mode, key: mode === 'bot' ? 'agent:main:telegram:dm:42' : undefined } })
 const usage = { method: '_pace/usage', params: { session: 'h1', provider: 'openai-codex', model: 'gpt-5.6-sol', usage: { input_tokens: 2000, cache_read_tokens: 8000, cache_write_tokens: 0, output_tokens: 300 }, context_length: 272000 } }
-const feedIn = (dir: string) => feedOf(readFileSync(join(dir, '.local/state/pace/feeds/hermes-h1.json'), 'utf8'))!
+/** The session's feed on a quota: one file per session and quota, so a move between providers keeps both */
+const feedIn = (dir: string, quota = 'codex') => feedOf(readFileSync(join(dir, `.local/state/pace/feeds/hermes-h1-${quota}.json`), 'utf8'))!
 
 describe('pace for Hermes', () => {
   test('meters a session: its prompts, its cache and context, and the account windows Hermes reads', async () => {
@@ -100,6 +101,8 @@ describe('pace for Hermes', () => {
     const feed = feedIn(dir)
     expect(feed.provider).toBe('codex')
     expect(feed.snapshot.prompts.length).toBe(1)
+    // Claude's feed is still there for the fleet and the other harnesses to read
+    expect(feedIn(dir, 'claude').provider).toBe('claude')
   })
 
   test('the pooled account Hermes read is the account: the same as Codex\'s own sign-in when it is that account', async () => {
@@ -115,12 +118,12 @@ describe('pace for Hermes', () => {
     const other = mkdtempSync(join(tmpdir(), 'pace-hermes-'))
     await bridge(other, [start(), usage, { method: '_pace/reading', params: { provider: 'openai-codex', identity: 'codex:acct-2:user-9', windows: [window] } }])
     expect(feedIn(other).account).toMatch(/^[0-9a-f]{16}$/)
-    expect(readFileSync(join(other, '.local/state/pace/feeds/hermes-h1.json'), 'utf8')).not.toContain('acct-2')
+    expect(readFileSync(join(other, '.local/state/pace/feeds/hermes-h1-codex.json'), 'utf8')).not.toContain('acct-2')
   })
 
   test('a provider pace does not pace writes no feed', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'pace-hermes-'))
     await bridge(dir, [start(), { ...usage, params: { ...usage.params, provider: 'openrouter' } }])
-    expect(existsSync(join(dir, '.local/state/pace/feeds/hermes-h1.json'))).toBe(false)
+    expect(existsSync(join(dir, '.local/state/pace/feeds/hermes-h1-codex.json'))).toBe(false)
   })
 })

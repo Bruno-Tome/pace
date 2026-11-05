@@ -88,7 +88,7 @@ describe('the Antigravity hook', () => {
       const feed = feedIn(h.dir)
       expect(feed).toMatchObject({ version: 1, host: 'antigravity', provider: 'antigravity', session: 'c1', cwd: '/work/pace' })
       expect(feed.snapshot.prompts.length).toBe(1)
-      expect(feed.snapshot.samples.at(-1).quotas.five_hour_gemini_3_1_pro).toMatchObject({ percent: 40, name: 'Gemini 3.1 Pro' })
+      expect(feed.snapshot.samples.at(-1).quotas.five_hour_gemini_3_1_pro).toMatchObject({ percent: 40, name: 'Gemini 3.1 Pro (Antigravity)' })
       expect(ls.asked.some(a => a === `POST /exa.language_server_pb.LanguageServerService/GetUserStatus ${CSRF}`)).toBe(true)
       // The account it is signed in with, as a keyed hash of the email the server names
       expect(feed.account).toMatch(/^[0-9a-f]{16}$/)

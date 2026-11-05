@@ -1,6 +1,7 @@
 // The account a Node adapter's session spends: pace's key made once, the email hashed, the account numbered. Run by
 // Node: `node --test adapters/account.node-test.ts`.
 
+import { spawn } from 'node:child_process'
 import { mkdtempSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -26,5 +27,19 @@ describe('the account a session spends', () => {
     expect(JSON.parse(readFileSync(join(home, ACCOUNTS_FILE), 'utf8'))).toEqual({ codex: [a, b] })
     expect(accountFor(home, 'codex', null)).toBeUndefined()
     expect(readFileSync(join(home, ACCOUNTS_FILE), 'utf8')).not.toContain('@')
+  })
+
+  test('is the same in processes that make the key at once: one key is made, and every one uses it', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'pace-account-'))
+    const script = `import { accountFor } from ${JSON.stringify(join(import.meta.dirname, 'account.ts'))}; process.stdout.write(accountFor(${JSON.stringify(home)}, 'codex', 'a@b.co'))`
+    const runs = Array.from({ length: 8 }, () => new Promise<string>(resolve => {
+      const child = spawn(process.execPath, ['--input-type=module', '-e', script])
+      let out = ''
+      child.stdout.on('data', d => { out += d })
+      child.on('exit', () => resolve(out))
+    }))
+    const ids = await Promise.all(runs)
+    expect(new Set(ids).size).toBe(1)
+    expect(ids[0]).toMatch(/^[0-9a-f]{16}$/)
   })
 })

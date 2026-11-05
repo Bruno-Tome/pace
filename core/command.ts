@@ -32,7 +32,12 @@ export type PaceCommand =
 const VIEWS: readonly ViewWhere[] = ['', 'split', 'pane', 'window', 'band', 'fleet']
 const WARM: readonly PaceWarmMode[] = ['off', 'ping', 'compact']
 
+/** The most turns a run may be given: a count past it is not one a person means, and Infinity would never stop */
+export const MAX_TURNS = 10_000
+
 const turns = (n: string | undefined, fallback: number) => (n ? Math.max(1, Number(n)) : fallback)
+const tooMany = (n: string | undefined) => n != null && !(Number(n) <= MAX_TURNS)
+const TOO_MANY = `A run takes at most ${MAX_TURNS} turns`
 
 function autoOf(rest: string): PaceCommand {
   const arg = rest.toLowerCase()
@@ -41,6 +46,7 @@ function autoOf(rest: string): PaceCommand {
   if (/^burst( on| off)?$/.test(arg)) return { kind: 'burst', on: !arg.endsWith('off') }
   const m = /^(\S+)(?:\s+(\d+))?$/.exec(rest || DEFAULT_PLAN)
   if (!m) return { kind: 'error', text: 'Use /pace auto [plan file] [turns], /pace auto off or /pace auto resume' }
+  if (tooMany(m[2])) return { kind: 'error', text: TOO_MANY }
   return { kind: 'auto', plan: m[1]!, max: turns(m[2], AUTO_TURNS) }
 }
 
@@ -51,6 +57,7 @@ function ultraOf(rest: string): PaceCommand {
   if (arg === 'preview') return { kind: 'preview' }
   const m = /^(\S+)?(?:\s+(\d+))?(?:\s+([\w.-]+)\.\.([\w.-]+))?$/.exec(rest)
   if (!m) return { kind: 'error', text: 'Use /pace ultra [plan file] [turns] [floor..ceiling], /pace ultra off or /pace ultra resume' }
+  if (tooMany(m[2])) return { kind: 'error', text: TOO_MANY }
   return { kind: 'ultra', plan: m[1] ?? DEFAULT_PLAN, max: turns(m[2], ULTRA_TURNS), ...(m[3] ? { floor: m[3], ceiling: m[4]! } : {}) }
 }
 

@@ -4,7 +4,7 @@
 // ~/.local/state/pace/accounts.json, which holds ids only. No email is written anywhere.
 
 import { randomBytes } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync, writeSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 import { accountId, numbered, type Accounts } from '../core/account.ts'
@@ -14,9 +14,11 @@ export const ACCOUNTS_FILE = '.local/state/pace/accounts.json'
 
 function write(path: string, text: string, mode = 0o644): void {
   mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(`${path}.tmp`, text, { mode })
-  chmodSync(`${path}.tmp`, mode)
-  renameSync(`${path}.tmp`, path)
+  // A temp file of this process's own: two writing at once never rename each other's away
+  const tmp = `${path}.${process.pid}.tmp`
+  writeFileSync(tmp, text, { mode })
+  chmodSync(tmp, mode)
+  renameSync(tmp, path)
 }
 
 /** pace's key, made on first use */
@@ -24,9 +26,19 @@ function keyIn(home: string): string {
   const path = join(home, KEY_FILE)
   const stored = existsSync(path) ? readFileSync(path, 'utf8').trim() : ''
   if (/^[0-9a-f]{64}$/.test(stored)) return stored
-  const key = randomBytes(32).toString('hex')
-  write(path, key, 0o600)
-  return key
+  // Made by one process alone: an exclusive create, so two sessions starting at once never hash with two keys
+  mkdirSync(dirname(path), { recursive: true })
+  try {
+    const fd = openSync(path, 'wx', 0o600)
+    writeSync(fd, randomBytes(32).toString('hex'))
+    closeSync(fd)
+  } catch {}
+  for (let tries = 0; tries < 50; tries++) {
+    const made = readFileSync(path, 'utf8').trim()
+    if (/^[0-9a-f]{64}$/.test(made)) return made
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
+  }
+  throw new Error('pace: the key file is not a key')
 }
 
 /** The accounts pace has seen; what parses of them */

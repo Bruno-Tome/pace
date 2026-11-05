@@ -22,6 +22,8 @@ export type ProxyState = {
   pending: Record<string, string>
   /** `session/new` requests on their way, by id: the folder each named */
   newAt: Record<string, string>
+  /** `session/load` and `session/resume` requests on their way, by id: the session and the folder each named */
+  loading: Record<string, { session: string; cwd: string }>
   /** Each session's cumulative cost in dollars, as last told */
   cost: Record<string, number>
   /** What the agent said in each session's turn so far */
@@ -32,7 +34,7 @@ export type ProxyState = {
   ours: number
 }
 
-export const PROXY_START: ProxyState = { pending: {}, newAt: {}, cost: {}, said: {}, options: {}, ours: 0 }
+export const PROXY_START: ProxyState = { pending: {}, newAt: {}, loading: {}, cost: {}, said: {}, options: {}, ours: 0 }
 
 export type ProxyOut = {
   toAgent: Rpc[]
@@ -55,6 +57,10 @@ const textOf = (prompt: unknown) => (Array.isArray(prompt) ? prompt.filter(b => 
 export function fromClient(s: ProxyState, m: Rpc): [ProxyState, ProxyOut] {
   if (m.method === 'session/new' && m.id != null) {
     return [{ ...s, newAt: { ...s.newAt, [String(m.id)]: String(m.params?.cwd ?? '') } }, out({ toAgent: [m] })]
+  }
+  // A session the client reopens: metered as a new one once the agent has it
+  if ((m.method === 'session/load' || m.method === 'session/resume') && m.id != null && typeof m.params?.sessionId === 'string') {
+    return [{ ...s, loading: { ...s.loading, [String(m.id)]: { session: m.params.sessionId, cwd: String(m.params?.cwd ?? '') } } }, out({ toAgent: [m] })]
   }
   if (m.method === 'session/prompt' && m.id != null) {
     const session = String(m.params?.sessionId ?? '')
@@ -87,6 +93,12 @@ export function fromAgent(s: ProxyState, m: Rpc): [ProxyState, ProxyOut] {
     if (id in s.newAt && typeof m.result?.sessionId === 'string') {
       const session = m.result.sessionId as string
       return [{ ...s, newAt: without(s.newAt, id), options: { ...s.options, [session]: optionsOf(m.result.configOptions) } }, out({ toClient, meter: [{ kind: 'session', session, cwd: s.newAt[id]! }] })]
+    }
+    if (id in s.loading) {
+      const { session, cwd } = s.loading[id]!
+      const next = { ...s, loading: without(s.loading, id) }
+      if (m.error) return [next, out({ toClient })]
+      return [{ ...next, options: { ...s.options, [session]: optionsOf(m.result?.configOptions) } }, out({ toClient, meter: [{ kind: 'session', session, cwd }] })]
     }
     if (id in s.pending) {
       const session = s.pending[id]!

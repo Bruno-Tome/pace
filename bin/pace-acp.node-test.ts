@@ -1,7 +1,7 @@
 // The ACP proxy end to end: a client's JSON-RPC in, a fake agent behind it, the feed and the answers out, in a scratch
 // home. Run by Node: `node --test bin/pace-acp.node-test.ts`.
 
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -98,6 +98,13 @@ describe('pace between an ACP client and an agent', () => {
     const dir = mkdtempSync(join(tmpdir(), 'pace-acp-'))
     const got = await session(dir, ['--host', 'codex', '--provider', 'codex'], [...START, ask(3, '/pace ultra')])
     expect(got.find(m => m.params?.update?.sessionUpdate === 'agent_message_chunk').params.update.content.text).toContain('Ultra pace is not in')
+  })
+
+  test('refuses a host or provider no reader of the feeds accepts, saying which it takes', () => {
+    const r = spawnSync(process.execPath, [BIN, '--provider', 'gemini', '--', 'true'], { encoding: 'utf8' })
+    expect(r.status).toBe(2)
+    expect(r.stderr).toContain('--provider takes claude, codex or antigravity')
+    expect(spawnSync(process.execPath, [BIN, '--host', 'acp', '--', 'true'], { encoding: 'utf8' }).status).toBe(2)
   })
 
   test('starts agy with a CSRF token of its own, so pace can ask its server for the quotas', async () => {

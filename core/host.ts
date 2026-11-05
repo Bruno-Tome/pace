@@ -45,8 +45,8 @@ export const FEED_STALE = 6 * 3600_000
 /** The folder of feeds, relative to the home directory */
 export const FEEDS_DIR = '.local/state/pace/feeds'
 
-const HOSTS: readonly PaceHost[] = ['claude', 'codex', 'pi', 'antigravity', 'hermes']
-const PROVIDERS: readonly PaceProvider[] = ['claude', 'codex', 'antigravity']
+export const HOSTS: readonly PaceHost[] = ['claude', 'codex', 'pi', 'antigravity', 'hermes']
+export const PROVIDERS: readonly PaceProvider[] = ['claude', 'codex', 'antigravity']
 const WARM: readonly PaceWarmMode[] = ['off', 'ping', 'compact']
 
 /** One host session's feed file, relative to the home directory; the session id kept to a safe file name */

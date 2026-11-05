@@ -41,6 +41,8 @@ export type Host = {
   cache: boolean
   /** How long, in ms, it can wait out a hold in place; absent for as long as needed */
   holdUpTo?: number
+  /** The preferences it keeps and carries out; absent for all of them */
+  keeps?: readonly (keyof HostPrefs)[]
 }
 
 /** A view pace draws: the charts, the band, the fleet, the plan's timeline */
@@ -122,10 +124,12 @@ export function route(c: PaceCommand, h: Host): PaceAction {
       if (!has(h, 'status')) return { kind: 'say', text: `${h.name} has no status line pace can write to` }
       return { kind: 'prefs', prefs: { line: c.on }, text: `Pace status line ${c.on ? 'on' : 'off'}` }
     case 'onPace':
+      if (h.keeps && !h.keeps.includes('onPace')) return { kind: 'say', text: `On pace mode is not in ${h.name} yet: pace keeps no modes there` }
       if (!can(h, 'compact') && !can(h, 'effort')) return { kind: 'say', text: `On pace mode is not in ${h.name}: pace cannot lower its effort or compact it. pace still warns before a quota gasses out` }
       return { kind: 'prefs', prefs: { onPace: c.on }, text: c.on ? 'On pace mode on: compacts a heavy context while its cache is warm, keeps a large idle cache warm, and lowers the effort while the rate would gas a quota out' : 'On pace mode off' }
     case 'warm':
       if (!h.cache) return { kind: 'say', text: `Warm mode is not in ${h.name}: it reports no prompt cache` }
+      if (!can(h, 'ping') && !can(h, 'compact')) return { kind: 'say', text: `Warm mode is not in ${h.name}: pace cannot ping its cache or compact it` }
       if (c.mode === 'ping' && !can(h, 'ping')) return { kind: 'say', text: `${h.name} cannot ping its cache: /pace warm compact keeps it warm by compacting` }
       if (c.mode === 'compact' && !can(h, 'compact')) return { kind: 'say', text: `${h.name} cannot compact for pace: /pace warm ping keeps its cache warm` }
       return { kind: 'prefs', prefs: { warm: c.mode }, text: c.mode === 'off' ? 'Warm mode off' : `Warm mode ${c.mode}: ${WARM_TEXT(c.mode === 'ping' ? 'sends one word to keep it warm' : 'compacts')}` }

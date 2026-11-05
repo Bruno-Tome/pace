@@ -100,6 +100,18 @@ describe('what drives the agent goes where the host can carry it out', () => {
     expect(r('warm off', codex)).toEqual({ kind: 'say', text: 'Warm mode is not in Codex: it reports no prompt cache' })
   })
 
+  test('warm mode is said to be missing where the host can neither ping nor compact, never sent in a circle', () => {
+    const hermes: Host = { name: 'Hermes', input: 'prompt', surfaces: ['answer'], drives: ['prompt'], cache: true }
+    const text = 'Warm mode is not in Hermes: pace cannot ping its cache or compact it'
+    expect(r('warm ping', hermes)).toEqual({ kind: 'say', text })
+    expect(r('warm compact', hermes)).toEqual({ kind: 'say', text })
+  })
+
+  test('a mode is set only where the host keeps it: over ACP nothing keeps on pace mode, so it says so', () => {
+    const acp: Host = { name: 'this agent', input: 'prompt', surfaces: ['answer'], drives: ['prompt', 'effort'], cache: false, keeps: [] }
+    expect(r('on', acp)).toEqual({ kind: 'say', text: 'On pace mode is not in this agent yet: pace keeps no modes there' })
+  })
+
   test('the band and the status line are preferences where the host shows them', () => {
     expect(r('hide', pi)).toEqual({ kind: 'prefs', prefs: { band: false }, text: 'Pace band hidden; /pace show brings it back' })
     expect(r('line off', claude)).toEqual({ kind: 'prefs', prefs: { line: false }, text: 'Pace status line off' })

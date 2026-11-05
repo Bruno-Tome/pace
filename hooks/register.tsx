@@ -21,7 +21,8 @@ import { alertsOf } from '../core/alerts.ts'
 import { AUTO_TURNS, commandOf, DEFAULT_PLAN, ULTRA_TURNS, USAGE, type PaceCommand } from '../core/command.ts'
 import { route, type Host, type PaceAction, type Surface } from '../core/api.ts'
 import { accountId, numbered, type Accounts } from '../core/account.ts'
-import { feedFile, type PaceFeed } from '../core/host.ts'
+import { FEED_STALE, FEEDS_DIR, feedFile, feedOf as parseFeed, type PaceFeed } from '../core/host.ts'
+import { pooled } from '../core/meter.ts'
 import { ALREADY_OPEN, herdrOpen, herdrReuse, paceViewOf, registryIn, sharedFile } from '../adapters/herdr/open.ts'
 import { ACCOUNTS_FILE, KEY_FILE, keysFile, planFeedFile, ROW_FILE, stateFile, viewFile } from './files.ts'
 import { isSessionKey, isStale, prefsFrom, sessionKey, sessionOf, sharedOf } from '../core/prefs.ts'
@@ -64,7 +65,34 @@ const splitUiA = atom({ plugin: 'pace', key: 'splitUi' } as const, {} as UiState
 const toText = (T: ElementConstructor<TextProps>, segs: readonly Seg[]): RenderElement[] =>
   segs.map(s => (s.dim ? <T dimColor bold={s.bold}>{s.t}</T> : <T color={s.color} bold={s.bold}>{s.t}</T>))
 
+/** The other live feeds, read at most once a minute: the harnesses on this session's quota pool into its snapshot */
+let shared: { at: number; feeds: PaceFeed[] } = { at: -Infinity, feeds: [] }
+
+async function sharedFeeds($: Engine, now: number): Promise<PaceFeed[]> {
+  if (now - shared.at < MIN) return shared.feeds
+  const home = await homeOf($)
+  if (!home) return []
+  await accountOf($, home)
+  const dir = `${home}/${FEEDS_DIR}`
+  const own = feedFile('claude', spendId).split('/').pop()
+  const names = await $.fs.list(dir).then(es => es.map(e => e.name)).catch(() => [] as string[])
+  const feeds: PaceFeed[] = []
+  for (const name of names) {
+    if (!name.endsWith('.json') || name === own) continue
+    const f = parseFeed(String(await $.fs.read(`${dir}/${name}`).catch(() => '')))
+    if (f && f.at >= now - FEED_STALE) feeds.push(f)
+  }
+  shared = { at: now, feeds }
+  return feeds
+}
+
 async function snapshot($: Engine): Promise<Snapshot> {
+  const now = await $.clock.now()
+  return pooled(await ownSnapshot($), await sharedFeeds($, now), { provider: 'claude', ...(accountCache ? { account: accountCache.id } : {}) }, { host: 'claude', session: spendId }, now)
+}
+
+/** This session's snapshot from Claude Code's own store, before the other harnesses on its quota join it */
+async function ownSnapshot($: Engine): Promise<Snapshot> {
   return {
     samples: (await read($, samplesA)) ?? [],
     prompts: (await read($, promptsA)) ?? [],

@@ -5,8 +5,10 @@
 // (core/estimate.ts). Pure; times in ms.
 
 import type { PaceCacheInfo, PaceCacheTtl, PaceSample } from '../types'
+import { learnsFrom } from './account.ts'
 import { estimateOf, type Capacities } from './estimate.ts'
 import type { PaceContext, PaceFeed, PaceHost, PaceProvider } from './host.ts'
+import type { Snapshot } from './model.ts'
 import { mergeSamples } from './quota.ts'
 import { mergePrompts } from './rate.ts'
 import { addSpend, mergeSpend } from './spend.ts'
@@ -63,7 +65,11 @@ export function meter(prev: PaceFeed | null, e: Metered, others: readonly PaceFe
   const own = prev && sameQuota(prev, q) ? prev : null
   const theirs = others.filter(f => sameQuota(f, q) && !(f.host === e.host && f.session === e.session))
   const all = [own?.snapshot, ...theirs.map(f => f.snapshot)].filter(s => s != null)
-  const history = mergeSamples(real(all.flatMap(s => s.samples)), e.samples ?? [])
+  // Readings are an account's own: from feeds that name it, or, for a session that cannot tell, only while its
+  // provider has one account here (core/account.ts). Prompts and spend pool across the quota as before
+  const teachers = e.account ? theirs.filter(f => f.account === e.account) : learnsFrom(theirs, e.provider, undefined)
+  const read = [own?.snapshot, ...teachers.map(f => f.snapshot)].filter(s => s != null)
+  const history = mergeSamples(real(read.flatMap(s => s.samples)), e.samples ?? [])
   const prompts = mergePrompts(all.flatMap(s => s.prompts), e.prompted ? [e.now] : [], e.now)
   const before = mergeSpend([], all.flatMap(s => s.spend ?? []), e.now)
   const spend = e.spent && e.spent > 0 ? addSpend(before, e.session, e.now, e.spent, e.now) : before
@@ -84,5 +90,20 @@ export function meter(prev: PaceFeed | null, e: Metered, others: readonly PaceFe
       ...(own?.snapshot.auto ? { auto: own.snapshot.auto } : {}),
     },
     ...(context ? { context } : {}),
+  }
+}
+
+/**
+ * A snapshot a harness keeps in a store of its own (Claude Code's), with the prompts and spend of the other
+ * harnesses' live sessions on its quota pooled in, so its rate is the whole quota's. Its own feed is left out; another
+ * account's feeds never join
+ */
+export function pooled(s: Snapshot, others: readonly PaceFeed[], q: QuotaOf, self: { host: PaceHost; session: string }, now: number): Snapshot {
+  const theirs = others.filter(f => sameQuota(f, q) && (!q.account || f.account === q.account || !f.account) && !(f.host === self.host && f.session === self.session))
+  if (!theirs.length) return s
+  return {
+    ...s,
+    prompts: mergePrompts(s.prompts, theirs.flatMap(f => f.snapshot.prompts), now),
+    spend: mergeSpend(s.spend ?? [], theirs.flatMap(f => f.snapshot.spend ?? []), now),
   }
 }

@@ -70,3 +70,12 @@ describe('a prompt that is /pace', () => {
     expect(paceArgsOf('why is /pace slow')).toBeNull()
   })
 })
+
+describe('a turn count', () => {
+  test('too large to be a number of turns is refused, so auto mode always stops', () => {
+    const huge = '9'.repeat(400)
+    expect(commandOf(`auto ROADMAP.md ${huge}`).kind).toBe('error')
+    expect(commandOf(`ultra ROADMAP.md ${huge}`).kind).toBe('error')
+    expect(commandOf('auto ROADMAP.md 1000')).toEqual({ kind: 'auto', plan: 'ROADMAP.md', max: 1000 })
+  })
+})

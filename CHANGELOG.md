@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- From the review by four agents on four accounts (`.agents/review-2026-11-05.md`):
+  - Metering keeps each account's readings its own. `meter` takes readings only from feeds of the session's account,
+    and from none while a session that cannot tell has two accounts on its provider. Prompts and spend still pool.
+    The adapters' own guards are gone.
+  - Claude Code pools the prompts and spend of the other harnesses on its Claude account into its snapshot
+    (`pooled`, reading the feeds at most once a minute).
+  - A turn count past 10,000 is refused (`MAX_TURNS`), so auto mode always stops.
+  - Hosts declare the modes they keep (`Host.keeps`, additive), so `/pace on` over ACP no longer claims a mode that
+    nothing runs. A host that can neither ping nor compact says warm mode is not there, instead of pointing in a
+    circle.
+  - `pace-acp` meters sessions the client loads or resumes, and refuses a host or provider no reader accepts.
+  - Hermes keeps one feed file per session and quota, and tells a restarted bridge its sessions again.
+  - Making pace's key and numbering accounts is safe in parallel processes.
+  - Antigravity's per-model quotas are named as Antigravity's ("Claude Opus 4.6 (Antigravity)").
+
 - Fixes from the live test of every harness (`.agents/live-test.md`):
   - Antigravity's plugin ships a `pace` skill, so `agy` knows `/pace` and never completes it to another skill. The
     hook reads `/pace:pace` as `/pace`.

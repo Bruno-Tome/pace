@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { PaceFeed } from '../core/host.ts'
 import type { Snapshot } from '../core/model.ts'
-import { meter, sameQuota, type Metered } from '../core/meter.ts'
+import { meter, pooled, sameQuota, type Metered } from '../core/meter.ts'
 
 const NOW = Date.UTC(2026, 10, 5, 12)
 const MIN = 60_000
@@ -101,5 +101,38 @@ describe('a host told no readings estimates them', () => {
     const capacities = { five_hour: { usd: 10, at: NOW - H, source: 'limit' as const } }
     const f = meter(null, ev({ spent: 2 }), [feed({ snapshot: reading(NOW - 5 * MIN, 30) })], { cache: true, estimate: true, capacities })
     expect(f.snapshot.samples.map(s => s.quotas.five_hour!.percent)).toEqual([30])
+  })
+})
+
+describe('one account\'s readings never reach another\'s history', () => {
+  test('a session that knows its account takes readings only from feeds of that account; prompts from a feed with none still pool', () => {
+    const none = feed({ session: 'x', snapshot: { ...reading(NOW - MIN, 90), prompts: [NOW - 2 * MIN] } })
+    const f = meter(null, ev({ account: 'a2' }), [none], PLAIN)
+    expect(f.snapshot.samples).toEqual([])
+    expect(f.snapshot.prompts).toEqual([NOW - 2 * MIN])
+  })
+
+  test('a session that does not, while its provider has two accounts here, takes readings from neither', () => {
+    const a1 = feed({ session: 'a', account: 'a1', snapshot: reading(NOW - MIN, 40) })
+    const a2 = feed({ session: 'b', account: 'a2', snapshot: reading(NOW - MIN, 80) })
+    expect(meter(null, ev({}), [a1, a2], PLAIN).snapshot.samples).toEqual([])
+    expect(meter(null, ev({}), [a1], PLAIN).snapshot.samples.map(s => s.quotas.five_hour!.percent)).toEqual([40])
+  })
+})
+
+describe('a harness that keeps its own store pools the rest of its quota', () => {
+  test('the prompts and spend of the other harnesses on its quota join its snapshot; another account\'s do not', () => {
+    const own = { samples: [], prompts: [NOW - 3 * MIN], cache: null, spend: [{ t: NOW - 3 * MIN, id: 'k1', usd: 1 }] }
+    const pi = feed({ host: 'pi', provider: 'claude', account: 'a1', session: 'p1', snapshot: { samples: [], prompts: [NOW - MIN], cache: null, spend: [{ t: NOW - MIN, id: 'p1', usd: 2 }] } })
+    const other = feed({ host: 'pi', provider: 'claude', account: 'a2', session: 'p2', snapshot: { samples: [], prompts: [NOW - 2 * MIN], cache: null } })
+    const s = pooled(own, [pi, other], { provider: 'claude', account: 'a1' }, { host: 'claude', session: 'k1' }, NOW)
+    expect(s.prompts).toEqual([NOW - 3 * MIN, NOW - MIN])
+    expect(s.spend!.reduce((n, x) => n + x.usd, 0)).toBe(3)
+  })
+
+  test('its own feed is never pooled into itself', () => {
+    const own = { samples: [], prompts: [NOW - MIN], cache: null }
+    const self = feed({ host: 'claude', provider: 'claude', account: 'a1', session: 'k1', snapshot: { samples: [], prompts: [NOW - MIN, NOW - 5 * MIN], cache: null } })
+    expect(pooled(own, [self], { provider: 'claude', account: 'a1' }, { host: 'claude', session: 'k1' }, NOW).prompts).toEqual([NOW - MIN])
   })
 })

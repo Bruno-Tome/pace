@@ -55,7 +55,7 @@ ctx.hooks['post_api_request'](session_id='h1', provider='openai-codex', model='g
 out['answer'] = ctx.commands['pace']('hide')
 `)
     expect(out.answer).toBe('Hermes has no band of its own: /pace band opens one beside it')
-    const feed = feedOf(readFileSync(join(home, '.local/state/pace/feeds/hermes-h1.json'), 'utf8'))!
+    const feed = feedOf(readFileSync(join(home, '.local/state/pace/feeds/hermes-h1-codex.json'), 'utf8'))!
     expect(feed).toMatchObject({ host: 'hermes', provider: 'codex', session: 'h1', context: { tokens: 10_000, window: 272_000 } })
     expect(feed.snapshot.prompts.length).toBe(1)
   })
@@ -82,11 +82,23 @@ ctx.hooks['post_api_request'](session_id='c1', provider='openai-codex', model='g
 ctx.hooks['post_auxiliary_call'](session_id='h1', provider='openai-codex', model='gpt-5.4-mini', aux_task='compression', usage={'input_tokens': 90000}, context_length=128000)
 out['answer'] = ctx.commands['pace']('pane')
 `)
-    expect(existsSync(join(home, '.local/state/pace/feeds/hermes-c1.json'))).toBe(false)
-    const feed = feedOf(readFileSync(join(home, '.local/state/pace/feeds/hermes-h1.json'), 'utf8'))!
+    expect(existsSync(join(home, '.local/state/pace/feeds/hermes-c1-codex.json'))).toBe(false)
+    const feed = feedOf(readFileSync(join(home, '.local/state/pace/feeds/hermes-h1-codex.json'), 'utf8'))!
     expect(feed.snapshot.prompts.length).toBe(1)
     expect(feed.context).toEqual({ tokens: 10_000, window: 272_000 })
     expect(out.answer).toContain('hermes · pace')
+  })
+
+  test('after the bridge restarts, a bot\'s session is still a bot\'s: the plugin tells the new bridge again', () => {
+    const { out } = run(`
+ctx.hooks['pre_llm_call'](session_id='h1', user_message='hi')
+ctx.hooks['post_api_request'](session_id='h1', provider='openai-codex', model='gpt-5.6-sol', ${USAGE})
+time.sleep(0.3)
+pace._state['proc'].kill(); pace._state['proc'].wait()
+ctx.hooks['post_api_request'](session_id='h1', provider='openai-codex', model='gpt-5.6-sol', ${USAGE})
+out['answer'] = ctx.commands['pace']('window')
+`, { HERMES_SESSION_PLATFORM: 'telegram', HERMES_SESSION_KEY: 'agent:main:telegram:dm:42' })
+    expect(out.answer).toContain('Hermes (bot) has no window of its own')
   })
 
   test('a /pace prompt is not counted, and a provider pace does not pace writes nothing', () => {
@@ -94,6 +106,6 @@ out['answer'] = ctx.commands['pace']('pane')
 ctx.hooks['pre_llm_call'](session_id='h1', user_message='/pace fleet')
 ctx.hooks['post_api_request'](session_id='h1', provider='openrouter', model='x', ${USAGE})
 `)
-    expect(existsSync(join(home, '.local/state/pace/feeds/hermes-h1.json'))).toBe(false)
+    expect(existsSync(join(home, '.local/state/pace/feeds/hermes-h1-codex.json'))).toBe(false)
   })
 })

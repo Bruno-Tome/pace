@@ -17,12 +17,13 @@ const model = (label: string, quotaInfo?: object, over: object = {}) => ({ label
 describe('the language server\'s readings', () => {
   test('are each model\'s use, in percent, with its reset: a reset within five hours is a 5-hour window', () => {
     const s = sampleOf(status([model('Gemini 3.1 Pro (High)', { remainingFraction: 0.6, resetTime: iso(NOW + 2 * H) })]), NOW, [])
-    expect(s).toEqual({ at: NOW, quotas: { five_hour_gemini_3_1_pro: { percent: 40, resetsAt: NOW + 2 * H, name: 'Gemini 3.1 Pro' } } })
+    expect(s).toEqual({ at: NOW, quotas: { five_hour_gemini_3_1_pro: { percent: 40, resetsAt: NOW + 2 * H, name: 'Gemini 3.1 Pro (Antigravity)' } } })
   })
 
   test('a reset further off than five hours is a week', () => {
     const s = sampleOf(status([model('Claude Sonnet 4.6 (Thinking)', { remainingFraction: 0.75, resetTime: iso(NOW + 3 * 24 * H) })]), NOW, [])
-    expect(s!.quotas).toEqual({ seven_day_claude_sonnet_4_6: { percent: 25, resetsAt: NOW + 3 * 24 * H, name: 'Claude Sonnet 4.6' } })
+    // Antigravity's quota for a Claude model, named as Antigravity's so it is never taken for Claude Code's
+    expect(s!.quotas).toEqual({ seven_day_claude_sonnet_4_6: { percent: 25, resetsAt: NOW + 3 * 24 * H, name: 'Claude Sonnet 4.6 (Antigravity)' } })
   })
 
   test('a quota with no fraction left is spent: proto3 leaves a zero out', () => {

@@ -27,7 +27,7 @@ import { HOST_PREFS, route, stepOf, warmStep, type Host, type HostPrefs, type Pa
 import { PI_THINKING, thinkingFor } from './commands.ts'
 import { ladderFor, type Ladder } from '../../core/gears.ts'
 import { coldAt, headroomOf, shiftGears, startGears } from '../../core/throttle.ts'
-import { emailOfJwt, learnsFrom, soleAccount } from '../../core/account.ts'
+import { emailOfJwt, soleAccount } from '../../core/account.ts'
 import { accountFor } from '../account.ts'
 import { isLimit, nextFeed, providerOf } from './feed.ts'
 
@@ -199,12 +199,11 @@ export default function pace(pi: Pi): void {
     }
     const capPath = join(home, capacityFile(provider))
     const known = capacitiesIn(capPath)
-    const teachers = learnsFrom(others, provider, account)
-    const seen = nextFeed(before, event, teachers, known)
+    const seen = nextFeed(before, event, others, known)
     const learned = learn(known, { ...seen.snapshot, spend: seen.snapshot.spend ?? [], ...(happened.limit ? { limitAt: now } : {}) }, now)
     const changed = JSON.stringify(learned) !== JSON.stringify(known)
     if (changed) writeAtomically(capPath, JSON.stringify(learned))
-    const feed = changed ? nextFeed(before, event, teachers, learned) : seen
+    const feed = changed ? nextFeed(before, event, others, learned) : seen
     writeAtomically(path, JSON.stringify(feed))
     prev = feed
     draw(ctx, feed, now)

@@ -12,7 +12,7 @@ import { createInterface } from 'node:readline'
 
 import type { PaceSample } from '../types'
 import { route, stepOf } from '../core/api.ts'
-import { emailOfJwt, learnsFrom, soleAccount } from '../core/account.ts'
+import { emailOfJwt, soleAccount } from '../core/account.ts'
 import { accountFor, accountForIdentity } from '../adapters/account.ts'
 import { continuePrompt, decide, protocol, resumed, startPrompt } from '../core/auto.ts'
 import { commandOf } from '../core/command.ts'
@@ -54,8 +54,10 @@ function accountOfIdentity(q: PaceProvider, identity: string): string | undefine
 
 const say = (m: object) => process.stdout.write(`${JSON.stringify(m)}\n`)
 const where = () => ({ herdr: !!process.env.HC_TERMINAL_ID, tmux: !!process.env.TMUX, mac: process.platform === 'darwin' })
-const fileOf = (session: string) => feedFile('hermes', session)
-const othersOf = (session: string) => liveFeeds(home, fileOf(session).split('/').pop()!, Date.now())
+/** A session's feed on a quota: one file per session and quota, so a move between Claude and ChatGPT keeps both */
+const fileOf = (session: string, q: PaceProvider) => feedFile('hermes', `${session}-${q}`)
+/** The live feeds but this session's (core/meter.ts leaves its own out by host and session) */
+const othersOf = (session: string) => liveFeeds(home, '', Date.now()).filter(f => !(f.host === 'hermes' && f.session === session))
 
 const sessionOf = (id: string): Session => {
   const known = sessions.get(id)
@@ -73,15 +75,14 @@ function record(id: string, e: Partial<Metered> = {}): PaceFeed | null {
   const others = othersOf(id)
   const reading = readings.get(s.provider)
   const account = accounts.get(s.provider) ?? soleAccount(others, s.provider)
-  const learn = learnsFrom(others, s.provider, account)
   const prompted = s.prompted > 0 || !!e.prompted
   s.prompted = 0
   const feed = meter(s.feeds.get(s.provider) ?? (s.feed?.provider === s.provider ? s.feed : null), {
     host: 'hermes', provider: s.provider, ...(account ? { account } : {}), session: id, cwd: s.cwd, now,
     ...(process.env.HC_TERMINAL_ID ? { terminal: process.env.HC_TERMINAL_ID } : {}),
     ...e, prompted, samples: reading ? [reading] : [],
-  }, learn, { cache: true, estimate: false })
-  writeAtomically(join(home, fileOf(id)), JSON.stringify(feed))
+  }, others, { cache: true, estimate: false })
+  writeAtomically(join(home, fileOf(id, s.provider)), JSON.stringify(feed))
   s.feed = feed
   s.feeds.set(s.provider, feed)
   return feed
@@ -93,7 +94,7 @@ function setAuto(id: string, auto: PaceFeed['snapshot']['auto'] | null): void {
   const { auto: _, ...rest } = s.feed.snapshot
   s.feed = { ...s.feed, snapshot: auto ? { ...rest, auto } : rest }
   s.feeds.set(s.feed.provider, s.feed)
-  writeAtomically(join(home, fileOf(id)), JSON.stringify(s.feed))
+  writeAtomically(join(home, fileOf(id, s.feed.provider)), JSON.stringify(s.feed))
 }
 
 /** A prompt for the plugin to send into the session, or the bot's chat */
@@ -108,7 +109,7 @@ function command(id: string, args: string): string {
   const auto = feed.snapshot.auto ?? null
   switch (a.kind) {
     case 'say': case 'refresh': case 'prefs': return a.text
-    case 'open': return openView({ home, feed, feedPath: join(home, fileOf(id)), hostName: 'Hermes', others: () => othersOf(id) }, a)
+    case 'open': return openView({ home, feed, feedPath: join(home, fileOf(id, feed.provider)), hostName: 'Hermes', others: () => othersOf(id) }, a)
     case 'auto':
       setAuto(id, { plan: a.plan, turns: 1, max: a.max })
       inject(id, `${protocol()}\n\n${startPrompt(a.plan)}`)

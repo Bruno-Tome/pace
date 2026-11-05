@@ -41,6 +41,16 @@ describe('what the agent sends', () => {
     expect(s.options.s1).toEqual({ model: { id: 'model', current: 'm1', values: ['m1', 'm2'] }, thought: { id: 'thought_level', current: 'high', values: ['low', 'high'] } })
   })
 
+  test('a session the client loads or resumes is metered as a new one is, once the agent has it', () => {
+    for (const method of ['session/load', 'session/resume']) {
+      const [s0] = fromClient(S, { jsonrpc: '2.0', id: 5, method, params: { sessionId: 'old', cwd: '/work/pace', mcpServers: [] } })
+      const [, out] = fromAgent(s0, { jsonrpc: '2.0', id: 5, result: {} })
+      expect(out.meter).toEqual([{ kind: 'session', session: 'old', cwd: '/work/pace' }])
+      const [, failed] = fromAgent(s0, { jsonrpc: '2.0', id: 5, error: { code: -32000, message: 'no such session' } })
+      expect(failed.meter).toEqual([])
+    }
+  })
+
   test('usage: the context, and what the session\'s cost grew by', () => {
     const [s1, a] = fromAgent(S, update({ sessionUpdate: 'usage_update', used: 53_000, size: 200_000, cost: { amount: 0.05, currency: 'USD' } }))
     const [, b] = fromAgent(s1, update({ sessionUpdate: 'usage_update', used: 60_000, size: 200_000, cost: { amount: 0.08, currency: 'USD' } }))

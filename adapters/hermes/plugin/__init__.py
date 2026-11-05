@@ -23,6 +23,8 @@ READ_EVERY_S = 60
 ANSWER_WAIT_S = 8
 
 _state = {"proc": None, "ctx": None, "last": "", "read_at": {}}
+# The sessions the running bridge has been told of: a new bridge (after a restart) is told again
+_announced: set[str] = set()
 # Subagents' sessions, by id: their parent's, whose turn they work for
 _children: dict[str, str] = {}
 _lock = threading.Lock()
@@ -104,6 +106,7 @@ def _bridge() -> subprocess.Popen | None:
             return None
         threading.Thread(target=_read, args=(proc,), daemon=True).start()
         _state["proc"] = proc
+        _announced.clear()
         return proc
 
 
@@ -131,10 +134,13 @@ def _session(session_id: str = "") -> str:
     if session_id in _children:
         return _children[session_id]
     sid = session_id or _session_env("HERMES_SESSION_ID") or _state["last"]
-    if sid and sid != _state["last"]:
+    if sid:
         _state["last"] = sid
-        bot = _bot()
-        _send({"method": "session/new", "params": {"session": sid, "cwd": os.getcwd(), "mode": "bot" if bot else "session", "key": _session_env("HERMES_SESSION_KEY") if bot else None}})
+        _bridge()
+        if sid not in _announced:
+            _announced.add(sid)
+            bot = _bot()
+            _send({"method": "session/new", "params": {"session": sid, "cwd": os.getcwd(), "mode": "bot" if bot else "session", "key": _session_env("HERMES_SESSION_KEY") if bot else None}})
     return sid
 
 

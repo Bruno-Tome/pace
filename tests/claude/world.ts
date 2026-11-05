@@ -40,6 +40,10 @@ export function world(on: any, env: Record<string, string> = {}, usage: unknown 
   on('fs.write', (_$: unknown, e: { path: string; text: string }) => { files[e.path] = e.text; return { value: undefined } })
   on('fs.exists', (_$: unknown, e: { path: string }) => ({ value: e.path in files }))
   on('fs.read', (_$: unknown, e: { path: string }) => ({ value: files[e.path] ?? '' }))
+  // A folder's entries: the files written under it, one level down
+  on('fs.list', (_$: unknown, e: { path: string }) => ({
+    value: [...new Set(Object.keys(files).filter(f => f.startsWith(`${e.path}/`)).map(f => f.slice(e.path.length + 1).split('/')[0]!))].map(name => ({ name, kind: 'file' })),
+  }))
   const registered: any[] = []
   on('command.register', (_$: unknown, e: { name: string }) => { registered.push(e); return { value: { command: e.name } } })
   const runs: string[][] = []

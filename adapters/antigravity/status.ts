@@ -23,8 +23,8 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
 /** A model's quota key after its prefix: `Gemini 3.1 Pro (High)` → `gemini_3_1_pro`; a variant in brackets is the same quota */
 const slugOf = (label: string) => label.replace(/\(.*?\)/g, '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')
 
-/** A model's name without its variant: `Gemini 3.1 Pro` */
-const nameOf = (label: string) => label.replace(/\(.*?\)/g, '').trim()
+/** A model's name without its variant, as Antigravity's own: `Gemini 3.1 Pro (Antigravity)`, so its Claude models are never taken for Claude Code's quota */
+const nameOf = (label: string) => `${label.replace(/\(.*?\)/g, '').trim()} (Antigravity)`
 
 /** The models a GetUserStatus answer lists; none when it is not one */
 function modelsOf(answer: unknown): unknown[] {
