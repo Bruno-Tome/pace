@@ -1,19 +1,19 @@
 // The Pace window: the pane drawn full-screen in a terminal of its own, from the state file the mod keeps while
 // the window is open. Run by Node, which strips the types:
-// `node bin/viewer.ts ~/.claude/pace-state.json ~/.claude/pace-keys.json`.
+// `node bin/viewer.ts ~/.claude/pace-state-<session>.json ~/.claude/pace-keys-<session>.json`.
 // Redraws when the file changes, every second for the clocks, and on resize. The command bar's keys, or a click on
 // a button, send a /pace command to the session through the keys file; its answer comes back in the state file.
-// 1–9 draws one quota alone (again: all of them); q or Ctrl-C quits.
+// 1–9 draws one quota alone (again: all of them); the arrows, PgUp/PgDn and the wheel scroll; q or Ctrl-C quits.
 
 import { readFileSync, watchFile, writeFileSync } from 'node:fs'
 
-import { KEYS_FILE, STATE_FILE } from '../hooks/files.ts'
+import { keysFile, stateFile } from '../hooks/files.ts'
 import { click, press, screenOf, type Feed, type Hit, type UiState } from '../hooks/view.ts'
 
 const path = process.argv[2]
 const keysPath = process.argv[3]
 if (!path) {
-  process.stderr.write(`usage: viewer.ts <state file: ~/${STATE_FILE}> [keys file: ~/${KEYS_FILE}]\n`)
+  process.stderr.write(`usage: viewer.ts <state file: ~/${stateFile('<session>')}> [keys file: ~/${keysFile('<session>')}]\n`)
   process.exit(2)
 }
 
@@ -38,6 +38,7 @@ function draw(): void {
     const s = screenOf(feed, Date.now(), cols, rows, ui)
     body = s.text
     hits = s.hits
+    ui = { ...ui, scroll: s.scroll }
   }
   // Home, each line cleared to its end, then the rest of the screen cleared: no flicker between frames
   process.stdout.write('\x1b[H' + body.split('\n').map(l => `${l}\x1b[K`).join('\n') + '\x1b[J')
@@ -62,7 +63,7 @@ function key(k: string): void {
   draw()
 }
 
-/** A mouse report (SGR: `\x1b[<button;x;yM`): a left press on a button is its key */
+/** A mouse report (SGR: `\x1b[<button;x;yM`): a left press on a button is its key, the wheel scrolls */
 function mouse(data: string): boolean {
   const m = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/.exec(data)
   if (!m) return false
@@ -70,6 +71,8 @@ function mouse(data: string): boolean {
     const k = click(hits, Number(m[2]), Number(m[3]))
     if (k) key(k)
   }
+  if (m[1] === '64') key('\x1b[A')
+  if (m[1] === '65') key('\x1b[B')
   return true
 }
 

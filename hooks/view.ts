@@ -4,7 +4,7 @@
 
 import type { PaceAuto, PaceCacheInfo, PacePrefs, PaceWarmMode } from '../types'
 import { cacheLeft, formatTokens, formatUsd, nextCost, ttlSeconds, type Suggestion } from './cache.ts'
-import { chart, type Layer } from './chart.ts'
+import { chart, chartSvg, type Layer } from './chart.ts'
 import type { Step } from './plan.ts'
 import { runsOut } from './auto.ts'
 import { adviceOf, bandRows, isFable, ratedOf, rowsOf, snapshotOf, verdictOf, worstOf, type Row, type Snapshot } from './model.ts'
@@ -20,7 +20,10 @@ const MIN = 60_000
  * the plan's, `spin` marks the node of the step under way, `flow` the line into it and `pop` the step done last.
  * `whole` keeps a run on one row when its line wraps.
  */
-export type Seg = { t: string; color?: string; dim?: boolean; bold?: boolean; bar?: boolean; pulse?: boolean; spin?: boolean; flow?: boolean; pop?: boolean; whole?: boolean; aura?: boolean }
+export type Seg = { t: string; color?: string; dim?: boolean; bold?: boolean; bar?: boolean; pulse?: boolean; spin?: boolean; flow?: boolean; pop?: boolean; whole?: boolean; aura?: boolean; svg?: Drawing }
+
+/** A picture in place of a line, for a surface that draws SVG: its markup, what it says, its height in pixels */
+export type Drawing = { source: string; alt: string; height: number }
 export type Line = Seg[]
 
 const compact = (seconds: number) => Q.formatDuration(seconds).replace(/ /g, '')
@@ -64,6 +67,14 @@ const levelLook = (v: RateVerdict) => (uncosted(v) ? OVER_PACE : LEVEL[v.level])
 const SUGGESTION_COLOR: Record<Suggestion['level'], string> = { urgent: 'error', warn: 'warning', info: 'suggestion' }
 
 const LAYER_COLOR: Record<Layer, string | undefined> = { actual: undefined, projection: 'warning', ideal: 'subtle', empty: undefined }
+
+/** The semantic colours as CSS colours, for an SVG: mid-tones that read on a light or a dark page */
+const CSS: Record<string, string> = {
+  success: '#3fb950', warning: '#d29922', error: '#f85149', text: '#8b949e', subtle: '#8b949e', suggestion: '#4c8dff', merged: '#a371f7', ide: '#2fb5a8',
+}
+
+/** Pixels an SVG chart takes across a cell and down a row of the braille one it stands for */
+const CELL_PX = { width: 8, height: 18 }
 
 const ANSI: Record<string, string> = {
   success: '32', warning: '33', error: '31', text: '37', subtle: '90', suggestion: '34', merged: '35', ide: '36',
@@ -206,19 +217,20 @@ export function bandLines(s: Snapshot, now: number, cols: number): Line[] {
 
 /**
  * Auto mode's run or on pace mode, in a row under the band; none while both are off. `extra` goes after the mode's
- * own figures, before the command that turns it off.
+ * own figures, before the command that turns it off: the `/pace` command, or under `keyed` the window's key for it.
  */
-function modesLine(s: Snapshot, now: number, extra: readonly Seg[] = []): Line | null {
+function modesLine(s: Snapshot, now: number, extra: readonly Seg[] = [], keyed = false): Line | null {
   const a = s.auto
-  const hint = (cmd: string): Seg => ({ t: ` · ${cmd}`, dim: true })
   const mode = a?.ultra ? 'ultra' : 'auto'
-  if (a?.paused) return [{ t: `${mode.padEnd(5)} ⏸ paused`, color: 'warning', bold: true }, { t: ` · ${a.plan}`, dim: true }, ...extra, hint(`/pace ${mode} resume`)]
+  const hint = (cmd: string, key: string): Seg => ({ t: ` · ${keyed ? key : `/pace ${cmd}`}`, dim: true })
+  const off = hint(`${mode} off`, `[${mode[0]}] off`)
+  if (a?.paused) return [{ t: `${mode.padEnd(5)} ⏸ paused`, color: 'warning', bold: true }, { t: ` · ${a.plan}`, dim: true }, ...extra, hint(`${mode} resume`, '[a] resume')]
   if (a?.heldUntil != null) {
     return [
       { t: `${mode.padEnd(5)} ⏸ held until ${Q.clockAt(a.heldUntil, a.heldUntil - now >= 86400_000)}`, color: 'warning', bold: true },
       { t: ` · ${a.why ?? ''}`, dim: true },
       ...extra,
-      hint(`/pace ${mode} off`),
+      off,
     ]
   }
   if (a?.ultra) {
@@ -229,11 +241,11 @@ function modesLine(s: Snapshot, now: number, extra: readonly Seg[] = []): Line |
       { t: `${gearText(u.gear)} · turn ${a.turns}/${a.max}`, dim: true },
       ...ultraCheck(a),
       ...extra,
-      hint('/pace ultra off'),
+      off,
     ]
   }
-  if (a) return [{ t: 'auto  ▶ ', color: 'success', bold: true }, { t: `${a.plan} · turn ${a.turns}/${a.max}`, dim: true }, ...extra, hint('/pace auto off')]
-  if (s.onPace) return [{ t: 'on pace ●', color: 'success' }, { t: ' compacts heavy contexts, keeps the cache warm', dim: true }, ...extra, hint('/pace off')]
+  if (a) return [{ t: 'auto  ▶ ', color: 'success', bold: true }, { t: `${a.plan} · turn ${a.turns}/${a.max}`, dim: true }, ...extra, off]
+  if (s.onPace) return [{ t: 'on pace ●', color: 'success' }, { t: ' compacts heavy contexts, keeps the cache warm', dim: true }, ...extra, hint('off', '[p] off')]
   return null
 }
 
@@ -285,10 +297,24 @@ function clock(at: number, W: number): string {
   return W > 86400 ? `${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()]} ${d.getDate()} ${hm}` : hm
 }
 
-/** A window's burn-up chart: y-axis percents on the left, the braille plot, a time axis with the clock's tick */
-function chartLines(s: Snapshot, row: Row, p: Q.Pace, w: number, h: number): Line[] {
+/**
+ * A window's burn-up chart: y-axis percents on the left, the braille plot, a time axis with the clock's tick; under
+ * `svg` the plot and its axes as one picture, then the times
+ */
+function chartLines(s: Snapshot, row: Row, p: Q.Pace, w: number, h: number, svg = false): Line[] {
   const r = row.reading?.resetsAt
   const series = r == null ? null : Q.trajectoryOf(row.key, r, s.samples, row.window)
+  if (svg) {
+    const end = r ?? p.now + p.resetIn * 1000
+    const from = clock(end - row.window * 1000, row.window)
+    const to = clock(end, row.window)
+    const width = (w + 5) * CELL_PX.width
+    const height = h * CELL_PX.height
+    const colors = { actual: CSS[quotaColor(row.key)]!, projection: CSS.warning!, ideal: CSS.subtle!, axis: CSS.subtle! }
+    const source = chartSvg(series, p, { width, height, colors })
+    const alt = `${row.name}: ${pctOf(p.used)}% used with ${pctOf(p.elapsed)}% of the window gone`
+    return [[{ t: '', svg: { source, alt, height } }], [{ t: '     ' + from + ' '.repeat(Math.max(1, w - from.length - to.length)) + to, dim: true }]]
+  }
   const gutter = (i: number) => (i === 0 ? '100%┤' : i === h - 1 ? '  0%┤' : i === Math.floor((h - 1) / 2) ? ' 50%┤' : '    │')
   const lines: Line[] = chart(series, p, w, h).map((runs, i) => [
     { t: gutter(i), dim: true },
@@ -330,6 +356,10 @@ export type PaneLayout = {
   chartHeight: (row: Row) => number
   /** The /pace commands under it; the window has its own */
   prefs?: PacePrefs
+  /** The window's keys named in place of the /pace commands they send */
+  keyed?: boolean
+  /** The charts drawn as SVG pictures, for a surface that draws them, in place of braille */
+  svg?: boolean
 }
 
 export const chartHeight = (row: Row) => (row.window > 86400 ? 6 : 5)
@@ -343,7 +373,7 @@ function quotaBlock(s: Snapshot, row: Row, o: PaneLayout): Line[] {
   const fc = Q.outlook(p)
   return [
     [head, { t: `  resets in ${Q.formatDuration(p.resetIn)}`, dim: true }],
-    ...chartLines(s, row, p, o.chartWidth, o.chartHeight(row)),
+    ...chartLines(s, row, p, o.chartWidth, o.chartHeight(row), o.svg),
     [
       { t: `${pctOf(p.used)}%`, bold: true, color: STATUS_COLOR[status] },
       { t: ` used · ${pctOf(p.elapsed)}% elapsed · `, dim: true },
@@ -360,12 +390,13 @@ const LEGEND: Line = [
   { t: '⠊⠁', color: 'subtle' }, { t: ' even pace  ┴ now', dim: true },
 ]
 
-const NO_USAGE: Line[] = [[{ t: 'No usage yet: figures appear after the first reply, or run /pace refresh.', dim: true }], []]
+/** No readings yet, and how to ask for them: the command, or under `keyed` the window's key */
+const noUsage = (keyed = false): Line[] => [[{ t: `No usage yet: figures appear after the first reply, or ${keyed ? 'press r' : 'run /pace refresh'}.`, dim: true }], []]
 
 /** The pane: every quota's chart and figures, the prompting rate against each, the cache, suggestions */
 export function paneLines(s: Snapshot, now: number, o: PaneLayout): Line[] {
   const rows = rowsOf(s.samples, now)
-  const out: Line[] = rows.length ? rows.flatMap(row => quotaBlock(s, row, o)) : NO_USAGE
+  const out: Line[] = rows.length ? rows.flatMap(row => quotaBlock(s, row, o)) : noUsage(o.keyed)
   return [...out, ...restLines(s, now, o)]
 }
 
@@ -376,7 +407,7 @@ function restLines(s: Snapshot, now: number, o: PaneLayout): Line[] {
   const out: Line[] = []
   const blank = () => out.push([])
   if (rows.some(r => r.view.kind === 'pace')) {
-    out.push(...wrapSegs(LEGEND, o.cols))
+    if (!o.svg) out.push(...wrapSegs(LEGEND, o.cols))
     blank()
   }
 
@@ -442,7 +473,7 @@ function restLines(s: Snapshot, now: number, o: PaneLayout): Line[] {
     out.push(...wrapSegs([{ t: `context ${size} · next prompt ≈${formatTokens(cost.warm)} tk${usd(cost.warm)} warm, ≈${formatTokens(cost.cold)}${usd(cost.cold)} cold (${Math.round(cost.cold / Math.max(1, cost.warm))}×)`, dim: true }], o.cols))
   } else out.push([{ t: 'The cache timer starts with the next reply.', dim: true }])
   const warm = s.warm ?? 'off'
-  out.push(...wrapSegs([{ t: 'warm mode ', dim: true }, warm === 'off' ? { t: 'off', dim: true } : { t: warm, color: 'success', bold: true }, { t: warm === 'off' ? '  · /pace warm compact | ping' : '  · acts under 10m left, while idle · /pace warm off', dim: true }], o.cols))
+  out.push(...wrapSegs([{ t: 'warm mode ', dim: true }, warm === 'off' ? { t: 'off', dim: true } : { t: warm, color: 'success', bold: true }, { t: `  · ${warm === 'off' ? '' : 'acts under 10m left, while idle · '}${o.keyed ? '[w] steps it' : warm === 'off' ? '/pace warm compact | ping' : '/pace warm off'}`, dim: true }], o.cols))
   blank()
 
   const advices = adviceOf(s, now)
@@ -637,44 +668,61 @@ export type Feed = Snapshot & {
 }
 
 /**
- * What the window's keys chose: `focus` is the 1-based quota drawn alone, `picking` the run a plan is being chosen
- * for, `typing` the path typed for it
+ * What the window's keys chose: `focus` is the 1-based quota drawn alone, `picking` what a plan is being chosen
+ * for (a run, or the timeline shown), `typing` the path typed for it, `scroll` the rows of the body scrolled past
  */
-export type UiState = { focus?: number | undefined; picking?: 'auto' | 'ultra'; typing?: string }
+export type UiState = { focus?: number | undefined; picking?: 'auto' | 'ultra' | 'plan'; typing?: string; scroll?: number }
 export type ScreenOptions = UiState
 
 /** A button on the screen: its label at column `x`, row `y` (both 1-based), `w` wide, and the key it stands for */
 export type Hit = { x: number; y: number; w: number; label: string; key: string }
 
-/** A button: its key, its label and the command it sends; one with no command opens the plan picker */
-type Button = { key: string; label: string; cmd?: string }
+/**
+ * A button: its key, its label and the command it sends; one with no command opens the plan picker. `on` lights it
+ * while what it flips is on, `warn` while a run waits on you
+ */
+export type BarButton = { key: string; label: string; cmd?: string; on?: boolean; warn?: boolean }
 
 /** The next warm mode along: off, compact, ping */
 const WARM_NEXT: Record<PaceWarmMode, PaceWarmMode> = { off: 'compact', compact: 'ping', ping: 'off' }
 
-/** The command bar's buttons, as the modes stand */
-function buttons(f: Feed): Button[] {
+/** The modes' buttons, each lit while what it flips is on; a paused run waits on you to resume or stop it */
+function modeButtons(f: Feed): BarButton[] {
   const a = f.auto
-  const run: Button[] = !a ? [{ key: 'a', label: 'auto…' }, { key: 'u', label: 'ultra…' }, { key: 'v', label: 'preview', cmd: 'ultra preview' }]
-    : a.paused ? [{ key: 'a', label: 'resume', cmd: `${a.ultra ? 'ultra' : 'auto'} resume` }]
-    : a.ultra ? [{ key: 'u', label: 'ultra off', cmd: 'ultra off' }, { key: 's', label: `burst ${a.burst ? 'off' : 'on'}`, cmd: `auto burst${a.burst ? ' off' : ''}` }]
-    : [{ key: 'a', label: 'auto off', cmd: 'auto off' }, { key: 's', label: `burst ${a.burst ? 'off' : 'on'}`, cmd: `auto burst${a.burst ? ' off' : ''}` }]
+  const mode = a?.ultra ? 'ultra' : 'auto'
+  const run: BarButton[] = !a ? [{ key: 'a', label: 'auto…' }, { key: 'u', label: 'ultra…' }]
+    : a.paused ? [{ key: 'a', label: 'resume', cmd: `${mode} resume`, warn: true }, { key: 'x', label: 'stop', cmd: `${mode} off`, warn: true }]
+    : [{ key: mode[0]!, label: mode, cmd: `${mode} off`, on: true }, { key: 's', label: 'burst', cmd: `auto burst${a.burst ? ' off' : ''}`, on: !!a.burst }]
   const warm = f.warm ?? 'off'
   const band = f.prefs?.band ?? true
   const line = f.prefs?.line ?? true
   return [
-    { key: 'r', label: 'refresh', cmd: 'refresh' },
+    { key: 'p', label: 'on pace', cmd: f.onPace ? 'off' : 'on', on: !!f.onPace },
+    { key: 'w', label: warm === 'off' ? 'warm' : `warm ${warm}`, cmd: `warm ${WARM_NEXT[warm]}`, on: warm !== 'off' },
+    { key: 'b', label: 'band', cmd: band ? 'hide' : 'show', on: band },
+    { key: 'l', label: 'status line', cmd: `line ${line ? 'off' : 'on'}`, on: line },
     ...run,
-    { key: 't', label: 'timeline', cmd: 'timeline' },
-    { key: 'p', label: `on pace ${f.onPace ? 'off' : 'on'}`, cmd: f.onPace ? 'off' : 'on' },
-    { key: 'w', label: `warm ${WARM_NEXT[warm]}`, cmd: `warm ${WARM_NEXT[warm]}` },
-    { key: 'b', label: `${band ? 'hide' : 'show'} band`, cmd: band ? 'hide' : 'show' },
-    { key: 'l', label: `line ${line ? 'off' : 'on'}`, cmd: `line ${line ? 'off' : 'on'}` },
   ]
 }
 
+/** The commands that flip nothing: one with no command opens the plan picker */
+const COMMANDS: readonly BarButton[] = [
+  { key: 'r', label: 'refresh', cmd: 'refresh' },
+  { key: 't', label: 'timeline', cmd: 'timeline' },
+  { key: 'f', label: 'plan…' },
+  { key: 'v', label: 'preview', cmd: 'ultra preview' },
+  { key: 'i', label: 'pane', cmd: 'pane' },
+  { key: 'm', label: 'window', cmd: 'window' },
+]
+
+/** Every button the window's keys reach outside the picker */
+const buttons = (f: Feed): BarButton[] => [...modeButtons(f), ...COMMANDS]
+
+/** What each run of the picker starts on the plan chosen */
+const PICKING: Record<NonNullable<UiState['picking']>, string> = { auto: 'Start auto mode on:  ', ultra: 'Start ultra pace on:  ', plan: 'Show the timeline of:  ' }
+
 /** The plan picker's buttons: the plans the session knows, a typed path, cancel */
-const pickButtons = (f: Feed): Button[] => [
+const pickButtons = (f: Feed): BarButton[] => [
   ...(f.known ?? []).slice(0, 9).map((plan, i) => ({ key: String(i + 1), label: plan })),
   { key: 't', label: 'a path' },
   { key: '\x1b', label: 'cancel' },
@@ -682,37 +730,65 @@ const pickButtons = (f: Feed): Button[] => [
 
 const keyName = (key: string) => (key === '\x1b' ? 'esc' : key)
 
-/** Buttons laid out left to right in `cols`, wrapping to the next row: the rows, and each button's place on them */
-function buttonRows(list: readonly Button[], cols: number, lead: Seg | null): { lines: Line[]; hits: Hit[] } {
+/**
+ * Buttons laid out left to right in `cols` after `lead`, wrapping to rows indented under it: the rows, and each
+ * button's place on them
+ */
+function buttonRows(list: readonly BarButton[], cols: number, lead: Seg | null): { lines: Line[]; hits: Hit[] } {
+  const indent = lead ? width([lead]) : 0
   const lines: Line[] = [lead ? [lead] : []]
   const hits: Hit[] = []
-  let used = lead ? width([lead]) : 0
+  let used = indent
   for (const b of list) {
     const label = `[${keyName(b.key)}] ${b.label}`
     const w = [...label].length
-    const gap = used ? 2 : 0
-    if (used && used + gap + w > cols) {
-      lines.push([])
-      used = 0
+    const gap = used > indent ? 2 : 0
+    if (used > indent && used + gap + w > cols) {
+      lines.push(indent ? [{ t: ' '.repeat(indent) }] : [])
+      used = indent
     }
     const line = lines[lines.length - 1]!
-    if (used) line.push({ t: '  ' })
-    const x = used + (used ? gap : 0) + 1
-    line.push({ t: `[${keyName(b.key)}]`, color: 'suggestion', bold: true }, { t: ` ${b.label}` })
+    if (gap) line.push({ t: '  ' })
+    const x = used + gap + 1
+    if (b.on || b.warn) line.push({ t: label, color: b.warn ? 'warning' : 'success', bold: true })
+    else line.push({ t: `[${keyName(b.key)}]`, color: 'suggestion', bold: true }, { t: ` ${b.label}` })
     hits.push({ x, y: lines.length, w, label, key: b.key })
     used = x - 1 + w
   }
   return { lines, hits }
 }
 
-/** The command bar: the picker while a plan is being chosen, the typed path while one is typed, else the buttons */
+/** Rows of buttons stacked, each button's place moved down past the rows above it */
+function stack(groups: readonly { lines: Line[]; hits: Hit[] }[]): { lines: Line[]; hits: Hit[] } {
+  const lines: Line[] = []
+  const hits: Hit[] = []
+  for (const g of groups) {
+    hits.push(...g.hits.map(h => ({ ...h, y: lines.length + h.y })))
+    lines.push(...g.lines)
+  }
+  return { lines, hits }
+}
+
+/** A row's label in the command bar: `on`, `off`, `do` */
+const barLead = (t: string): Seg => ({ t: t.padEnd(6), dim: true })
+
+/**
+ * The command bar: the picker while a plan is being chosen, the typed path while one is typed, else three rows of
+ * buttons: the modes on, the modes off, and the commands
+ */
 function commandBar(f: Feed, ui: UiState, cols: number, charted: number): { lines: Line[]; hits: Hit[] } {
   if (ui.typing != null) {
-    return { lines: [[{ t: 'plan file: ', dim: true }, { t: ui.typing, bold: true }, { t: '▏', color: 'suggestion' }, { t: '   enter starts · esc cancels', dim: true }]], hits: [] }
+    return { lines: [[{ t: 'plan file: ', dim: true }, { t: ui.typing, bold: true }, { t: '▏', color: 'suggestion' }, { t: `   enter ${ui.picking === 'plan' ? 'shows' : 'starts'} · esc cancels`, dim: true }]], hits: [] }
   }
-  if (ui.picking) return buttonRows(pickButtons(f), cols, { t: `Start ${ui.picking === 'auto' ? 'auto mode' : 'ultra pace'} on:  `, bold: true })
-  const focus: Button[] = ui.focus != null ? [{ key: String(ui.focus), label: 'all' }] : charted > 1 ? [{ key: `1–${charted}`, label: 'focus' }] : charted ? [{ key: '1', label: 'focus' }] : []
-  return buttonRows([...buttons(f), ...focus, { key: 'q', label: 'quit', cmd: 'quit' }], cols, null)
+  if (ui.picking) return buttonRows(pickButtons(f), cols, { t: PICKING[ui.picking], bold: true })
+  const modes = modeButtons(f)
+  const on = modes.filter(b => b.on || b.warn)
+  const focus: BarButton[] = ui.focus != null ? [{ key: String(ui.focus), label: 'all' }] : charted > 1 ? [{ key: `1–${charted}`, label: 'focus' }] : charted ? [{ key: '1', label: 'focus' }] : []
+  return stack([
+    on.length ? buttonRows(on, cols, barLead('on')) : { lines: [[barLead('on'), { t: 'nothing', dim: true }]], hits: [] },
+    buttonRows(modes.filter(b => !b.on && !b.warn), cols, barLead('off')),
+    buttonRows([...COMMANDS, ...focus, { key: 'q', label: 'quit', cmd: 'quit' }], cols, barLead('do')),
+  ])
 }
 
 /** Terminals at least this wide draw the charts two to a row */
@@ -724,35 +800,23 @@ const TWO_PLANS = 120
 /** Seconds a command's answer stays under the title */
 const NOTICE_MS = 10_000
 
-/** The modes: on pace and warm mode, the band and the status line on one row, the run under way with its figures on the next */
+/** The run under way with its figures; nothing without one, the buttons saying which modes are on */
 function modesBlock(f: Feed, now: number, cols: number): Line[] {
-  const warm = f.warm ?? 'off'
   const a = f.auto
   const label = (t: string): Seg => ({ t: `${t}  `, dim: true })
-  const state = (on: boolean, t: string): Seg => (on ? { t, color: 'success', bold: true } : { t, dim: true })
   const sep: Seg = { t: ' · ', dim: true }
-  const band = f.prefs?.band ?? true
-  const line = f.prefs?.line ?? true
-  const out: Line[] = wrapSegs([
-    label('on pace mode'), state(!!f.onPace, f.onPace ? 'on' : 'off'), sep,
-    label('warm mode'), state(warm !== 'off', warm), sep,
-    label('band'), state(band, band ? 'shown' : 'hidden'), sep,
-    label('status line'), state(line, line ? 'on' : 'off'),
-  ], cols)
-  if (!a) {
-    out.push(...wrapSegs([label('auto mode'), state(false, 'off'), { t: ' · a run works through a plan\'s checklist while you are away; ultra pace works toward its goal', dim: true }], cols))
-  } else {
-    const u = a.ultra
-    const where: Seg = a.paused ? { t: '⏸ paused · ', color: 'warning', bold: true }
-      : a.heldUntil != null ? { t: `⏸ held until ${Q.clockAt(a.heldUntil, a.heldUntil - now >= 86400_000)} · `, color: 'warning', bold: true }
-      : { t: '▶ ', color: 'success', bold: true }
-    const turn: Seg = { t: `${a.plan} · turn ${a.turns}/${a.max}${a.burst ? ' · burst' : ''}${a.why && a.heldUntil != null ? ` · ${a.why}` : ''}`, dim: true }
-    out.push(...wrapSegs([label(u ? 'ultra pace' : 'auto mode'), where, turn], cols))
-    if (u) {
-      out.push(...wrapSegs([label('goal'), { t: u.goal }], cols))
-      out.push(...wrapSegs([label('gear'), { t: gearText(u.gear), bold: true }, { t: ` · ${u.models.floor}..${u.models.ceiling}`, dim: true }, sep, label('phase'), { t: u.phase }, { t: u.fanout ? ` · ${u.fanout.reported?.length ?? 0} of ${u.fanout.agentIds.length} subagents reported` : '', dim: true }], cols))
-      if (u.check) out.push(...wrapSegs([label('check'), { t: u.check }, { t: u.checkFails ? ` · failed ${u.checkFails}×` : '', color: 'warning' }], cols))
-    }
+  const out: Line[] = []
+  if (!a) return out
+  const u = a.ultra
+  const where: Seg = a.paused ? { t: '⏸ paused · ', color: 'warning', bold: true }
+    : a.heldUntil != null ? { t: `⏸ held until ${Q.clockAt(a.heldUntil, a.heldUntil - now >= 86400_000)} · `, color: 'warning', bold: true }
+    : { t: '▶ ', color: 'success', bold: true }
+  const turn: Seg = { t: `${a.plan} · turn ${a.turns}/${a.max}${a.burst ? ' · burst' : ''}${a.why && a.heldUntil != null ? ` · ${a.why}` : ''}`, dim: true }
+  out.push(...wrapSegs([label(u ? 'ultra pace' : 'auto mode'), where, turn], cols))
+  if (u) {
+    out.push(...wrapSegs([label('goal'), { t: u.goal }], cols))
+    out.push(...wrapSegs([label('gear'), { t: gearText(u.gear), bold: true }, { t: ` · ${u.models.floor}..${u.models.ceiling}`, dim: true }, sep, label('phase'), { t: u.phase }, { t: u.fanout ? ` · ${u.fanout.reported?.length ?? 0} of ${u.fanout.agentIds.length} subagents reported` : '', dim: true }], cols))
+    if (u.check) out.push(...wrapSegs([label('check'), { t: u.check }, { t: u.checkFails ? ` · failed ${u.checkFails}×` : '', color: 'warning' }], cols))
   }
   out.push([])
   return out
@@ -770,43 +834,107 @@ function planBlock(f: Feed, now: number, cols: number): Line[] {
 /** Rows the window gives a plan's timeline */
 const PLAN_ROWS = 12
 
+/** The fewest rows a chart is drawn in: past them the body scrolls instead */
+const CHART_MIN = 6
+
+/** Rows PgUp and PgDn scroll */
+const PAGE = 10
+
 /**
- * The window, `cols` by at most `rows`: a title with the figures' age, the run's row and the last command's answer,
- * the modes, the charts (two to a row on a wide terminal, as tall as the rows left allow), the plans, the
- * prompting rate, the cache and the suggestions, and the command bar last, in ANSI, with each button's place on
- * the screen. A focused quota is drawn alone, its chart taking every row.
+ * The window, `cols` by at most `rows`: a title with the figures' age, the run's row, the last command's answer and
+ * the command bar, fixed at the top; under them the body, scrolled by `ui.scroll`: the run under way, the charts (two
+ * to a row on a wide terminal, as tall as the rows left allow, the plans never squeezing them), the plans, the
+ * prompting rate, the cache and the suggestions. In ANSI, with each button's place on the screen and the scroll as
+ * drawn, held to the body's end. A focused quota is drawn alone, its chart taking every row.
  */
-export function screenOf(f: Feed, now: number, cols: number, rows: number, ui: UiState = {}): { text: string; hits: Hit[] } {
+export function screenOf(f: Feed, now: number, cols: number, rows: number, ui: UiState = {}): { text: string; hits: Hit[]; scroll: number } {
+  const charted = chartedOf(f, now)
+  const above = aboveBar(f, now, cols)
+  const bar = commandBar(f, ui, cols, charted.length)
+  const head: Line[] = [...above, ...bar.lines, []]
+  const room = Math.max(1, rows - head.length)
+  const lines = splitBody(f, now, cols, room, ui)
+  // What does not fit scrolls, its last row saying how much is left either way
+  const over = lines.length > room
+  const shown = over ? room - 1 : room
+  const scroll = over ? Math.min(Math.max(0, ui.scroll ?? 0), lines.length - shown) : 0
+  const below = lines.length - scroll - shown
+  const more: Line = [{ t: `${scroll ? '↑' : ' '}${below > 0 ? '↓' : ' '} ${below > 0 ? `${below} more rows` : 'the end'} · ↑↓ PgUp PgDn or the wheel scroll`, dim: true }]
+  const all = [...head, ...lines.slice(scroll, scroll + shown), ...(over ? [more] : [])].slice(0, rows)
+  return { text: all.map(l => toAnsi(clip(l, cols))).join('\n'), hits: bar.hits.map(h => ({ ...h, y: above.length + h.y })), scroll }
+}
+
+/** The quotas the split charts and a digit focuses, nine at most */
+const chartedOf = (f: Feed, now: number): Row[] => rowsOf(f.samples, now).filter(r => r.view.kind === 'pace').slice(0, 9)
+
+/** What the split draws over its command bar: a title with the figures' age, the run's row, the last command's answer */
+function aboveBar(f: Feed, now: number, cols: number): Line[] {
   const age = Math.max(0, now - f.at)
-  const charted = rowsOf(f.samples, now).filter(r => r.view.kind === 'pace').slice(0, 9)
-  const focused = ui.focus != null ? charted[ui.focus - 1] : undefined
   const title: Line = [{ t: 'Pace', bold: true }, { t: `  · updated ${age < MIN ? 'just now' : `${compact(age / 1000)} ago`}`, dim: true }]
   const modes = splitModes(f, now)
   const notice = f.notice && now - f.notice.at < NOTICE_MS ? wrapSegs([{ t: '› ', color: 'suggestion' }, { t: f.notice.text }], cols) : []
-  const head: Line[] = [title, ...(modes ? [modes] : []), ...notice, []]
-  const bar = commandBar(f, ui, cols, charted.length)
-  const layout = (w: number, h: number): PaneLayout => ({ cols: w, chartWidth: Math.max(16, w - 6), chartHeight: () => h })
-  const fit = (lines: Line[]): { text: string; hits: Hit[] } => {
-    const body = [...head, ...lines].slice(0, Math.max(0, rows - bar.lines.length))
-    const all = [...body, ...bar.lines]
-    return { text: all.map(l => toAnsi(clip(l, cols))).join('\n'), hits: bar.hits.map(h => ({ ...h, y: body.length + h.y })) }
-  }
+  return [title, ...(modes ? [modes] : []), ...notice]
+}
 
-  if (focused) {
-    const fixed = head.length + bar.lines.length + quotaBlock(f, focused, layout(cols, 0)).length
-    return fit(quotaBlock(f, focused, layout(cols, Math.max(4, rows - fixed))))
-  }
-  const two = cols >= TWO_COLUMNS && charted.length > 1
+/**
+ * The split's body in `room` rows: the run under way, the charts (two to a row when wide, sharing the rows the rest
+ * but the plans leaves), the plans, the prompting rate, the cache and the suggestions; a focused quota alone, its
+ * chart taking every row
+ */
+function splitBody(f: Feed, now: number, cols: number, room: number, ui: UiState, svg = false): Line[] {
+  const charted = chartedOf(f, now)
+  const focused = ui.focus != null ? charted[ui.focus - 1] : undefined
+  const layout = (w: number, h: number): PaneLayout => ({ cols: w, chartWidth: Math.max(16, w - 6), chartHeight: () => h, keyed: true, svg })
+  if (focused) return quotaBlock(f, focused, layout(cols, Math.max(4, room - quotaBlock(f, focused, layout(cols, 0)).length)))
+  const two = cols >= TWO_COLUMNS && charted.length > 1 && !svg
   const colW = two ? Math.floor((cols - 3) / 2) : cols
   const chartRows = two ? Math.ceil(charted.length / 2) : charted.length
-  // The charts share what the rest leaves, each between 3 and 16 rows
-  const body = (h: number): Line[] => {
+  // The charts share what the rest but the plans leaves, each between CHART_MIN and 16 rows; the plans scroll in under them.
+  // Pictures are not paired: one line cannot hold two
+  const body = (h: number, plans: boolean): Line[] => {
     const blocks = rowsOf(f.samples, now).map(row => quotaBlock(f, row, layout(colW, h)))
-    const top = two ? pairs(blocks, colW) : blocks.flat()
-    return [...modesBlock(f, now, cols), ...(blocks.length ? top : NO_USAGE), ...planBlock(f, now, cols), ...restLines(f, now, layout(cols, h))]
+    const top = two && !svg ? pairs(blocks, colW) : blocks.flat()
+    return [...modesBlock(f, now, cols), ...(blocks.length ? top : noUsage(true)), ...(plans ? planBlock(f, now, cols) : []), ...restLines(f, now, layout(cols, h))]
   }
-  const fixed = body(0).length + head.length + bar.lines.length
-  return fit(body(Math.max(3, Math.min(16, Math.floor((rows - fixed) / Math.max(1, chartRows))))))
+  const fixed = body(0, false).length
+  return body(Math.max(CHART_MIN, Math.min(16, Math.floor((room - fixed) / Math.max(1, chartRows)))), true)
+}
+
+/** A row of the split's command bar, for a surface that draws its own buttons: what it holds, and its buttons */
+export type BarRow = { lead: 'on' | 'off' | 'do'; buttons: BarButton[] }
+
+/** The split in parts, for a surface that draws its own buttons and fields, and scrolls and closes its own pane */
+export type SplitParts = {
+  /** The title, the run's row and the last command's answer */
+  above: Line[]
+  /** The modes on, the modes off and the commands; empty while a plan is picked */
+  bar: BarRow[]
+  /** What a plan is being picked for, said before the picker; absent while none is */
+  picking?: string
+  /** The plans a run can start on, the roadmap first */
+  known: readonly string[]
+  body: Line[]
+}
+
+/**
+ * The split for a pane `cols` wide with `rows` to show it in: the bar as buttons without the window's own (quit, the
+ * pane), a digit for each quota the split charts, or `all` back from the one focused; the charts as SVG under `svg`
+ */
+export function splitParts(f: Feed, now: number, cols: number, rows: number, ui: UiState = {}, svg = false): SplitParts {
+  const charted = chartedOf(f, now)
+  const modes = modeButtons(f)
+  const focus: BarButton[] = ui.focus != null ? [{ key: String(ui.focus), label: 'all' }] : charted.map((r, i) => ({ key: String(i + 1), label: r.short }))
+  const bar: BarRow[] = ui.picking ? [] : [
+    { lead: 'on', buttons: modes.filter(b => b.on || b.warn) },
+    { lead: 'off', buttons: modes.filter(b => !b.on && !b.warn) },
+    { lead: 'do', buttons: [...COMMANDS.filter(b => b.key !== 'i'), ...focus] },
+  ]
+  const above = aboveBar(f, now, cols)
+  return {
+    above, bar, known: f.known ?? [],
+    ...(ui.picking ? { picking: PICKING[ui.picking].trim() } : {}),
+    body: splitBody(f, now, cols, Math.max(1, rows - above.length - bar.length - 1), ui, svg),
+  }
 }
 
 /** The window as text alone */
@@ -815,18 +943,19 @@ export const screen = (f: Feed, now: number, cols: number, rows: number, ui: UiS
 /** The modes row under the window's title, saying so while on pace mode thinks one effort level lighter */
 function splitModes(f: Feed, now: number): Line | null {
   const lighter = f.onPace && runsOut(snapshotOf(f, now))
-  return modesLine(f, now, lighter ? [{ t: ' · effort a level lighter', color: 'warning' }] : [])
+  return modesLine(f, now, lighter ? [{ t: ' · effort a level lighter', color: 'warning' }] : [], true)
 }
 
 /**
  * What a key pressed in the window does: while a path is typed, it edits it (enter starts the run on it, esc
  * cancels); while a plan is picked, a digit starts the run on that plan, t starts typing, esc cancels; else a
- * digit focuses a quota (again shows all), a button's key sends its command or opens the picker, q quits
+ * digit focuses a quota (again shows all), the arrows and PgUp/PgDn scroll the body, a button's key sends its
+ * command or opens the picker, q quits
  */
 export function press(ui: UiState, key: string, f: Feed): { ui: UiState; send?: string; quit?: true } {
   if (ui.typing != null) {
     if (key === '\x1b') return { ui: {} }
-    if (key === '\r' || key === '\n') return ui.typing.trim() ? { ui: {}, send: `${ui.picking ?? 'auto'} ${ui.typing.trim()}` } : { ui: {} }
+    if (key === '\r' || key === '\n') return picked(ui, ui.typing)
     if (key === '\x7f' || key === '\b') return { ui: { ...ui, typing: ui.typing.slice(0, -1) } }
     return key.length === 1 && key >= ' ' ? { ui: { ...ui, typing: ui.typing + key } } : { ui }
   }
@@ -836,12 +965,19 @@ export function press(ui: UiState, key: string, f: Feed): { ui: UiState; send?: 
     const plan = /^[1-9]$/.test(key) ? (f.known ?? [])[Number(key) - 1] : undefined
     return plan ? { ui: {}, send: `${ui.picking} ${plan}` } : { ui }
   }
+  const by = key === '\x1b[B' ? 1 : key === '\x1b[A' ? -1 : key === '\x1b[6~' ? PAGE : key === '\x1b[5~' ? -PAGE : 0
+  if (by) return { ui: { ...ui, scroll: Math.max(0, (ui.scroll ?? 0) + by) } }
   if (key === 'q' || key === 'Q' || key === '\x03') return { ui: {}, quit: true }
   if (/^[1-9]$/.test(key)) return { ui: { ...ui, focus: ui.focus === Number(key) ? undefined : Number(key) } }
   const b = buttons(f).find(x => x.key === key)
   if (!b) return { ui }
   if (b.cmd) return { ui, send: b.cmd }
-  return { ui: { ...ui, picking: key === 'u' ? 'ultra' : 'auto' } }
+  return { ui: { ...ui, picking: key === 'u' ? 'ultra' : key === 'f' ? 'plan' : 'auto' } }
+}
+
+/** A plan chosen in the picker, by its path: the command that starts the run on it or shows its timeline; a blank path cancels */
+export function picked(ui: UiState, plan: string): { ui: UiState; send?: string } {
+  return plan.trim() ? { ui: {}, send: `${ui.picking ?? 'auto'} ${plan.trim()}` } : { ui: {} }
 }
 
 /** The key of the button at column `x`, row `y` (1-based); none off every button */

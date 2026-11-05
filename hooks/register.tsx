@@ -18,7 +18,7 @@ import type { ElementConstructor, EngineInterface as Engine, Register, RenderEle
 
 import type { Pace, PaceAuto, PaceCacheInfo, PaceCacheTtl, PaceGear, PaceSnapshot, PacePrefs, PaceReading, PaceSample, PaceSpend, PaceUltra, PaceWarmMode } from '../types'
 import { alertsOf } from './alerts.ts'
-import { KEYS_FILE, planFeedFile, ROW_FILE, STATE_FILE, VIEW_FILE } from './files.ts'
+import { keysFile, planFeedFile, ROW_FILE, stateFile, viewFile } from './files.ts'
 import { isSessionKey, isStale, prefsFrom, sessionKey, sessionOf, sharedOf } from './prefs.ts'
 import { answerQuestions, continuePrompt, decide, effortFor, forModel, HANDOFF_FILE, pacingNote, protocol, startPrompt, upkeep, warmModeFor, type Decision } from './auto.ts'
 import { addPrice, priceOf, replyEquivalents, ttlSeconds, warmAction } from './cache.ts'
@@ -30,7 +30,7 @@ import { closingPrompt, decideUltra, fanoutPrompt, gearNote, integratePrompt, pl
 import { nowRow, type PlanFeed } from './timeline.ts'
 import { mergeModelPrompts, mergePrompts } from './rate.ts'
 import { addSpend, mergeSpend, spendModel } from './spend.ts'
-import { bandLines, chartHeight, lineText, pairWidth, paneLines, planLines, sideBySide, statusRow, toAnsi, type Feed, type Seg } from './view.ts'
+import { bandLines, chartHeight, lineText, pairWidth, paneLines, picked, planLines, press, sideBySide, splitParts, statusRow, toAnsi, type Feed, type Seg, type UiState } from './view.ts'
 
 const PANE = 'pace'
 /** The plan `/pace auto` works through when it is given none */
@@ -50,6 +50,7 @@ const cacheA = atom({ plugin: 'pace', key: 'cache' } as const, null as PaceCache
 const ttlA = atom({ plugin: 'pace', key: 'ttl' } as const, '1h' as PaceCacheTtl)
 const pricesA = atom({ plugin: 'pace', key: 'prices' } as const, [] as number[])
 const spendA = atom({ plugin: 'pace', key: 'spend' } as const, [] as PaceSpend[])
+const splitUiA = atom({ plugin: 'pace', key: 'splitUi' } as const, {} as UiState)
 
 // ======================================================================
 // Drawing
@@ -127,6 +128,58 @@ function drawPane($: Engine, e: RenderInput<'Pane'>, s: Snapshot, prefs: PacePre
   )
 }
 
+/** Rows of the split's command bar are led by what they hold, padded to line the buttons up */
+const BAR_LEAD = 6
+
+/**
+ * The split in a pane, on a surface that draws native buttons and fields: the window's command bar as buttons with
+ * its keys as hotkeys, the plan picker as a list and a path field, the body under them for the pane to scroll
+ */
+async function drawSplit($: Engine, e: RenderInput<'Pane'>, f: Feed, now: number): Promise<RenderElement> {
+  const els = $.ui.resolve(e)
+  if (!('Input' in els) || !('Select' in els)) return drawPane($, e, f, (await read($, prefsA)) ?? DEFAULT_PREFS, now)
+  const { Box, Text, Button, Input, Select } = els
+  const Svg = 'Svg' in els ? els.Svg : undefined
+  const cols = e.props.bodyColumns ?? 100
+  const ui = (await read($, splitUiA)) ?? {}
+  const p = splitParts(f, now, cols, e.props.scroll?.bodyRows ?? 40, ui, !!Svg)
+  const act = async (a: { ui: UiState; send?: string }) => {
+    await update($, splitUiA, () => a.ui)
+    if (a.send) say($, await paceCommand($, a.send, cols))
+  }
+  // In the monospace face: the desktop draws text proportional, and the charts and columns are laid out in cells
+  const lines = (list: readonly Seg[][], key: string) =>
+    list.map((segs, i) => {
+      const pic = segs[0]?.svg
+      if (pic && Svg) return <Svg key={`${key}-${i}`} source={pic.source} alt={pic.alt} height={pic.height} />
+      return <Text key={`${key}-${i}`} mono wrap="truncate-end">{segs.length ? toText(Text, segs) : ' '}</Text>
+    })
+  const picker = (
+    <Box key="pace-picker" flexDirection="row" flexWrap="wrap" columnGap={2}>
+      <Text bold>{p.picking ?? ''}</Text>
+      {p.known.length ? <Select key="pace-pick" options={p.known.map(value => ({ value }))} onSelect={v => act(picked(ui, v))} /> : null}
+      <Input key="pace-path" placeholder="a plan file's path" submitLabel={ui.picking === 'plan' ? 'show' : 'start'} autoFocus onSubmit={v => act(picked(ui, v))} />
+      <Button key="pace-cancel" label="cancel" onPress={() => act({ ui: {} })} />
+    </Box>
+  )
+  const bar = p.bar.map(row => (
+    <Box key={`pace-bar-${row.lead}`} flexDirection="row" flexWrap="wrap" columnGap={1}>
+      <Text dimColor>{row.lead.padEnd(BAR_LEAD)}</Text>
+      {row.buttons.length
+        ? row.buttons.map(b => <Button key={`pace-${b.key}`} label={b.label} hotkey={b.key} {...(b.on || b.warn ? { variant: 'primary' as const } : {})} onPress={() => act(press(ui, b.key, f))} />)
+        : <Text dimColor>nothing</Text>}
+    </Box>
+  ))
+  return (
+    <Box flexDirection="column">
+      {lines(p.above, 'above')}
+      {p.picking ? picker : bar}
+      <Text> </Text>
+      {lines(p.body, 'body')}
+    </Box>
+  )
+}
+
 // ======================================================================
 // Data
 // ======================================================================
@@ -165,6 +218,8 @@ let lastUsd: number | null = null
 let answered: string[] = []
 /** This session's own name in the shared spend: a reload counts on from the ledger under it, never twice */
 let spendId = ''
+/** Where the session is drawn: the terminal, or an app that draws the split in a pane */
+let surface = 'terminal'
 
 const homeOf = async ($: Engine): Promise<string | undefined> => $.env.get('HOME')
 
@@ -197,9 +252,8 @@ async function refreshRow($: Engine, s: Snapshot, prefs: PacePrefs, now: number)
   lastRow = text
 }
 
-/** What the window draws: the snapshot, its samples cut to the last week, when it was taken, and the plan's steps */
-async function writeState($: Engine, s: Snapshot, now: number): Promise<void> {
-  if (!feeding) return
+/** What the split draws: the snapshot, its samples cut to the last week, when it was taken, and the plan's steps */
+async function feedOf($: Engine, s: Snapshot, now: number): Promise<Feed> {
   const shown = await shownPlans($)
   const timelines = await Promise.all(shown.map(async ({ plan, auto }) => {
     const steps = stepsOf(await fileText($, plan).catch(() => ''), auto != null && !auto.paused)
@@ -214,11 +268,17 @@ async function writeState($: Engine, s: Snapshot, now: number): Promise<void> {
     known: [...new Set([DEFAULT_PLAN, ...(s.auto ? [s.auto.plan] : []), ...shown.map(x => x.plan)])],
     ...(lastNotice ? { notice: lastNotice } : {}),
   }
-  const text = JSON.stringify(feed)
+  return feed
+}
+
+/** Writes the window's feed while a window or split is open */
+async function writeState($: Engine, s: Snapshot, now: number): Promise<void> {
+  if (!feeding) return
+  const text = JSON.stringify(await feedOf($, s, now))
   if (text === lastState) return
   const home = await homeOf($)
   if (!home) return
-  await $.fs.write(`${home}/${STATE_FILE}`, text)
+  await $.fs.write(`${home}/${stateFile(spendId)}`, text)
   lastState = text
 }
 
@@ -245,11 +305,11 @@ async function viewerScript($: Engine): Promise<string | undefined> {
   await writeState($, await snapshot($), await $.clock.now())
   const node = await nodeOf($)
   if (!node) return undefined
-  const script = `${home}/${VIEW_FILE}`
+  const script = `${home}/${viewFile(spendId)}`
   await $.fs.write(script, [
     '#!/bin/sh',
     "printf '\\033]0;Pace\\007'",
-    `exec ${shellQuote(node)} ${shellQuote(`${$.plugin.root}/bin/viewer.ts`)} ${shellQuote(`${home}/${STATE_FILE}`)} ${shellQuote(`${home}/${KEYS_FILE}`)}`,
+    `exec ${shellQuote(node)} ${shellQuote(`${$.plugin.root}/bin/viewer.ts`)} ${shellQuote(`${home}/${stateFile(spendId)}`)} ${shellQuote(`${home}/${keysFile(spendId)}`)}`,
     '',
   ].join('\n'))
   if ((await $.process.run(['chmod', '+x', script])).exitCode !== 0) return undefined
@@ -290,7 +350,7 @@ let lastNotice: { id: number; text: string; at: number } | undefined
  */
 async function readKeys($: Engine): Promise<void> {
   const home = await homeOf($)
-  const path = `${home}/${KEYS_FILE}`
+  const path = `${home}/${keysFile(spendId)}`
   if (!home || !(await $.fs.exists(path))) return
   const k = JSON.parse(await $.fs.read(path)) as { id?: unknown; cmd?: unknown }
   if (typeof k.id !== 'number' || k.id <= lastKey || typeof k.cmd !== 'string') return
@@ -1102,6 +1162,7 @@ async function paceCommand($: Engine, args: string, columns: number): Promise<st
   }
   const lines = paneLines(await snapshot($), await $.clock.now(), paneLayout(Math.max(40, columns - 4), DEFAULT_PREFS))
   await $.ui.open({ id: PANE, title: 'Pace', rows: lines.length + 4, columns: 80, focus: true, closeOnEscape: true })
+  if (surface !== 'terminal') return arg === 'pane' ? 'Pace pane opened' : 'Pace split opened in a pane'
   const why = arg === 'window' ? 'Could not open a terminal window; ' : arg === 'split' ? 'Not inside tmux; ' : ''
   return `${why}Pace pane opened${why ? ' here' : ''}`
 }
@@ -1128,6 +1189,7 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     cwd = e.cwd ?? ''
+    surface = e.surface ?? 'terminal'
     spendId = await $.session.id().catch(() => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`)
     await $.command.register({ name: 'pace', description: 'Rate-limit pace, prompting rate and the prompt cache, charted', argumentHint: USAGE, immediate: true })
     // A fresh set of timers before `load`, which re-arms a resumed run's hold among them
@@ -1294,6 +1356,7 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const prefs = (await read($, prefsA)) ?? DEFAULT_PREFS
     const now = (await read($, nowA)) || (await $.clock.now())
+    if (e.surface !== 'terminal') return drawSplit($, e, await feedOf($, await snapshot($), now), now)
     return drawPane($, e, await snapshot($), prefs, now)
   })
 }

@@ -49,27 +49,37 @@ The band appears above the prompt after the first reply. Then:
 | --- | --- |
 | The band, the status line, `/pace pane`, on pace mode and auto mode | Anywhere Claude Code runs |
 | `/pace` in a split beside Claude | tmux, and Node 23.6 or later (it runs TypeScript directly) on your `PATH` |
+| `/pace` as the split in a pane, with native buttons | The Claude desktop app (or VS Code) |
 | `/pace window` | macOS, and Node 23.6 or later on your `PATH` |
 
-Outside tmux, `/pace` opens the pane instead.
+Outside tmux, `/pace` opens the pane instead; in the Claude desktop app that pane is the split itself.
 
 ## What it shows
 
 - **A band above the prompt:** the 5-hour and weekly bars, each with its pace status and the rate against it,
   then the prompt cache's countdown and what the next prompt costs.
 - **A status-line entry,** or with `placement: status`, a full row your status line prints.
-- **`/pace`:** the whole mod in one view. Inside tmux it opens full-screen in a split beside Claude: the modes
-  (on pace mode, warm mode, the band and the status line, and the run under way with its plan, turn, gear, goal,
-  phase and check), burn-up charts for every quota (two columns on wide splits), the plans' timelines (the roadmap
-  beside an ultra run's own plan), the prompting rate, the cache and the suggestions, and a command bar last.
-  Every `/pace` command is a button there: press its key or click it. `[a] auto…` and `[u] ultra…` list the plans
-  the session knows to start a run on (`t` types another path); while one runs the bar offers `auto off`,
-  `burst`, `resume`, `ultra off`. `[t] timeline` opens the plans' timelines in a second split carved out of the
-  Pace split, under it, where they scroll and animate on their own; `t` again closes it, and quitting the split
-  closes it too. `[p]` flips on pace mode, `[w]` steps warm
-  mode, `[b]` and `[l]` the band and the status line, `[r]` refreshes, `1`–`9` shows one quota alone, `q` quits. A command's answer shows under the
+- **`/pace`:** the whole mod in one view. Inside tmux it opens full-screen in a split beside Claude: a command bar
+  under the title, then the run under way (its plan, turn, gear, goal, phase and check), burn-up charts for every
+  quota (two columns on wide splits), the plans' timelines (the roadmap beside an ultra run's own plan), the
+  prompting rate, the cache and the suggestions. What does not fit scrolls under the bar (↑ ↓, PgUp PgDn, the
+  mouse wheel); the charts are never squeezed to make room.
+  Every `/pace` command is a button there: press its key or click it. The bar has three rows: `on` lists the
+  modes that are on, lit, each with its key (`nothing` when none is); `off` lists the ones you can turn on; `do`
+  holds the rest. The modes are `[p] on pace`, `[w] warm` (stepping off → compact → ping), `[b] band`,
+  `[l] status line`, and a run: with none, `[a] auto…` and `[u] ultra…` list the plans the session knows to start
+  one on (`t` types another path); while one runs, `[a] auto` or `[u] ultra` stops it and `[s] burst` flips its
+  burst; a paused run offers `[a] resume` and `[x] stop`. Under `do`: `[r]` refreshes, `[t] timeline` opens the
+  plans' timelines in a second split carved out of the Pace split, under it, where they scroll and animate on
+  their own (`t` again closes it, and quitting the split closes it too), `[f] plan…` picks the plan whose
+  timeline shows (`/pace plan`), `[v]` previews ultra pace on the band, `[i]` opens the pane inside Claude Code,
+  `[m]` the window, `1`–`9` shows one quota alone, `q` quits. A command's answer shows under the
   title for 10 seconds. Outside tmux it opens a pane inside Claude Code, docked full-height beside the transcript
-  in fullscreen mode. `/pace pane` always opens the pane; `/pace window` opens the full view in a macOS terminal
+  in fullscreen mode. In the Claude desktop app (and VS Code) that pane is the split, its charts drawn as
+  pictures with a point per reading, and the same bar as native buttons, lit while on, each key its hotkey once the pane has focus; `auto…`, `ultra…` and `plan…` swap the bar
+  for a list of the plans the session knows and a field for a path; a digit button per quota shows it alone. The
+  pane scrolls and closes itself, so it has no `q` or `[i]`, and answers come in a toast. `/pace split` opens it
+  there too. `/pace pane` always opens the pane; `/pace window` opens the full view in a macOS terminal
   window.
 
 `/pace` runs at once, even mid-turn, and answers in a toast. Nothing lands in the conversation, so it never costs
@@ -270,7 +280,7 @@ gassed out. The onboarding pane says so before the first run.
 
 | Command | Does |
 | --- | --- |
-| `/pace` | The charts, the modes and the plan's timeline in a tmux split beside Claude, or a pane outside tmux |
+| `/pace` | The charts, the modes and the plan's timeline in a tmux split beside Claude, or a pane outside tmux (the split itself, with buttons, in the desktop app) |
 | `/pace pane` | The charts in a pane |
 | `/pace window` | The charts in a macOS terminal window of their own |
 | `/pace refresh` | Reads every source again |
@@ -323,8 +333,9 @@ The snapshot is as of `snap.at`: pace refreshes it after every reply, reading an
 pace has no telemetry. Its only requests are the usage-endpoint call (the one `/usage` makes) and, in warm mode
 `ping`, a one-word model call that reads the cache.
 
-Files it writes in `~/.claude`: `pace-row.txt` (status-line row), `pace-state.json` and `pace-keys.json` (the
-window's feed and keys), `pace-view.command` (the window's launcher). Auto mode asks Claude to keep
+Files it writes in `~/.claude`: `pace-row.txt` (status-line row), and for each session `pace-state-<session>.json`
+and `pace-keys-<session>.json` (the window's feed and keys), `pace-view-<session>.command` (the window's launcher)
+and `pace-plan-<session>.json` (the plan sidebar's feed). Auto mode asks Claude to keep
 `.pace/handoff.md` in your project.
 
 ## How it is built

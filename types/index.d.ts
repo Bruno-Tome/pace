@@ -147,6 +147,11 @@ declare module 'claude-code' {
       ttl: PaceCacheTtl
       /** The minute clock the drawings read, so elapsed time moves without a new sample */
       now: number
+      /**
+       * What the split's buttons chose in a pane on the desktop: the 1-based quota drawn alone, what a plan is being
+       * picked for, the path typed for it, the rows scrolled past; empty at first
+       */
+      splitUi: { focus?: number | undefined; picking?: 'auto' | 'ultra' | 'plan'; typing?: string; scroll?: number }
     }
   }
 }

@@ -297,14 +297,14 @@ test('/pace window opens the charts full-screen in a terminal window of their ow
   const { files, runs } = world(on)
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
   const r: any = await $.command.run({ command: 'pace', args: 'window' } as any)
-  const state = JSON.parse(files['/home/u/.claude/pace-state.json'] ?? 'null')
+  const state = JSON.parse(files['/home/u/.claude/pace-state-session-a.json'] ?? 'null')
   expect(state.samples.length).toBeGreaterThan(0)
-  const script = files['/home/u/.claude/pace-view.command'] ?? ''
+  const script = files['/home/u/.claude/pace-view-session-a.command'] ?? ''
   expect(script).toContain("'/opt/node/bin/node'")
   expect(script).toContain('/bin/viewer.ts')
-  expect(script).toContain("'/home/u/.claude/pace-keys.json'")
-  expect(runs).toContainEqual(['chmod', '+x', '/home/u/.claude/pace-view.command'])
-  expect(runs).toContainEqual(['open', '-a', 'Terminal', '/home/u/.claude/pace-view.command'])
+  expect(script).toContain("'/home/u/.claude/pace-keys-session-a.json'")
+  expect(runs).toContainEqual(['chmod', '+x', '/home/u/.claude/pace-view-session-a.command'])
+  expect(runs).toContainEqual(['open', '-a', 'Terminal', '/home/u/.claude/pace-view-session-a.command'])
   expect(r.text).toBeUndefined()
 })
 
@@ -312,8 +312,8 @@ test('/pace inside tmux opens the viewer in a split beside Claude, once, and clo
   const { files, runs, opens, toasts } = world(on, { TMUX: '/tmp/tmux-501/default,1,0', TMUX_PANE: '%3' })
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
   await $.command.run({ command: 'pace', args: '' } as any)
-  expect(JSON.parse(files['/home/u/.claude/pace-state.json'] ?? 'null').samples.length).toBeGreaterThan(0)
-  expect(runs).toContainEqual(['tmux', 'split-window', '-h', '-d', '-l', '45%', '-t', '%3', '-P', '-F', '#{pane_id}', '/home/u/.claude/pace-view.command'])
+  expect(JSON.parse(files['/home/u/.claude/pace-state-session-a.json'] ?? 'null').samples.length).toBeGreaterThan(0)
+  expect(runs).toContainEqual(['tmux', 'split-window', '-h', '-d', '-l', '45%', '-t', '%3', '-P', '-F', '#{pane_id}', '/home/u/.claude/pace-view-session-a.command'])
   await $.command.run({ command: 'pace', args: '' } as any)
   expect(runs.filter(r => r[1] === 'split-window')).toHaveLength(1)
   expect(toasts).toContain('Pace is already open in a tmux split')
@@ -327,7 +327,7 @@ test('/pace split feeds the viewer the plan\'s steps, read from ROADMAP.md', asy
   files['/tmp/ROADMAP.md'] = '# Roadmap\n\n- [x] Fix the reset\n- [ ] Write CI\n'
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
   await $.command.run({ command: 'pace', args: 'split' } as any)
-  const state = JSON.parse(files['/home/u/.claude/pace-state.json'] ?? 'null')
+  const state = JSON.parse(files['/home/u/.claude/pace-state-session-a.json'] ?? 'null')
   expect(state.plan).toEqual({
     name: 'ROADMAP.md',
     steps: [
@@ -390,13 +390,31 @@ test('the band\'s rows split in one column: figures left of it, the rate or the 
   }
 })
 
+test('each session feeds its own split: another session\'s plan never shows in it, and its buttons never run here', async ($, on) => {
+  const { clock, files, stored } = world(on, { TMUX: '/tmp/tmux-501/default,1,0', TMUX_PANE: '%3' }, undefined, 'session-b')
+  files['/tmp/ROADMAP.md'] = '# Roadmap\n\n- [ ] Write CI\n'
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
+  await $.command.run({ command: 'pace', args: 'split' } as any)
+  // The state, the keys and the launcher are under this session's id: none of the files every session shared
+  expect(JSON.parse(files['/home/u/.claude/pace-state-session-b.json'] ?? 'null').plan.name).toBe('ROADMAP.md')
+  expect(files['/home/u/.claude/pace-state.json']).toBeUndefined()
+  const script = files['/home/u/.claude/pace-view-session-b.command'] ?? ''
+  expect(script).toContain("'/home/u/.claude/pace-state-session-b.json'")
+  expect(script).toContain("'/home/u/.claude/pace-keys-session-b.json'")
+  // A button pressed in another session's split
+  files['/home/u/.claude/pace-keys-session-a.json'] = JSON.stringify({ id: NOW + 1, cmd: 'on' })
+  files['/home/u/.claude/pace-keys.json'] = JSON.stringify({ id: NOW + 1, cmd: 'on' })
+  await clock.advance(3000)
+  expect((stored['session:session-b'] as any)?.onPace ?? false).toBe(false)
+})
+
 test('the window\'s keys reach the session: w steps warm mode off → ping → compact → off, r refreshes the figures', async ($, on) => {
   const { clock, files, stored, fetches } = world(on)
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
   await $.command.run({ command: 'pace', args: 'window' } as any)
   let pressed = 0
   const key = async (cmd: string) => {
-    files['/home/u/.claude/pace-keys.json'] = JSON.stringify({ id: NOW + ++pressed, cmd })
+    files['/home/u/.claude/pace-keys-session-a.json'] = JSON.stringify({ id: NOW + ++pressed, cmd })
     await clock.advance(3000)
   }
   await key('warm')
@@ -405,7 +423,7 @@ test('the window\'s keys reach the session: w steps warm mode off → ping → c
   expect((stored['session:session-a'] as any).warm).toBe('compact')
   await key('warm')
   expect((stored['session:session-a'] as any).warm).toBe('off')
-  expect(JSON.parse(files['/home/u/.claude/pace-state.json']!).warm).toBe('off')
+  expect(JSON.parse(files['/home/u/.claude/pace-state-session-a.json']!).warm).toBe('off')
   const before = fetches()
   await key('refresh')
   expect(fetches()).toBe(before + 1)
@@ -420,12 +438,12 @@ test('the split\'s buttons reach the session: any /pace argument runs, and its a
   files['/tmp/ROADMAP.md'] = '# Roadmap\n\n- [ ] Write CI\n'
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
   await $.command.run({ command: 'pace', args: 'split' } as any)
-  const state = () => JSON.parse(files['/home/u/.claude/pace-state.json']!)
+  const state = () => JSON.parse(files['/home/u/.claude/pace-state-session-a.json']!)
   expect(state().prefs).toEqual({ band: true, line: true })
   expect(state().known).toContain('ROADMAP.md')
   let pressed = 0
   const key = async (cmd: string) => {
-    files['/home/u/.claude/pace-keys.json'] = JSON.stringify({ id: NOW + ++pressed, cmd })
+    files['/home/u/.claude/pace-keys-session-a.json'] = JSON.stringify({ id: NOW + ++pressed, cmd })
     await clock.advance(3000)
   }
   await key('on')
@@ -445,14 +463,14 @@ test('the split\'s timeline button opens the plan\'s timeline in a second split 
   files['/tmp/ROADMAP.md'] = '# Roadmap\n\n- [ ] Write CI\n'
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
   await $.command.run({ command: 'pace', args: 'split' } as any)
-  files['/home/u/.claude/pace-keys.json'] = JSON.stringify({ id: NOW + 1, cmd: 'timeline' })
+  files['/home/u/.claude/pace-keys-session-a.json'] = JSON.stringify({ id: NOW + 1, cmd: 'timeline' })
   await clock.advance(3000)
   // Below the viewer's pane (%7), half its height, not beside Claude's
   const split = runs.filter(r => r[1] === 'split-window')[1]!
   expect(split.slice(0, 8)).toEqual(['tmux', 'split-window', '-v', '-d', '-l', '50%', '-t', '%7'])
   expect(split[split.length - 1]).toContain('plan-viewer.ts')
   expect(files['/home/u/.claude/pace-plan-session-a.json']).toBeDefined()
-  expect(JSON.parse(files['/home/u/.claude/pace-state.json']!).notice.text).toContain('under the Pace split')
+  expect(JSON.parse(files['/home/u/.claude/pace-state-session-a.json']!).notice.text).toContain('under the Pace split')
   // Typed as /pace timeline with no Pace split open, it is the sidebar beside Claude
 })
 
@@ -463,10 +481,10 @@ test('t again closes the timeline pane, and quitting the split closes it too', a
   await $.command.run({ command: 'pace', args: 'split' } as any)
   let pressed = 0
   const key = async (cmd: string) => {
-    files['/home/u/.claude/pace-keys.json'] = JSON.stringify({ id: NOW + ++pressed, cmd })
+    files['/home/u/.claude/pace-keys-session-a.json'] = JSON.stringify({ id: NOW + ++pressed, cmd })
     await clock.advance(3000)
   }
-  const notice = () => JSON.parse(files['/home/u/.claude/pace-state.json']!).notice.text
+  const notice = () => JSON.parse(files['/home/u/.claude/pace-state-session-a.json']!).notice.text
   const kills = () => runs.filter(r => r[1] === 'kill-pane').length
   await key('timeline')
   expect(kills()).toBe(0)

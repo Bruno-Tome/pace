@@ -1,5 +1,6 @@
-// A burn-up chart in braille: usage over the window, the even-pace diagonal, and where the current
-// slope lands by the reset. Pure; x is the fraction of the window elapsed, y the fraction used, both 0–1.
+// A burn-up chart, in braille for a terminal or as an SVG for a surface that draws one: usage over the window, the
+// even-pace diagonal, and where the current slope lands by the reset. Pure; x is the fraction of the window elapsed,
+// y the fraction used, both 0–1.
 
 export type Layer = 'actual' | 'projection' | 'ideal' | 'empty'
 export type Run = { t: string; layer: Layer }
@@ -67,15 +68,8 @@ export function chart(trajectory: Trajectory | null, now: At, width: number, hei
     for (let y = py({ elapsed: 0, used: u }); y < PH; y++) plot(x, y, 'actual')
   }
 
-  const dashed = (i: number) => i % 3 !== 2
-  if (trajectory?.projection) line(trajectory.projection.from, trajectory.projection.to, 'projection', dashed)
-  else if (!trajectory && now.elapsed > 0.001 && now.used > 0) {
-    const slope = now.used / now.elapsed
-    const to = now.used + slope * (1 - now.elapsed) <= 1
-      ? { elapsed: 1, used: now.used + slope * (1 - now.elapsed) }
-      : { elapsed: now.elapsed + (1 - now.used) / slope, used: 1 }
-    line(now, to, 'projection', dashed)
-  }
+  const projection = projectionOf(trajectory, now)
+  if (projection) line(projection.from, projection.to, 'projection', i => i % 3 !== 2)
 
   return bits.map((row, cy) => {
     const runs: Run[] = []
@@ -88,6 +82,66 @@ export function chart(trajectory: Trajectory | null, now: At, width: number, hei
     })
     return runs
   })
+}
+
+/**
+ * Where the current slope lands by the reset: the trajectory's own projection, or without a trajectory the line from
+ * the window's start through `now`, cut where it reaches 100%; null with nothing to take a slope from
+ */
+function projectionOf(trajectory: Trajectory | null, now: At): { from: At; to: At } | null {
+  if (trajectory) return trajectory.projection
+  if (now.elapsed <= 0.001 || now.used <= 0) return null
+  const slope = now.used / now.elapsed
+  const to = now.used + slope * (1 - now.elapsed) <= 1
+    ? { elapsed: 1, used: now.used + slope * (1 - now.elapsed) }
+    : { elapsed: now.elapsed + (1 - now.used) / slope, used: 1 }
+  return { from: now, to }
+}
+
+/** The colours an SVG chart is drawn in, as CSS colours: usage, projection, even pace, and the axes and labels */
+export type SvgColors = { actual: string; projection: string; ideal: string; axis: string }
+
+/** Pixels on the left of an SVG chart for its percent labels */
+const SVG_GUTTER = 34
+/** Readings closer than this many pixels across draw one point */
+const POINT_GAP = 3
+
+/**
+ * The chart as an SVG `width` × `height` pixels: usage as a filled area with a point at each reading, even pace and
+ * the projection dashed, a mark where now is, and 100%, 50% and 0% on the left
+ */
+export function chartSvg(trajectory: Trajectory | null, now: At, o: { width: number; height: number; colors: SvgColors }): string {
+  const { width: W, height: H, colors: c } = o
+  const top = 6
+  const bottom = H - 2
+  const x = (p: At) => (SVG_GUTTER + clamp01(p.elapsed) * (W - SVG_GUTTER - 4)).toFixed(1)
+  const y = (p: At) => (bottom - clamp01(p.used) * (bottom - top)).toFixed(1)
+  const xy = (p: At) => `${x(p)},${y(p)}`
+  const readings = (trajectory?.segments.flat() ?? []).filter(p => p.elapsed <= now.elapsed).sort((p, q) => p.elapsed - q.elapsed)
+  const path: At[] = [{ elapsed: 0, used: 0 }, ...readings, now]
+  const base = (e: number) => xy({ elapsed: e, used: 0 })
+  const points: At[] = []
+  for (const p of readings) {
+    const last = points[points.length - 1]
+    if (!last || Number(x(p)) - Number(x(last)) >= POINT_GAP) points.push(p)
+  }
+  const projection = projectionOf(trajectory, now)
+  const label = (used: number, t: string) =>
+    `<text x="${SVG_GUTTER - 6}" y="${(Number(y({ elapsed: 0, used })) + 3).toFixed(1)}" text-anchor="end" font-family="ui-monospace, monospace" font-size="10" fill="${c.axis}">${t}</text>`
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`,
+    label(1, '100%'), label(0.5, '50%'), label(0, '0%'),
+    `<line x1="${SVG_GUTTER}" y1="${top}" x2="${SVG_GUTTER}" y2="${bottom}" stroke="${c.axis}" stroke-width="1" opacity="0.5"/>`,
+    `<line x1="${SVG_GUTTER}" y1="${bottom}" x2="${W - 4}" y2="${bottom}" stroke="${c.axis}" stroke-width="1" opacity="0.5"/>`,
+    `<line x1="${x({ elapsed: 0, used: 0 })}" y1="${y({ elapsed: 0, used: 0 })}" x2="${x({ elapsed: 1, used: 1 })}" y2="${y({ elapsed: 1, used: 1 })}" stroke="${c.ideal}" stroke-width="1" stroke-dasharray="2 3"/>`,
+    `<polygon points="${[...path.map(xy), base(now.elapsed), base(0)].join(' ')}" fill="${c.actual}" fill-opacity="0.35" stroke="none"/>`,
+    `<polyline points="${path.map(xy).join(' ')}" fill="none" stroke="${c.actual}" stroke-width="1.5"/>`,
+    ...(projection ? [`<line x1="${x(projection.from)}" y1="${y(projection.from)}" x2="${x(projection.to)}" y2="${y(projection.to)}" stroke="${c.projection}" stroke-width="1.5" stroke-dasharray="5 3"/>`] : []),
+    ...points.map(p => `<circle cx="${x(p)}" cy="${y(p)}" r="2" fill="${c.actual}"/>`),
+    `<line x1="${x(now)}" y1="${top}" x2="${x(now)}" y2="${bottom}" stroke="${c.axis}" stroke-width="1" opacity="0.6"/>`,
+    `<circle cx="${x(now)}" cy="${y(now)}" r="3.5" fill="${c.actual}" stroke="${c.axis}" stroke-width="1"/>`,
+    '</svg>',
+  ].join('')
 }
 
 const clamp01 = (x: number) => Math.min(Math.max(x, 0), 1)

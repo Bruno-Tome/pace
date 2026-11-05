@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- The split comes to the Claude desktop app. There `/pace` (and `/pace split`, which no longer answers "Not
+  inside tmux") opens a pane that is the split: its title and run, the `on` / `off` / `do` command bar as native
+  buttons lit while on, each key its hotkey, and the body under it. `auto…`, `ultra…` and `plan…` show a list of
+  the plans the session knows and a path field; a digit button per quota draws it alone. VS Code draws the same;
+  the terminal and mobile keep the pane as it was. New state value `pace.splitUi` (what the buttons chose),
+  empty at first. `view.ts` gains `splitParts` and `picked`; `screenOf` draws what it did.
+  Its lines are drawn in the desktop's monospace face, and each chart is an SVG instead of braille rows: usage as
+  a filled area with a point at every reading, even pace and the projection dashed, a mark at now, at a height of
+  its own (braille in the desktop's font lost its dots and stretched its rows). `chart.ts` gains `chartSvg`; a
+  `Seg` may carry an `svg` picture, which a surface without SVG draws as nothing.
+- Each session feeds its own split. The window's state, keys and launcher were one set of files every session
+  shared, so a split showed whichever session wrote last (another project's roadmap) and a button pressed in one
+  split ran in every session feeding one. They are now `~/.claude/pace-state-<session>.json`,
+  `pace-keys-<session>.json` and `pace-view-<session>.command`; the shared files are no longer written or read.
+  A split opened before this change keeps reading the old file: close it and open it again.
+- The split's command bar sits under the title, and each button is lit while what it flips is on (`[p] on pace`,
+  `[w] warm compact`, `[b] band`, `[l] status line`, `[a] auto`, `[u] ultra`, `[s] burst`); the row of modes spelled
+  out above the charts is gone. The body under the bar scrolls (↑ ↓, PgUp PgDn, the mouse wheel) instead of
+  squeezing to fit: a plan no longer shrinks the charts, which keep at least 6 rows, and the last row says how
+  much is left below.
+- The split names its own keys where it used to name `/pace` commands: the run row under the title ends `[a] off`,
+  `[u] off`, `[a] resume` or `[p] off`, warm mode reads `[w] steps it`, and with no usage yet `press r`. The pane
+  inside Claude Code still names the commands.
+- The split's command bar is three rows: `on`, the modes that are on with their keys (`nothing` when none is);
+  `off`, the ones you can turn on; `do`, the rest. Every `/pace` command now has a key: `[f] plan…` picks the
+  plan whose timeline shows, `[i]` opens the pane, `[m]` the window, and a paused run gains `[x] stop` beside
+  `[a] resume`. Warm mode's button reads `[w] warm` while off, not `warm off`. `UiState.picking` gains `plan`.
 - The split is the whole mod in one view. A modes block at the top says what is on (on pace mode, warm mode, the
   band, the status line) and shows the run under way: its plan and turn, and under ultra pace its goal, gear,
   phase and check. Two plans draw side by side on a wide split, as the plan sidebar does. A command bar at the

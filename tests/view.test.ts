@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import type { Snapshot } from '../hooks/model.ts'
-import { bandLines, click, lineText, paneLines, press, screen, screenOf, sideBySide, statusRow, type Line, type Feed, type UiState } from '../hooks/view.ts'
+import { bandLines, click, lineText, paneLines, picked, press, screen, screenOf, sideBySide, splitParts, statusRow, type Line, type Feed, type UiState } from '../hooks/view.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const H = 3600_000
@@ -16,6 +16,26 @@ const STATE: Feed = {
   cache: { at: NOW - 10 * 60_000, tokens: 180_000, window: 1_000_000, ttl: '1h' },
   at: NOW,
 }
+
+test('the split names its own keys, not /pace commands, for what its buttons do', () => {
+  const text = plain(screen({ ...STATE, warm: 'off' }, NOW, 100, 200))
+  expect(text).not.toContain('/pace')
+  expect(text).toContain('warm mode off  · [w] steps it')
+  const on = plain(screen({ ...STATE, warm: 'ping' }, NOW, 100, 200))
+  expect(on).toContain('acts under 10m left, while idle · [w] steps it')
+  const empty = plain(screen({ ...STATE, samples: [] }, NOW, 100, 200))
+  expect(empty).toContain('No usage yet: figures appear after the first reply, or press r.')
+  const run = { plan: 'ROADMAP.md', turns: 3, max: 20 }
+  expect(plain(screen({ ...STATE, auto: { ...run, paused: true } }, NOW, 100, 60)).split('\n')[1]).toContain('· [a] resume')
+  expect(plain(screen({ ...STATE, auto: { ...run, heldUntil: NOW + H, why: 'the week is low' } }, NOW, 100, 60)).split('\n')[1]).toContain('· [a] off')
+})
+
+test('the pane still names the /pace commands it has no buttons for', () => {
+  const text = paneLines({ ...STATE, warm: 'off' }, NOW, { cols: 100, chartWidth: 60, chartHeight: () => 5 }).map(l => l.map(x => x.t).join('')).join('\n')
+  expect(text).toContain('warm mode off  · /pace warm compact | ping')
+  const empty = paneLines({ ...STATE, samples: [] }, NOW, { cols: 100, chartWidth: 60, chartHeight: () => 5 }).map(l => l.map(x => x.t).join('')).join('\n')
+  expect(empty).toContain('or run /pace refresh.')
+})
 
 test('the window fills the terminal: taller charts on a taller screen, no line wider than it', () => {
   const small = plain(screen(STATE, NOW, 100, 40)).split('\n')
@@ -35,7 +55,7 @@ test('the window says how old its figures are', () => {
 })
 
 test('a context whose window is not known says its size alone, never Infinity%', () => {
-  const text = plain(screen({ ...STATE, cache: { ...STATE.cache!, window: 0 } }, NOW, 100, 40))
+  const text = plain(screen({ ...STATE, cache: { ...STATE.cache!, window: 0 } }, NOW, 100, 60))
   expect(text).toContain('context 180k ·')
   expect(text).not.toMatch(/Infinity|NaN/)
 })
@@ -87,31 +107,100 @@ const ULTRA_RUN = {
 const UI: UiState = {}
 const FULL: Feed = { ...STATE, onPace: true, warm: 'compact', prefs: { band: true, line: false }, known: ['ROADMAP.md', 'PLAN.md'] }
 
-test('the split\'s Modes section says what is on, and the command bar offers each command by key', () => {
+test('the split\'s buttons sit under the title, each lit while what it flips is on, with no row of modes spelled out', () => {
   const { text, hits } = screenOf(FULL, NOW, 100, 60, UI)
   const t = plain(text)
-  expect(t).toContain('on pace mode  on')
-  expect(t).toContain('warm mode  compact')
-  expect(t).toContain('band  shown')
-  expect(t).toContain('status line  off')
-  expect(t).toContain('auto mode  off')
-  for (const label of ['[r] refresh', '[a] auto…', '[u] ultra…', '[t] timeline', '[p] on pace off', '[w] warm ping', '[b] hide band', '[l] line on', '[q] quit']) expect(t).toContain(label)
-  // Each button's hit covers its label on the screen
   const rows = t.split('\n')
+  // The bar comes before the first chart
+  const bar = rows.findIndex(l => l.includes('[r] refresh'))
+  expect(bar).toBeGreaterThan(0)
+  expect(bar).toBeLessThan(rows.findIndex(l => l.includes('5-hour window')))
+  for (const label of ['[r] refresh', '[a] auto…', '[u] ultra…', '[t] timeline', '[p] on pace', '[w] warm compact', '[b] band', '[l] status line', '[q] quit']) expect(t).toContain(label)
+  // On pace mode, warm mode and the band are on: lit; the status line is off: not
+  for (const lit of ['[p] on pace', '[w] warm compact', '[b] band']) expect(text).toContain(`\x1b[1;32m${lit}\x1b[0m`)
+  expect(text).not.toContain('\x1b[1;32m[l] status line')
+  expect(t).not.toContain('on pace mode  on')
+  expect(t).not.toContain('auto mode  off')
+  // Each button's hit covers its label on the screen
   expect(hits.length).toBeGreaterThanOrEqual(8)
   for (const h of hits as { x: number; y: number; w: number; label: string }[]) expect([...rows[h.y - 1]!].slice(h.x - 1, h.x - 1 + h.w).join('')).toBe(h.label)
   for (const l of rows) expect([...l].length).toBeLessThanOrEqual(100)
 })
 
-test('the command bar follows the run: auto off and burst while one runs, resume while it is paused, ultra off under ultra pace', () => {
-  const running = plain(screenOf({ ...FULL, auto: { plan: 'ROADMAP.md', turns: 3, max: 20 } }, NOW, 100, 60, UI).text)
-  expect(running).toContain('[a] auto off')
-  expect(running).toContain('[s] burst on')
+test('the split\'s bar says what is on and what is off, each with its key, then the commands', () => {
+  const rows = plain(screenOf(FULL, NOW, 100, 60, UI).text).split('\n')
+  const row = (lead: string) => rows.find(l => l.startsWith(lead)) ?? ''
+  // On pace mode, warm mode and the band are on; the status line and the runs are off
+  expect(row('on  ')).toBe('on    [p] on pace  [w] warm compact  [b] band')
+  expect(row('off ')).toBe('off   [l] status line  [a] auto…  [u] ultra…')
+  for (const label of ['[r] refresh', '[t] timeline', '[f] plan…', '[v] preview', '[i] pane', '[m] window', '[1–2] focus', '[q] quit']) expect(row('do  ')).toContain(label)
+  // Nothing on says so
+  const none = plain(screenOf({ ...FULL, onPace: false, warm: 'off', prefs: { band: false, line: false } }, NOW, 100, 60, UI).text).split('\n')
+  expect(none.find(l => l.startsWith('on  '))).toBe('on    nothing')
+  expect(none.find(l => l.startsWith('off '))).toBe('off   [p] on pace  [w] warm  [b] band  [l] status line  [a] auto…  [u] ultra…')
+  // A run under way is on with its burst; paused, it offers resume and stop
+  const run = plain(screenOf({ ...FULL, auto: { plan: 'ROADMAP.md', turns: 3, max: 20 } }, NOW, 100, 60, UI).text).split('\n')
+  expect(run.find(l => l.startsWith('on  '))).toContain('[a] auto')
+  expect(run.find(l => l.startsWith('off '))).toContain('[s] burst')
+  const paused = plain(screenOf({ ...FULL, auto: { plan: 'ROADMAP.md', turns: 3, max: 20, paused: true } }, NOW, 100, 60, UI).text).split('\n')
+  expect(paused.find(l => l.startsWith('on  '))).toContain('[a] resume  [x] stop')
+})
+
+test('every /pace command has a key in the split: a plan\'s timeline, the pane, the window, stopping a paused run', () => {
+  const f = press(UI, 'f', FULL)
+  expect(f.ui.picking).toBe('plan')
+  expect(plain(screenOf(FULL, NOW, 100, 60, f.ui).text)).toContain('Show the timeline of:')
+  expect(press(f.ui, '2', FULL)).toEqual({ ui: {}, send: 'plan PLAN.md' })
+  let typed = press(f.ui, 't', FULL).ui
+  for (const c of 'x.md') typed = press(typed, c, FULL).ui
+  expect(press(typed, '\r', FULL)).toEqual({ ui: {}, send: 'plan x.md' })
+  expect(press(UI, 'i', FULL).send).toBe('pane')
+  expect(press(UI, 'm', FULL).send).toBe('window')
+  expect(press(UI, 'x', { ...FULL, auto: { plan: 'ROADMAP.md', turns: 3, max: 20, paused: true } }).send).toBe('auto off')
+  expect(press(UI, 'x', { ...FULL, auto: { ...ULTRA_RUN, paused: true } }).send).toBe('ultra off')
+})
+
+test('the split scrolls instead of squashing: a long plan leaves the charts their height, and the arrows move what is under the bar', () => {
+  const long: Feed = { ...FULL, plan: { name: 'ROADMAP.md', steps: Array.from({ length: 30 }, (_, i) => ({ text: `Step ${i + 1}`, state: i ? 'next' as const : 'now' as const, section: null })) } }
+  // The charts' rows: the braille above the legend that closes them
+  const chartRows = (f: Feed) => {
+    const lines = plain(screenOf(f, NOW, 100, 60, UI).text).split('\n')
+    return lines.slice(0, lines.findIndex(l => l.includes('even pace'))).filter(l => /[⠁-⣿]/.test(l)).length
+  }
+  expect(chartRows(long)).toBeGreaterThan(0)
+  expect(chartRows(long)).toBe(chartRows(FULL))
+  const first = screenOf(long, NOW, 100, 40, UI)
+  expect(plain(first.text)).toContain('↓')
+  const down = press(UI, '\x1b[B', long)
+  expect(down).toEqual({ ui: { scroll: 1 } })
+  const moved = screenOf(long, NOW, 100, 40, press(down.ui, '\x1b[6~', long).ui)
+  const a = plain(first.text).split('\n')
+  const b = plain(moved.text).split('\n')
+  // The title and the bar stay; the body under them moved
+  expect(b[0]).toBe(a[0])
+  expect(b.find(l => l.includes('[r] refresh'))).toBe(a.find(l => l.includes('[r] refresh')))
+  expect(b.slice(4)).not.toEqual(a.slice(4))
+  expect(b.length).toBeLessThanOrEqual(40)
+  // Scrolled past the end, it stops at the end; up goes back
+  const end = screenOf(long, NOW, 100, 40, { scroll: 9999 })
+  expect(end.scroll).toBeLessThan(9999)
+  expect(press({ scroll: 3 }, '\x1b[A', long)).toEqual({ ui: { scroll: 2 } })
+  expect(press(UI, '\x1b[A', long)).toEqual({ ui: { scroll: 0 } })
+})
+
+test('the command bar follows the run: auto lit and burst while one runs, resume while it is paused, ultra lit under ultra pace', () => {
+  const lit = (t: string) => `\x1b[1;32m${t}\x1b[0m`
+  const raw = screenOf({ ...FULL, auto: { plan: 'ROADMAP.md', turns: 3, max: 20 } }, NOW, 100, 60, UI).text
+  const running = plain(raw)
+  expect(raw).toContain(lit('[a] auto'))
+  expect(running).toContain('[s] burst')
+  expect(raw).not.toContain(lit('[s] burst'))
+  expect(screenOf({ ...FULL, auto: { plan: 'ROADMAP.md', turns: 3, max: 20, burst: true } }, NOW, 100, 60, UI).text).toContain(lit('[s] burst'))
   expect(running).toContain('auto mode  ▶ ROADMAP.md · turn 3/20')
   const paused = plain(screenOf({ ...FULL, auto: { plan: 'ROADMAP.md', turns: 3, max: 20, paused: true } }, NOW, 100, 60, UI).text)
   expect(paused).toContain('[a] resume')
   const ultra = plain(screenOf({ ...FULL, auto: ULTRA_RUN }, NOW, 100, 60, UI).text)
-  expect(ultra).toContain('[u] ultra off')
+  expect(screenOf({ ...FULL, auto: ULTRA_RUN }, NOW, 100, 60, UI).text).toContain(lit('[u] ultra'))
   expect(ultra).toContain('goal  pace ships 1.0 with CI green.')
   expect(ultra).toContain('gear  push · opus xhigh · 3 agents')
   expect(ultra).toContain('check  claude plugin test .')
@@ -219,8 +308,9 @@ const PLAN: Feed['plan'] = {
 
 test('the split shows auto mode\'s run under its title and the plan\'s timeline under the charts', () => {
   const auto = { plan: 'ROADMAP.md', turns: 3, max: 20 }
-  const lines = plain(screen({ ...STATE, onPace: true, auto, plan: PLAN }, NOW, 100, 60)).split('\n')
-  expect(lines.length).toBeLessThanOrEqual(60)
+  // Tall enough that nothing scrolls under the bar: the order of the blocks is what is checked
+  const lines = plain(screen({ ...STATE, onPace: true, auto, plan: PLAN }, NOW, 100, 80)).split('\n')
+  expect(lines.length).toBeLessThanOrEqual(80)
   const text = lines.join('\n')
   expect(lines[1]).toContain('auto  ▶ ROADMAP.md · turn 3/20')
   expect(text).toContain('1 of 3 steps done')
@@ -246,12 +336,12 @@ test('on pace mode in the split says the effort is a level lighter while the rat
   expect(plain(screen({ ...STATE, onPace: true }, NOW, 100, 60))).not.toContain('effort a level lighter')
 })
 
-test('the split\'s status row puts the lighter effort with the mode\'s figures, the command to turn it off last', () => {
+test('the split\'s status row puts the lighter effort with the mode\'s figures, the key that turns it off last', () => {
   const prompts = Array.from({ length: 20 }, (_, i) => NOW - i * 60_000)
   const auto = plain(screen({ ...STATE, prompts, onPace: true, auto: { plan: 'ROADMAP.md', turns: 3, max: 20 } }, NOW, 100, 60)).split('\n')[1]
-  expect(auto).toBe('auto  ▶ ROADMAP.md · turn 3/20 · effort a level lighter · /pace auto off')
+  expect(auto).toBe('auto  ▶ ROADMAP.md · turn 3/20 · effort a level lighter · [a] off')
   const onPace = plain(screen({ ...STATE, prompts, onPace: true }, NOW, 100, 60)).split('\n')[1]
-  expect(onPace).toBe('on pace ● compacts heavy contexts, keeps the cache warm · effort a level lighter · /pace off')
+  expect(onPace).toBe('on pace ● compacts heavy contexts, keeps the cache warm · effort a level lighter · [p] off')
 })
 
 const plainLine = (l: Line | undefined) => (l ?? []).map(s => s.t).join('')
@@ -276,4 +366,29 @@ test('two plans side by side: the left padded to its width, a gap, the right; th
   const right: Line[] = [[{ t: 'X' }], [{ t: 'Y' }], [{ t: 'Z' }]]
   const rows = sideBySide(left, right, 5).map(l => l.map(s => s.t).join(''))
   expect(rows).toEqual(['abc     X', 'de      Y', '        Z'])
+})
+
+test('the split in a pane: the bar as rows of buttons, a digit for each quota, no quit or pane of its own', () => {
+  const p = splitParts(FULL, NOW, 100, 60, UI)
+  const keys = (lead: string) => p.bar.find(r => r.lead === lead)!.buttons.map(b => b.key)
+  // On pace and warm compact are on, the band too; the status line is off
+  expect(keys('on')).toEqual(['p', 'w', 'b'])
+  expect(keys('off')).toContain('l')
+  expect(keys('do')).toContain('1')
+  expect(keys('do')).not.toContain('i')
+  expect(keys('do')).not.toContain('q')
+  expect(p.body.length).toBeGreaterThan(0)
+})
+
+test('the split in a pane while a plan is picked: no bar, what it is picked for, the plans known', () => {
+  const p = splitParts(FULL, NOW, 100, 60, { picking: 'ultra' })
+  expect(p.bar).toEqual([])
+  expect(p.picking).toBe('Start ultra pace on:')
+  expect(p.known).toEqual(['ROADMAP.md', 'PLAN.md'])
+})
+
+test('a plan picked starts the run it was picked for; a blank path cancels', () => {
+  expect(picked({ picking: 'ultra' }, ' PLAN.md ')).toEqual({ ui: {}, send: 'ultra PLAN.md' })
+  expect(picked({ picking: 'plan' }, 'ROADMAP.md').send).toBe('plan ROADMAP.md')
+  expect(picked({ picking: 'auto' }, '  ')).toEqual({ ui: {} })
 })
