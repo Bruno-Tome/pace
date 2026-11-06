@@ -26,7 +26,8 @@ adapters/codex/       hook.ts: a Codex hook (Node) that reads the session's roll
                       rollout.ts: pure rollout and hook-input parsing; fixtures.ts: the shapes Codex 0.161 writes
 adapters/herdr/       main.ts: the Herdr mod; draw.ts: segments as the theme's colors and which view (pure); built
                       to plain JS by scripts/herdr.ts
-  fleet/              main.ts: the fleet mod (panel and the Send work dialog), its own build, mods/fleet
+  fleet/              main.ts: the fleet mod (panel, and Send work as a popup or a pane), its own build, mods/fleet
+  send.ts             Send work's rules, pure: popup or pane, its host and folders, the pane opened or focused
 bin/                  viewer.ts and plan-viewer.ts as today, plus band.ts: the band or the fleet, live, in any terminal
 testing/              expect.ts: claude-code/testing's matchers, host-neutral; node.ts: describe and test on
                       node:test, register.ts mapping the module name to it; herdr.ts: a collecting runner for Herdr

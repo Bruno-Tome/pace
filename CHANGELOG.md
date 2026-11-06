@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The fleet's Send work opens as a pane too (**in a pane**, beside **Send work ⇥**): it stays open, follows the fleet
+  live and clears for the next task once an agent starts. The pane is recorded under Herdr's shared `fleet.panes`, so
+  a second click focuses it. The popup is as before.
 - From the review by four agents on four accounts (`.agents/review-2026-11-05.md`):
   - Metering keeps each account's readings its own. `meter` takes readings only from feeds of the session's account,
     and from none while a session that cannot tell has two accounts on its provider. Prompts and spend still pool.

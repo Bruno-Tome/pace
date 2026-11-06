@@ -454,7 +454,10 @@ Above them, the recommendation: the live provider with the most room, ties to th
 and why in a line (`Send work to Codex: 62% of the week left, 0 agents working`). A provider whose newest reading is
 older than the 5-hour window is marked stale and never recommended. **Send work ⇥** opens a dialog with the
 recommended host picked: choose the host and folder, write the task, and Start asks once more before it opens a new
-tab running `claude` or `codex --no-daemon` with the task. It never types into an agent already running.
+tab running `claude` or `codex --no-daemon` with the task. It never types into an agent already running. **in a pane**,
+beside it, opens Send work as a pane that stays open, ready for the next task: it follows the fleet live (the host
+recommended now, the folders the agents work in now), and once an agent starts it clears instead of closing. A
+second click focuses the one already open.
 
 ## Where the numbers come from
 

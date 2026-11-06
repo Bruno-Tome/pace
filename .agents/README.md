@@ -112,6 +112,7 @@ adapters/codex/     rollout.ts: Codex's rollout and hook input, pure; hook.ts: t
                     open.ts: /pace's views opened in Herdr; pace.md and skill/: /prompts:pace and $pace
 adapters/herdr/     main.ts: the Herdr mod, three views; draw.ts: segments as the theme's colors, which view, pure;
                     open.ts: the herdr-app commands /pace runs to open a view beside a session, pure
+                    send.ts: the fleet's Send work as a popup or a pane that stays open, pure
 adapters/pi/        feed.ts: the quota a pi session spends and its feed, pure; commands.ts: pi's thinking levels,
                     pure; extension.ts: the pi extension that writes the feed, draws the band and runs /pace
 bin/viewer.ts       the full-screen window, a Node process fed through a state file
