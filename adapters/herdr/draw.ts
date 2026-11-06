@@ -38,6 +38,7 @@ const PROVIDERS: readonly PaceProvider[] = ['claude', 'codex', 'antigravity']
 export function viewOf(props: unknown): HerdrView {
   const p = typeof props === 'object' && props != null ? (props as Record<string, unknown>) : {}
   if (p.view === 'band' && typeof p.terminal === 'string' && p.terminal) return { view: 'band', terminal: p.terminal }
+  if (p.view === 'activity') return { view: 'activity' }
   if (p.view === 'pane' && PROVIDERS.includes(p.provider as PaceProvider)) {
     return { view: 'pane', provider: p.provider as PaceProvider, ...(typeof p.account === 'string' && /^[0-9a-f]{16}$/.test(p.account) ? { account: p.account } : {}) }
   }

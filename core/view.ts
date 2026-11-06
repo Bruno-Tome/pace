@@ -2,6 +2,10 @@
 // full-screen window. The hooks module turns a line into Text elements, the window and the status line into ANSI.
 // Pure; times in ms.
 
+import { activityChips, activityQuery, METRIC_NAME, RANGE_NAME, type ActivityQuery, type ActivityResult, type ActivityRow, type Metric } from './activity.ts'
+import type { Accounts } from './account.ts'
+import type { ChipRow } from './chips.ts'
+import { DIM_NAME } from './dims.ts'
 import type { PaceAuto, PaceCacheInfo, PacePrefs, PaceWarmMode } from '../types'
 import { cacheLeft, formatTokens, formatUsd, nextCost, ttlSeconds, type Suggestion } from './cache.ts'
 import { chart, chartSvg, type Layer } from './chart.ts'
@@ -1142,4 +1146,153 @@ export function fittedLayout(s: Snapshot, now: number, cols: number, rows: numbe
   if (charts <= 0) return base
   const h = Math.min(16, Math.floor((rows - fixed) / charts))
   return { ...base, chartHeight: (row: Row) => Math.max(chartHeight(row), h) }
+}
+
+// ----------------------------------------------------------------------
+// Activity (.agents/decisions/0025-activity.md): stacked bars of a metric over a range, each group in its colour,
+// a legend and every metric's total; and chips as text, each where a terminal can click it.
+// ----------------------------------------------------------------------
+
+/** Each group's colour, in order; `other` is subtle */
+const SERIES = ['suggestion', 'success', 'merged', 'warning', 'ide', 'error', 'text']
+const EIGHTHS = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
+
+/** A measure short: 999, 1.2k, 4.2M, 3.4B; dollars with cents, or short past a thousand */
+export function compactOf(v: number, metric: Metric): string {
+  const one = (x: number) => x.toFixed(1).replace(/\.0$/, '')
+  const short = (x: number) => (x < 1000 ? String(Math.round(x)) : x < 1e6 ? `${one(x / 1e3)}k` : x < 1e9 ? `${one(x / 1e6)}M` : `${one(x / 1e9)}B`)
+  return metric === 'usd' ? (v < 1000 ? `$${v.toFixed(2)}` : `$${short(v)}`) : short(v)
+}
+
+const colourOf = (g: { value: string }, i: number) => (g.value === '…' ? 'subtle' : SERIES[i % SERIES.length]!)
+
+/** Activity drawn in `cols` by up to `rows`: what it shows, the bars, their labels, the legend and the totals */
+export function activityLines(r: ActivityResult, o: { cols: number; rows: number }): Line[] {
+  const q = r.query
+  const title: Line = [
+    { t: `${METRIC_NAME[q.metric]} · ${RANGE_NAME[q.range]} · by ${DIM_NAME[q.by]}`, bold: true },
+    { t: `  ${compactOf(r.total, q.metric)}`, color: 'success', bold: true },
+  ]
+  if (!r.groups.length) return [title, [], [{ t: 'No activity in this range: pick another, or fewer filters', dim: true }]]
+  const sums = r.bins.map((_, i) => r.groups.reduce((n, g) => n + g.values[i]!, 0))
+  const peak = Math.max(...sums)
+  const axis = Math.max(compactOf(peak, q.metric).length, 1) + 1
+  const plot = Math.max(8, o.cols - axis - 1)
+  const n = r.bins.length
+  // Each bar as wide as the room allows, a gap between them while there is room for one
+  const step = Math.max(1, Math.floor(plot / n))
+  const bar = step > 2 ? step - 1 : step
+  const legend = legendLines(r, o.cols)
+  const height = Math.max(3, Math.min(16, o.rows - 6 - legend.length))
+  // A cell's colour: the group holding most of it; its block: how much of it the bar fills, in eighths
+  const columns = r.bins.map((_, i) => {
+    const fill = peak > 0 ? Math.round((sums[i]! / peak) * height * 8) : 0
+    let at = 0
+    const bounds = r.groups.map((g, k) => {
+      at += g.values[i]!
+      return { k, top: sums[i]! > 0 ? Math.round((at / sums[i]!) * fill) : 0 }
+    })
+    return { fill, bounds }
+  })
+  const out: Line[] = [title, []]
+  for (let row = height - 1; row >= 0; row--) {
+    const lo = row * 8
+    const label = row === height - 1 ? compactOf(peak, q.metric) : row === 0 ? '0' : ''
+    const line: Line = [{ t: `${label.padStart(axis - 1)} `, dim: true }, { t: '│', dim: true }]
+    for (const c of columns) {
+      const cell = Math.min(8, Math.max(0, c.fill - lo))
+      if (!cell) {
+        line.push({ t: ' '.repeat(step) })
+        continue
+      }
+      // The group whose share covers the middle of the filled part of the cell
+      const mid = lo + cell / 2
+      const g = c.bounds.find(b => b.top >= mid) ?? c.bounds.at(-1)!
+      line.push({ t: EIGHTHS[cell - 1]!.repeat(bar), color: colourOf(r.groups[g.k]!, g.k) }, ...(step > bar ? [{ t: ' ' }] : []))
+    }
+    out.push(line)
+  }
+  out.push([{ t: `${' '.repeat(axis)}└${'─'.repeat(Math.min(plot, n * step))}`, dim: true }])
+  // Labels under the bars, as many as fit without touching
+  let labels = ' '.repeat(axis + 1)
+  r.bins.forEach((b, i) => {
+    const x = axis + 1 + i * step
+    if (x >= labels.length && x + b.label.length <= o.cols) labels = labels.padEnd(x) + b.label + ' '
+  })
+  out.push([{ t: labels.trimEnd(), dim: true }], [], ...legend, [], ...totalsLines(r, o.cols))
+  return out
+}
+
+/** Each group's swatch, name, measure and share, wrapped to the width */
+function legendLines(r: ActivityResult, cols: number): Line[] {
+  const lines: Line[] = [[]]
+  let used = 0
+  r.groups.forEach((g, i) => {
+    const share = r.total > 0 ? Math.round((g.total / r.total) * 100) : 0
+    const item: Line = [{ t: '■ ', color: colourOf(g, i) }, { t: g.label }, { t: ` ${compactOf(g.total, r.query.metric)} ${share}%   `, dim: true }]
+    const w = item.reduce((n, s) => n + [...s.t].length, 0)
+    if (used && used + w > cols) {
+      lines.push([])
+      used = 0
+    }
+    lines.at(-1)!.push(...item)
+    used += w
+  })
+  return lines.map(l => (l.length ? [...l.slice(0, -1), { ...l.at(-1)!, t: l.at(-1)!.t.trimEnd() }] : l))
+}
+
+/** Every metric's total over the range, with the filters, wrapped to the width */
+function totalsLines(r: ActivityResult, cols: number): Line[] {
+  const t = r.totals
+  const parts = [
+    `in ${compactOf(t.input, 'input')}`, `out ${compactOf(t.output, 'output')}`, `cache read ${compactOf(t.cacheRead, 'cacheRead')}`,
+    `cache write ${compactOf(t.cacheWrite, 'cacheWrite')}`, `reasoning ${compactOf(t.reasoning, 'reasoning')}`, compactOf(t.usd, 'usd'),
+    `${t.prompts} prompts`, `${t.replies} replies`,
+  ]
+  const out: string[] = ['']
+  for (const p of parts) {
+    const next = `${out.at(-1)}${out.at(-1) ? ' · ' : ''}${p}`
+    if ([...next].length <= cols || !out.at(-1)) out[out.length - 1] = next
+    else out.push(p)
+  }
+  return out.map(t => [{ t, dim: true }])
+}
+
+/**
+ * Chips as text, a row's title then its chips, wrapped to the width; each chip a Hit keyed `group:value`, the one in
+ * `focus` (its place across the rows) in brackets
+ */
+export function chipLines(rows: readonly ChipRow[], cols: number, focus?: number): { lines: Line[]; hits: Hit[] } {
+  let place = 0
+  const lines: Line[] = []
+  const hits: Hit[] = []
+  const title = Math.max(...rows.map(r => r.title.length)) + 2
+  for (const r of rows) {
+    let line: Line = [{ t: r.title.padEnd(title), dim: true }]
+    let x = title
+    for (const c of r.chips) {
+      const label = place++ === focus ? `[${c.label}]` : ` ${c.label} `
+      if (x + label.length > cols && x > title) {
+        lines.push(line)
+        line = [{ t: ' '.repeat(title) }]
+        x = title
+      }
+      hits.push({ x: x + 1, y: lines.length + 1, w: label.length, label: c.label, key: `${c.group}:${c.value}` })
+      line.push(c.on ? { t: label, bold: true, color: 'suggestion' } : { t: label, dim: true })
+      x += label.length
+    }
+    lines.push(line)
+  }
+  return { lines, hits }
+}
+
+/**
+ * Activity's whole screen for a terminal: its chips (the one in `focus` in brackets), then the chart in the rows left;
+ * the chips' hits where they are drawn
+ */
+export function activityScreen(rows: readonly ActivityRow[], q: ActivityQuery, o: { cols: number; rows: number; now: number; zone: number; focus?: number; accounts?: Accounts }): { lines: Line[]; hits: Hit[]; chips: ChipRow[] } {
+  const chips = activityChips(rows, q, o.accounts ? { accounts: o.accounts } : {})
+  const top = chipLines(chips, o.cols, o.focus)
+  const result = activityQuery(rows, q, o.now, { zone: o.zone, ...(o.accounts ? { accounts: o.accounts } : {}) })
+  return { lines: [...top.lines, [], ...activityLines(result, { cols: o.cols, rows: o.rows - top.lines.length - 1 })], hits: top.hits, chips }
 }

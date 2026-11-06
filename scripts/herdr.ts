@@ -124,14 +124,20 @@ function check(folder: string, what: string): void {
   }
 }
 
+/** Test files to a check: Herdr runs a check's tests in one call under its time budget, so the suite goes in parts */
+const SUITE_PART = 5
+
 function checkSuite(): void {
-  const out = mkdtempSync(join(tmpdir(), 'pace-herdr-suite-'))
-  try {
-    const tests = suiteFiles()
-    build(out, reach([...tests, 'testing/herdr.ts']), { 'main.js': suiteMain(tests), 'mod.json': '{ "place": "none" }\n' })
-    check(out, `core suite (${tests.length} files)`)
-  } finally {
-    rmSync(out, { recursive: true, force: true })
+  const tests = suiteFiles()
+  for (let i = 0; i < tests.length; i += SUITE_PART) {
+    const part = tests.slice(i, i + SUITE_PART)
+    const out = mkdtempSync(join(tmpdir(), 'pace-herdr-suite-'))
+    try {
+      build(out, reach([...part, 'testing/herdr.ts']), { 'main.js': suiteMain(part), 'mod.json': '{ "place": "none" }\n' })
+      check(out, `core suite (files ${i + 1}–${i + part.length} of ${tests.length})`)
+    } finally {
+      rmSync(out, { recursive: true, force: true })
+    }
   }
 }
 
@@ -153,16 +159,22 @@ const LOAD: readonly { what: string; view: HerdrView; step: number }[] = [
   { what: 'Claude\'s charts', view: { view: 'pane', provider: 'claude' }, step: 0 },
   { what: 'Codex\'s charts', view: { view: 'pane', provider: 'codex' }, step: 0 },
   { what: 'a band', view: { view: 'band', terminal: 't1' }, step: 0 },
+  { what: 'activity: a year, all of it, by model', view: { view: 'activity' }, step: 0 },
 ]
 
 function checkLoad(): void {
   const out = mkdtempSync(join(tmpdir(), 'pace-herdr-load-'))
   try {
     buildMod(out, MODS[0])
+    // A year of activity is too big a module as JSON: the seed makes it in the check, from testing/load.ts
+    build(out, reach(['testing/load.ts']), {})
     const feeds = loadFeeds(Date.now())
     for (const { what, view, step } of LOAD) {
       const seed = { view, cols: 80, rows: 60, feeds, step }
-      writeFileSync(join(out, 'adapters/herdr/seed.js'), `export const SEED = ${JSON.stringify(seed)}\n`)
+      const activity = view.view === 'activity'
+        ? `{ ...seed, activity: loadActivity(Date.now()), query: { metric: 'tokens', range: 'all', by: 'model', only: {} } }`
+        : 'seed'
+      writeFileSync(join(out, 'adapters/herdr/seed.js'), `import { loadActivity } from '../../testing/load.js'\nconst seed = ${JSON.stringify(seed)}\nexport const SEED = ${activity}\n`)
       check(out, `load: ${what}`)
     }
   } finally {

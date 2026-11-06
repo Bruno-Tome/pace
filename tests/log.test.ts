@@ -209,3 +209,32 @@ describe('history worked out once', () => {
     expect(total(f!)).toBe(2)
   })
 })
+
+describe('tokens in the log', () => {
+  const tokens = { input: 1200, output: 340, cacheRead: 50_000, cacheWrite: 800, reasoning: 120 }
+
+  test('a reply\'s tokens are an event of their own, with the model that answered', () => {
+    const e: Metered = { host: 'pi', provider: 'codex', session: 'p1', cwd: '/w', now: NOW, tokens, model: 'gpt-5' }
+    expect(eventsOf(e)).toEqual([{ at: NOW, tokens, model: 'gpt-5' }])
+  })
+
+  test('are written and read back, under a header that names the harness and the folder', () => {
+    const { text } = logText({ provider: 'codex', session: 's1', host: 'pi', cwd: '/work/pace' }, [{ at: NOW, tokens, model: 'gpt-5' }], null)
+    expect(entriesOf(text)).toEqual([{ provider: 'codex', session: 's1', host: 'pi', cwd: '/work/pace', event: { at: NOW, tokens, model: 'gpt-5' } }])
+  })
+
+  test('a header may name the repo too, a worktree\'s', () => {
+    const { text } = logText({ provider: 'codex', session: 's1', cwd: '/w/.maestro/worktrees/x', repo: 'maestro' }, [{ at: NOW, prompt: true }], null)
+    expect(entriesOf(text)[0]!.repo).toBe('maestro')
+  })
+
+  test('a header from before names neither, and reads as before', () => {
+    expect(entriesOf(`{"q":"codex","s":"s1"}\n{"at":${NOW},"p":1}\n`)).toEqual([{ provider: 'codex', session: 's1', event: { at: NOW, prompt: true } }])
+  })
+
+  test('count for nothing in a quota\'s history: its readings, prompts and spend are as without them', () => {
+    const [f] = hydrate([feed('s1')], logOf(head('s1'), [{ at: NOW - MIN, tokens, model: 'gpt-5' }, { at: NOW - MIN, usd: 1 }]), NOW)
+    expect(f!.snapshot.prompts).toEqual([])
+    expect(total(f!)).toBe(1)
+  })
+})

@@ -100,6 +100,10 @@ core/gears.ts       ultra pace's ladders: each provider's models and thinking le
 core/command.ts     /pace's arguments as a command, read once for every host; its defaults and usage
 core/estimate.ts    quotas a host is told nothing of, estimated from its spend: windows, capacities learned
 core/host.ts        the feed every host writes (PaceFeed), and the fleet: one row per quota, provider and account
+core/activity.ts    activity (ADR 0025): the log as hourly rows by provider, account, harness, repo and model, every
+                    metric; an Activity kept like a History; a question as bins, groups and totals; its chips
+core/dims.ts        what views slice by and how each value is named, for the fleet and activity alike
+core/chips.ts       chips: one-of and any-of rows of choices, a click's toggle, the keyboard over them
 core/view.ts        every drawing as lines of styled segments, the fleet's too
 core/chart.ts       braille burn-up charts
 core/plan.ts        the plan's checklist as steps on a timeline
@@ -124,6 +128,7 @@ adapters/pi/        feed.ts: the quota a pi session spends and its feed, pure; c
 bin/viewer.ts       the full-screen window, a Node process fed through a state file
 bin/plan-viewer.ts  the plan's timeline as a tmux sidebar, fed through a file per session
 bin/band.ts         the band or the fleet, live, in any terminal, from the feeds
+bin/activity.ts     activity full screen in any terminal, from the log: chips on top, the chart under them
 bin/pace-hermes.ts  the Hermes bridge: the plugin's events in, the core run on them, replies and prompts out
 bin/pace-acp.ts     pace as an ACP proxy: `pace-acp -- <agent>`; meters, answers /pace, runs auto mode
 testing/            expect.ts: the matchers, host-neutral; node.ts and register.ts: the suite on node:test;

@@ -2,6 +2,7 @@
 // machine keeps, 11 Claude sessions sharing one history (as Claude's shared store makes them) and 2 Codex sessions.
 // Pure; times in ms.
 
+import type { ActivityRow } from '../core/activity.ts'
 import type { PaceSample, PaceSpend } from '../types'
 import type { PaceFeed } from '../core/host.ts'
 
@@ -56,4 +57,28 @@ export function loadFeeds(now: number): PaceFeed[] {
     context: { tokens: 60_000, window: 258_400 },
   }))
   return [...claude, ...codex]
+}
+
+/**
+ * A year of activity as heavy use makes it, for the Herdr load check: every hour, three providers, three harnesses,
+ * three repos and two models each, about 44,000 rows
+ */
+export function loadActivity(now: number): ActivityRow[] {
+  const rows: ActivityRow[] = []
+  const hour = 3600_000
+  const first = Math.floor(now / hour) * hour - 365 * 24 * hour
+  const combos = [
+    { provider: 'claude', harness: 'claude', model: 'claude-opus-4-6' }, { provider: 'claude', harness: 'pi', model: 'claude-sonnet-4-6' },
+    { provider: 'codex', harness: 'codex', model: 'gpt-5.5' }, { provider: 'codex', harness: 'hermes', model: 'gpt-5.6-sol' },
+    { provider: 'antigravity', harness: 'antigravity', model: 'gemini-3.1-pro' },
+  ]
+  for (let t = first, i = 0; t <= now; t += hour, i++) {
+    const c = combos[i % combos.length]!
+    rows.push({ hour: t, ...c, repo: ['pace', 'ql', 'maestro'][i % 3]!, input: 40_000 + (i % 97) * 100, output: 3_000 + (i % 31) * 50, cacheRead: 400_000, cacheWrite: 9_000, reasoning: 500, usd: 1.2, prompts: 3, replies: 9 })
+    rows.push({ hour: t, ...combos[(i + 1) % combos.length]!, repo: 'pace', input: 1_000, output: 100, cacheRead: 0, cacheWrite: 0, reasoning: 0, usd: 0.05, prompts: 1, replies: 1 })
+    rows.push({ hour: t, ...combos[(i + 2) % combos.length]!, repo: 'ql', input: 2_000, output: 200, cacheRead: 10_000, cacheWrite: 0, reasoning: 0, usd: 0.1, prompts: 0, replies: 2 })
+    rows.push({ hour: t, ...combos[(i + 3) % combos.length]!, repo: 'maestro', input: 500, output: 50, cacheRead: 0, cacheWrite: 0, reasoning: 0, usd: 0.01, prompts: 1, replies: 1 })
+    rows.push({ hour: t, ...combos[(i + 4) % combos.length]!, repo: 'pace', input: 100, output: 10, cacheRead: 0, cacheWrite: 0, reasoning: 0, usd: 0, prompts: 0, replies: 1 })
+  }
+  return rows
 }

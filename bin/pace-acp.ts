@@ -99,7 +99,7 @@ async function recordNow(session: string, e: { prompted?: boolean; spent?: numbe
   const feeds = sessionFeeds(home, now, own(session))
   const feed = meter(s.feed ?? feeds.own, metered, feeds.others, { cache: false, estimate: !token })
   // The events after the feed is worked out from the log, so none is counted twice
-  appendLog(home, host, { provider, ...(account ? { account } : {}), session }, eventsOf(metered), now)
+  appendLog(home, host, { provider, ...(account ? { account } : {}), session, host, ...(s.cwd ? { cwd: s.cwd } : {}) }, eventsOf(metered), now)
   writeFeed(join(home, feedFile(host, session)), feed)
   pruneLog(home, now)
   s.feed = feed

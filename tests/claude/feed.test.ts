@@ -86,3 +86,40 @@ test('the band counts the prompts other harnesses send on the same Claude accoun
   // Its own prompt and pi's on the same account, in the last half hour: four an hour
   expect((await paceSnapshot($)).quotas[0].rate.promptsPerHour).toBe(4)
 })
+
+test('a turn\'s tokens go to the log with the model that answered, a subagent\'s too, under a header naming Claude Code and its folder', async ($, on) => {
+  const { files } = world(on)
+  await $.session.start({ cwd: '/work/pace', surface: 'terminal', isInteractive: true } as any)
+  await $.prompt.submit({ text: 'p' } as any)
+  const usage = (model: string, input: number) => ({ model, input_tokens: input, output_tokens: 300, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 2_000 })
+  await $.turn.complete({ answer: 'Done.', durationMs: 1000, isAborted: false, turnId: 't1', reason: 'answer', usage: usage('claude-opus-4-6', 1_000) } as any)
+  await $.turn.complete({ answer: 'Bumped.', durationMs: 1, isAborted: false, turnId: 't2', reason: 'answer', agentId: 'agent-1', usage: usage('claude-haiku-4-5', 50) } as any)
+  const lines = (files[LOG] ?? '').trim().split('\n').map(l => JSON.parse(l))
+  expect(lines[0]).toMatchObject({ h: 'claude', c: '/work/pace' })
+  expect(lines.filter(l => l.tk).map(l => [l.m, l.tk])).toEqual([
+    ['claude-opus-4-6', [1_000, 300, 90_000, 2_000, 0]],
+    ['claude-haiku-4-5', [50, 300, 90_000, 2_000, 0]],
+  ])
+})
+
+test('pruning keeps a day past nine as its checkpoint, with its activity, and deletes only its raw lines', async ($, on) => {
+  const { files, runs } = world(on)
+  const old = Date.UTC(2026, 8, 30, 9)
+  const day = `/home/u/.local/state/pace/log/2026-09-30`
+  files[`${day}/codex-c1.jsonl`] = logText({ provider: 'codex', session: 'c1', host: 'codex' }, [{ at: old, usd: 2 }], null).text
+  await $.session.start({ cwd: '/work/pace', surface: 'terminal', isInteractive: true } as any)
+  await $.prompt.submit({ text: 'p' } as any)
+  const cp = JSON.parse(files[`${day}/checkpoint.json.tmp`] ?? '{}')
+  expect(cp.activity.map((r: { usd: number }) => r.usd)).toEqual([2])
+  const rm = runs.filter(r => r[0] === '/bin/rm').flat()
+  expect(rm).toContain(`${day}/codex-c1.jsonl`)
+  expect(rm).not.toContain(day)
+})
+
+test('the log\'s header names the repo the session\'s folder belongs to, a worktree\'s its repo, as git says', async ($, on) => {
+  const { files, git } = world(on)
+  git.commonDir = '/Users/me/work/maestro/.git'
+  await $.session.start({ cwd: '/Users/me/.maestro/worktrees/31908816', surface: 'terminal', isInteractive: true } as any)
+  await $.prompt.submit({ text: 'p' } as any)
+  expect(JSON.parse((files[LOG] ?? '').split('\n')[0]!)).toMatchObject({ c: '/Users/me/.maestro/worktrees/31908816', r: 'maestro' })
+})

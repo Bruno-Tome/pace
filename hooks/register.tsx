@@ -19,11 +19,12 @@ import type { ElementConstructor, EngineInterface as Engine, Register, RenderEle
 import type { Pace, PaceAuto, PaceCacheInfo, PaceCacheTtl, PaceGear, PaceSnapshot, PacePrefs, PaceReading, PaceSample, PaceSpend, PaceUltra, PaceWarmMode } from '../types'
 import { alertsOf } from '../core/alerts.ts'
 import { AUTO_TURNS, commandOf, DEFAULT_PLAN, ULTRA_TURNS, USAGE, type PaceCommand } from '../core/command.ts'
-import { route, type Host, type PaceAction, type Surface } from '../core/api.ts'
+import { route, type Host, type PaceAction, type Surface, ACTIVITY_WHERE } from '../core/api.ts'
 import { accountId, numbered, type Accounts } from '../core/account.ts'
 import { FEED_STALE, FEEDS_DIR, feedFile, feedOf as parseFeed, type PaceFeed } from '../core/host.ts'
 import { checkpointDays, checkpointFrom, checkpointOf, expiredDays, headLine, History, LOG_DIR, logDays, logFile, logText, parseLog, slimSnapshot, type LogEntry, type LogEvent, type LogHead } from '../core/log.ts'
 import { pooled } from '../core/meter.ts'
+import { repoOfGitDir } from '../core/dims.ts'
 import { ALREADY_OPEN, herdrOpen, herdrReuse, paceViewOf, registryIn, sharedFile } from '../adapters/herdr/open.ts'
 import { ACCOUNTS_FILE, KEY_FILE, keysFile, planFeedFile, ROW_FILE, stateFile, viewFile } from './files.ts'
 import { isSessionKey, isStale, prefsFrom, sessionKey, sessionOf, sharedOf } from '../core/prefs.ts'
@@ -150,8 +151,8 @@ const CHECKPOINT = 'checkpoint.json'
 let prunedOn = ''
 
 /**
- * Once a day (core/log.ts): deletes the log's day folders past keeping and the feeds not written for eight days, and
- * folds each finished day without a checkpoint into one
+ * Once a day (core/log.ts, ADR 0025): folds each finished day into a checkpoint kept for good (again where one has no
+ * activity yet), deletes a day's raw lines once it is past nine days, and the feeds not written for eight days
  */
 async function prune($: Engine, home: string, now: number): Promise<void> {
   const today = new Date(now).toISOString().slice(0, 10)
@@ -160,21 +161,34 @@ async function prune($: Engine, home: string, now: number): Promise<void> {
   const root = `${home}/${LOG_DIR}`
   const days = await $.fs.list(root).then(es => es.map(e => e.name)).catch(() => [] as string[])
   const feeds = await $.fs.list(`${home}/${FEEDS_DIR}`).catch(() => [])
-  const gone = [
-    ...expiredDays(days, now).map(d => `${root}/${d}`),
-    ...feeds.filter(e => e.name.endsWith('.json') && e.mtimeMs && e.mtimeMs < now - STATE_SPAN).map(e => `${home}/${FEEDS_DIR}/${e.name}`),
-  ]
-  if (gone.length) await $.process.run(['/bin/rm', '-rf', ...gone]).catch(() => null)
+  const gone = feeds.filter(e => e.name.endsWith('.json') && e.mtimeMs && e.mtimeMs < now - STATE_SPAN).map(e => `${home}/${FEEDS_DIR}/${e.name}`)
   for (const day of checkpointDays(days, now)) {
-    if (expiredDays([day], now).length) continue
     const dir = `${root}/${day}`
     const files = await $.fs.list(dir).catch(() => [])
-    if (files.some(e => e.name === CHECKPOINT)) continue
-    const entries: LogEntry[] = []
-    for (const e of files) if (e.name.endsWith('.jsonl')) entries.push(...parseLog(String(await $.fs.read(`${dir}/${e.name}`).catch(() => '')), null).entries)
-    await $.fs.write(`${dir}/${CHECKPOINT}.tmp`, JSON.stringify(checkpointOf(day, entries)))
-    await $.process.run(['/bin/mv', `${dir}/${CHECKPOINT}.tmp`, `${dir}/${CHECKPOINT}`]).catch(() => null)
+    const raw = files.filter(e => e.name.endsWith('.jsonl')).map(e => `${dir}/${e.name}`)
+    let folded = files.some(e => e.name === CHECKPOINT) && !!checkpointFrom(String(await $.fs.read(`${dir}/${CHECKPOINT}`).catch(() => '')))?.activity
+    if (raw.length && !folded) {
+      const entries: LogEntry[] = []
+      for (const path of raw) entries.push(...parseLog(String(await $.fs.read(path).catch(() => '')), null).entries)
+      await $.fs.write(`${dir}/${CHECKPOINT}.tmp`, JSON.stringify(checkpointOf(day, entries)))
+      folded = (await $.process.run(['/bin/mv', `${dir}/${CHECKPOINT}.tmp`, `${dir}/${CHECKPOINT}`]).catch(() => null))?.exitCode === 0
+    }
+    // Past nine days the checkpoint stands for the day: its raw lines go, the folder and checkpoint stay
+    if (folded && expiredDays([day], now).length) gone.push(...raw)
   }
+  if (gone.length) await $.process.run(['/bin/rm', '-f', ...gone]).catch(() => null)
+}
+
+/** The session's folder's repo, as git says it, asked once (a worktree's is the repo it belongs to); null outside git */
+let repoAsked: { cwd: string; repo: string | null } | null = null
+
+async function repoOfCwd($: Engine): Promise<string | null> {
+  if (!cwd) return null
+  if (repoAsked?.cwd !== cwd) {
+    const r = await $.process.run(['git', '-C', cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir']).catch(() => null)
+    repoAsked = { cwd, repo: r?.exitCode === 0 ? repoOfGitDir(r.stdout) : null }
+  }
+  return repoAsked.repo
 }
 
 /** This session's log as written so far today: its path, its text, the header in force at its end */
@@ -197,7 +211,8 @@ async function logEvents($: Engine, events: readonly LogEvent[], now: number): P
     const head = parseLog(text, null).head
     ownLog = { path, text, head: head ? headLine(head) : null }
   }
-  const { text, head } = logText({ provider: 'claude', ...(account ? { account } : {}), session: spendId }, events, ownLog.head)
+  const repo = await repoOfCwd($)
+  const { text, head } = logText({ provider: 'claude', ...(account ? { account } : {}), session: spendId, host: 'claude', ...(cwd ? { cwd } : {}), ...(repo ? { repo } : {}) }, events, ownLog.head)
   ownLog = { path, text: ownLog.text + text, head }
   await $.fs.write(path, ownLog.text)
 }
@@ -541,7 +556,7 @@ async function openSplit($: Engine): Promise<'opened' | 'open' | false> {
  */
 async function openHerdr($: Engine, arg: string): Promise<string | null> {
   const terminal = await $.env.get('HC_TERMINAL_ID')
-  const herdrOnly = arg === 'band' || arg === 'fleet'
+  const herdrOnly = arg === 'band' || arg === 'fleet' || arg === 'activity'
   if (!terminal) return null
   const view = paceViewOf(arg, 'claude', terminal, accountCache?.id)
   if (!view) return null
@@ -671,6 +686,15 @@ async function recordSpend($: Engine, usd: number): Promise<void> {
   const merged = mergeSpend(Array.isArray(stored) ? (stored as PaceSpend[]) : [], mine, now)
   await $.store.set('spend', merged)
   await update($, spendA, () => merged)
+}
+
+/** A turn's tokens to the log, with the model that answered; Claude Code says no reasoning apart from the output */
+async function recordTokens($: Engine, u: { model: string; input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number } | undefined): Promise<void> {
+  if (!u) return
+  const tokens = { input: u.input_tokens ?? 0, output: u.output_tokens ?? 0, cacheRead: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0, reasoning: 0 }
+  if (!tokens.input && !tokens.output && !tokens.cacheRead && !tokens.cacheWrite) return
+  const now = await $.clock.now()
+  await logEvents($, [{ at: now, tokens, ...(u.model ? { model: u.model } : {}) }], now)
 }
 
 async function recordPrompt($: Engine): Promise<void> {
@@ -1351,6 +1375,8 @@ async function timelineCommand($: Engine): Promise<string> {
 
 /** A view opened where core/api.ts routed it: Herdr, a tmux split or a window, each falling back to Claude's own pane */
 async function openAt($: Engine, a: Extract<PaceAction, { kind: 'open' }>, columns: number): Promise<string> {
+  // Activity runs bin/activity.ts in a split or a window (ADR 0025); in Herdr it is the pace mod's own split
+  if (a.view === 'activity' && a.surface !== 'herdr') return openActivity($, a.surface === 'split' ? 'split' : 'window')
   switch (a.surface) {
     case 'herdr': {
       const opened = await openHerdr($, a.view === 'pane' ? '' : a.view).catch(() => null)
@@ -1372,6 +1398,23 @@ async function openAt($: Engine, a: Extract<PaceAction, { kind: 'open' }>, colum
     }
     default: return openPane($, columns, a.note ? `${a.note}; ` : '')
   }
+}
+
+/** bin/activity.ts in a tmux split beside Claude, or a terminal window of its own; what to say */
+async function openActivity($: Engine, where: 'split' | 'window'): Promise<string> {
+  const node = await nodeOf($)
+  const home = await homeOf($)
+  if (!node || !home) return ACTIVITY_WHERE
+  const script = `${home}/.claude/pace-activity.command`
+  await $.fs.write(script, `#!/bin/sh\nprintf '\\033]0;Pace activity\\007'\nexec ${shellQuote(node)} ${shellQuote(`${$.plugin.root}/bin/activity.ts`)}\n`)
+  await $.process.run(['chmod', '755', script])
+  if (where === 'split' && (await inTmux($))) {
+    const beside = await $.env.get('TMUX_PANE')
+    const r = await $.process.run(['tmux', 'split-window', '-h', '-d', '-l', '55%', ...(beside ? ['-t', beside] : []), script])
+    if (r.exitCode === 0) return 'Activity opened in a tmux split; q there closes it'
+  }
+  const r = await $.process.run(['open', '-a', terminalApp, script])
+  return r.exitCode === 0 ? 'Activity opened in a terminal window; q closes it' : ACTIVITY_WHERE
 }
 
 /** Claude's own pace pane, saying `why` it opened there instead */
@@ -1472,6 +1515,8 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.complete', async ($, e, next) => {
+    // The turn's tokens, a subagent's too: what it spent on the account (core/log.ts)
+    try { await recordTokens($, e.usage) } catch {}
     if (e.agentId !== undefined) {
       active.delete(e.agentId)
       const r = await next(e)

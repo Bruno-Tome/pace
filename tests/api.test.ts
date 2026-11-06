@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { plainText, plansFor, route, stepOf, viewLines, warmStep, type Host, type WarmStepInput } from '../core/api.ts'
+import { plainText, plansFor, route, stepOf, viewLines, warmStep, type Host, type WarmStepInput, ACTIVITY_WHERE, liveOf } from '../core/api.ts'
 import type { PaceFeed } from '../core/host.ts'
 import { snapshotOf } from '../core/model.ts'
 import { commandOf } from '../core/command.ts'
@@ -57,6 +57,14 @@ describe('views go to the surface the host prefers', () => {
     expect(r('band', codex)).toEqual({ kind: 'open', view: 'band', surface: 'split' })
     expect(r('band', noTmux(codex))).toEqual({ kind: 'open', view: 'band', surface: 'answer' })
     expect(r('band', agy)).toEqual({ kind: 'open', view: 'band', surface: 'window' })
+  })
+
+  test('activity opens in a split, as /pace split does: Herdr first, else tmux, else a terminal window, never a pane', () => {
+    expect(r('activity', inHerdr(claude))).toEqual({ kind: 'open', view: 'activity', surface: 'herdr', fallback: { kind: 'open', view: 'activity', surface: 'split' } })
+    expect(r('activity', codex)).toEqual({ kind: 'open', view: 'activity', surface: 'split' })
+    expect(r('activity', agy)).toEqual({ kind: 'open', view: 'activity', surface: 'window' })
+    // pi with neither has nowhere to draw it: it says where it opens
+    expect(r('activity', noTmux(pi))).toEqual({ kind: 'say', text: ACTIVITY_WHERE })
   })
 
   test('the fleet opens in the pane pace has, else beside the host', () => {
@@ -207,5 +215,14 @@ describe('a view drawn for a surface that shows text', () => {
     expect(plansFor(feed, ['a.md'])).toEqual(['a.md'])
     expect(plansFor({ ...feed, snapshot: { ...feed.snapshot, auto: { plan: 'P.md', turns: 1, max: 40 } } }, [])).toEqual(['P.md'])
     expect(plansFor(feed, [])).toEqual(['ROADMAP.md'])
+  })
+})
+
+describe('a view drawn live in a terminal', () => {
+  test('activity is bin/activity.ts; the charts, the band and the fleet are bin/band.ts on the session\'s feed', () => {
+    expect(liveOf('activity', '/h/f.json')).toEqual({ bin: 'bin/activity.ts', args: [] })
+    expect(liveOf('pane', '/h/f.json')).toEqual({ bin: 'bin/band.ts', args: ['--pane', '/h/f.json'] })
+    expect(liveOf('band', '/h/f.json')).toEqual({ bin: 'bin/band.ts', args: ['/h/f.json'] })
+    expect(liveOf('fleet', '/h/f.json')).toEqual({ bin: 'bin/band.ts', args: ['--fleet'] })
   })
 })

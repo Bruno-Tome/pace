@@ -60,8 +60,10 @@ describe('the Codex hook', () => {
     expect(onDisk(home).snapshot.prompts).toEqual([])
     expect(onDisk(home).snapshot.samples).toEqual([])
     const lines = readFileSync(join(home, logFile('codex', SESSION, Date.now())), 'utf8').trim().split('\n').map(l => JSON.parse(l))
-    // The header, the prompt, the reading: the reading read once, though the hook ran twice
-    expect(lines.map(l => Object.keys(l).find(k => ['q', 'p', 'r'].includes(k)))).toEqual(['q', 'p', 'r'])
+    // The header (naming Codex and the folder), the prompt, the reading and the reply's tokens: each once, though
+    // the hook ran twice
+    expect(lines.map(l => Object.keys(l).find(k => ['q', 'p', 'r', 'tk'].includes(k)))).toEqual(['q', 'p', 'r', 'tk'])
+    expect(lines[0]).toMatchObject({ h: 'codex', c: '/work/pace' })
   })
 
   test('names the account Codex is signed in with, as a keyed hash of its email, and none signed out', () => {

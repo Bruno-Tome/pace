@@ -6,9 +6,15 @@
 //   {"at":1793990000000,"p":1,"m":"gpt-5"}                 a prompt, and its model when known
 //   {"at":1793990000000,"r":{"five_hour":{...}}}            a reading the host was told
 //   {"at":1793990000000,"usd":0.25,"m":"gpt-5"}            what a reply cost
+//   {"at":1793990000000,"tk":[1200,340,50000,800,120],"m":"gpt-5"}
+//                                                            a reply's tokens: in, out, cache read, cache write, reasoning
+//
+// A header may also name the harness (`h`), the folder (`c`) the session runs in and its repo (`r`, a worktree's
+// own repo; ADR 0025).
 
 import type { PaceSample, PaceSpend } from '../types'
-import { FEED_STALE, type PaceFeed, type PaceHost, type PaceProvider } from './host.ts'
+import { activityOf, type ActivityRow } from './activity.ts'
+import { FEED_STALE, HOSTS, type PaceFeed, type PaceHost, type PaceProvider } from './host.ts'
 import type { Metered } from './meter.ts'
 import type { Snapshot } from './model.ts'
 import { mergeSamples } from './quota.ts'
@@ -21,13 +27,16 @@ const DAY = 24 * 3600_000
 /** Days of folders read: the spend kept (eight days) back from any hour of today */
 const DAYS = 9
 
-/** The quota and session a log's lines are on */
-export type LogHead = { provider: PaceProvider; account?: string; session: string }
+/** The quota and session a log's lines are on; the harness and folder too, where the header names them */
+export type LogHead = { provider: PaceProvider; account?: string; session: string; host?: PaceHost; cwd?: string; repo?: string }
+/** A reply's tokens: in (uncached), out, read from the prompt cache, written to it, and reasoning (counted in out) */
+export type Tokens = { input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number }
 /** One event a session saw: a prompt, a reading, or what a reply cost */
 export type LogEvent =
   | { at: number; prompt: true; model?: string }
   | { at: number; quotas: PaceSample['quotas'] }
   | { at: number; usd: number; model?: string }
+  | { at: number; tokens: Tokens; model?: string }
 /** An event as read back, with the header it was under */
 export type LogEntry = LogHead & { event: LogEvent }
 
@@ -55,15 +64,21 @@ export function eventsOf(e: Metered): LogEvent[] {
     ...(e.prompted ? [{ at: e.now, prompt: true as const }] : []),
     ...(e.samples ?? []).filter(s => !estimated(s)).map(s => ({ at: s.at, quotas: s.quotas })),
     ...(e.spent && e.spent > 0 ? [{ at: e.now, usd: e.spent }] : []),
+    ...(e.tokens ? [{ at: e.now, tokens: e.tokens, ...(e.model ? { model: e.model } : {}) }] : []),
   ]
 }
 
 /** A header as written: the quota and the session of the lines after it */
-export const headLine = (h: LogHead) => JSON.stringify({ q: h.provider, ...(h.account ? { a: h.account } : {}), s: h.session })
+export const headLine = (h: LogHead) =>
+  JSON.stringify({ q: h.provider, ...(h.account ? { a: h.account } : {}), s: h.session, ...(h.host ? { h: h.host } : {}), ...(h.cwd ? { c: h.cwd } : {}), ...(h.repo ? { r: h.repo } : {}) })
 
 function lineOf(e: LogEvent): string {
   if ('prompt' in e) return JSON.stringify({ at: e.at, p: 1, ...(e.model ? { m: e.model } : {}) })
   if ('usd' in e) return JSON.stringify({ at: e.at, usd: e.usd, ...(e.model ? { m: e.model } : {}) })
+  if ('tokens' in e) {
+    const t = e.tokens
+    return JSON.stringify({ at: e.at, tk: [t.input, t.output, t.cacheRead, t.cacheWrite, t.reasoning], ...(e.model ? { m: e.model } : {}) })
+  }
   return JSON.stringify({ at: e.at, r: e.quotas })
 }
 
@@ -88,6 +103,10 @@ function eventOf(v: Record<string, unknown>): LogEvent | null {
   if (v.p === 1) return { at: v.at, prompt: true, ...model }
   if (typeof v.usd === 'number' && Number.isFinite(v.usd) && v.usd >= 0) return { at: v.at, usd: v.usd, ...model }
   if (isObject(v.r)) return { at: v.at, quotas: v.r as PaceSample['quotas'] }
+  if (Array.isArray(v.tk) && v.tk.length === 5 && v.tk.every(n => typeof n === 'number' && Number.isFinite(n) && n >= 0)) {
+    const [input, output, cacheRead, cacheWrite, reasoning] = v.tk as number[]
+    return { at: v.at, tokens: { input: input!, output: output!, cacheRead: cacheRead!, cacheWrite: cacheWrite!, reasoning: reasoning! }, ...model }
+  }
   return null
 }
 
@@ -111,7 +130,14 @@ export function parseLog(text: string, from: LogHead | null): { entries: LogEntr
     }
     if (!isObject(v)) continue
     if (typeof v.q === 'string' && typeof v.s === 'string') {
-      head = PROVIDERS.includes(v.q) ? { provider: v.q as PaceProvider, ...(typeof v.a === 'string' ? { account: v.a } : {}), session: v.s } : null
+      head = PROVIDERS.includes(v.q)
+        ? {
+            provider: v.q as PaceProvider, ...(typeof v.a === 'string' ? { account: v.a } : {}), session: v.s,
+            ...(typeof v.h === 'string' && HOSTS.includes(v.h as PaceHost) ? { host: v.h as PaceHost } : {}),
+            ...(typeof v.c === 'string' && v.c ? { cwd: v.c } : {}),
+            ...(typeof v.r === 'string' && v.r ? { repo: v.r } : {}),
+          }
+        : null
       continue
     }
     const event = eventOf(v)
@@ -133,8 +159,8 @@ export type Part = {
   modelPrompts?: Record<string, number[]>
   spend: PaceSpend[]
 }
-/** A finished day of the log, folded once: a part for each quota that day */
-export type Checkpoint = { version: 1; day: string; parts: Part[] }
+/** A finished day of the log, folded once: a part for each quota that day, and its activity (ADR 0025) */
+export type Checkpoint = { version: 1; day: string; parts: Part[]; activity?: ActivityRow[] }
 
 const DAY_END = (day: string) => Date.parse(`${day}T00:00:00Z`) + DAY
 
@@ -157,7 +183,7 @@ export function partsOf(entries: readonly LogEntry[], now: number): Part[] {
       else if ('prompt' in e) {
         prompts.push(e.at)
         if (e.model) (byModel[e.model] ??= []).push(e.at)
-      } else spent.push({ t: e.at, id: session, usd: e.usd, ...(e.model ? { m: e.model } : {}) })
+      } else if ('usd' in e) spent.push({ t: e.at, id: session, usd: e.usd, ...(e.model ? { m: e.model } : {}) })
     }
     return {
       provider: on[0]!.provider, ...(on[0]!.account ? { account: on[0]!.account } : {}),
@@ -169,7 +195,7 @@ export function partsOf(entries: readonly LogEntry[], now: number): Part[] {
 }
 
 /** A finished day's checkpoint: its events folded as of the day's end */
-export const checkpointOf = (day: string, entries: readonly LogEntry[]): Checkpoint => ({ version: 1, day, parts: partsOf(entries, DAY_END(day)) })
+export const checkpointOf = (day: string, entries: readonly LogEntry[]): Checkpoint => ({ version: 1, day, parts: partsOf(entries, DAY_END(day)), activity: activityOf(entries) })
 
 const isPart = (v: unknown): v is Part =>
   isObject(v) && PROVIDERS.includes(v.provider as string) && Array.isArray(v.samples) && Array.isArray(v.prompts) && Array.isArray(v.spend)
@@ -179,7 +205,9 @@ export function checkpointFrom(text: string): Checkpoint | null {
   try {
     const v: unknown = JSON.parse(text)
     if (!isObject(v) || v.version !== 1 || typeof v.day !== 'string' || !Array.isArray(v.parts) || !v.parts.every(isPart)) return null
-    return v as Checkpoint
+    // Activity from a checkpoint written before it is none: the day is folded again while its lines are there
+    const activity = Array.isArray(v.activity) && v.activity.every(r => isObject(r) && typeof r.hour === 'number' && typeof r.provider === 'string') ? (v.activity as ActivityRow[]) : undefined
+    return { version: 1, day: v.day, parts: v.parts as Part[], ...(activity ? { activity } : {}) }
   } catch {
     return null
   }

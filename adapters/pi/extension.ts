@@ -19,12 +19,12 @@ import { continuePrompt, decide, protocol, resumed, runsOut, startPrompt, upkeep
 import { commandOf, DEFAULT_PLAN, USAGE } from '../../core/command.ts'
 import { learn, type Capacities } from '../../core/estimate.ts'
 import { FEED_STALE, feedFile, fleetOf, type PaceFeed, type PaceProvider } from '../../core/host.ts'
-import { eventsOf } from '../../core/log.ts'
+import { eventsOf, type Tokens } from '../../core/log.ts'
 import { snapshotOf } from '../../core/model.ts'
 import { stepsOf } from '../../core/plan.ts'
 import { bandLines, fleetLines, lineText, paneLayout, paneLines, planLines, toAnsi, type Line } from '../../core/view.ts'
 import { openInHerdr } from '../codex/open.ts'
-import { HOST_PREFS, route, stepOf, warmStep, type Host, type HostPrefs, type PaceAction } from '../../core/api.ts'
+import { HOST_PREFS, route, stepOf, warmStep, type Host, type HostPrefs, type PaceAction, liveOf } from '../../core/api.ts'
 import { PI_THINKING, thinkingFor } from './commands.ts'
 import { ladderFor, type Ladder } from '../../core/gears.ts'
 import { coldAt, headroomOf, shiftGears, startGears } from '../../core/throttle.ts'
@@ -65,7 +65,7 @@ type Pi = {
 }
 
 /** What an event adds to the feed */
-type Happened = { prompted?: boolean; spent?: number; limit?: boolean; cached?: number }
+type Happened = { prompted?: boolean; spent?: number; limit?: boolean; cached?: number; tokens?: Tokens }
 
 const KEY = 'pace'
 /** How often the band is drawn again while pi is idle, for the clocks and the other sessions' feeds */
@@ -185,6 +185,7 @@ export default function pace(pi: Pi): void {
     const event = {
       session, provider, ...(account ? { account } : {}), cwd: ctx.cwd, now, prompted: happened.prompted ?? false, spent: happened.spent ?? 0,
       ...(happened.cached ? { cached: happened.cached } : {}),
+      ...(happened.tokens ? { tokens: happened.tokens, ...(ctx.model?.id ? { model: ctx.model.id } : {}) } : {}),
       context: ctx.getContextUsage() ?? null,
       ...(process.env.HC_TERMINAL_ID ? { terminal: process.env.HC_TERMINAL_ID } : {}),
     }
@@ -196,7 +197,7 @@ export default function pace(pi: Pi): void {
     if (changed) writeAtomically(capPath, JSON.stringify(learned))
     const feed = changed ? nextFeed(before, event, others, learned) : seen
     // The events after the feed is worked out from the log, so none is counted twice
-    appendLog(home, 'pi', { provider, ...(account ? { account } : {}), session }, eventsOf(piMetered(event)), now)
+    appendLog(home, 'pi', { provider, ...(account ? { account } : {}), session, host: 'pi', cwd: ctx.cwd }, eventsOf(piMetered(event)), now)
     writeFeed(path, feed)
     pruneLog(home, now)
     prev = feed
@@ -283,10 +284,10 @@ export default function pace(pi: Pi): void {
         if (action.note) say(action.note)
         if (action.surface === 'split') {
           const feed = prev ? join(home, feedFile('pi', prev.session)) : ''
-          const flag = action.view === 'pane' ? '--pane ' : action.view === 'fleet' ? '--fleet ' : ''
-          const command = action.view === 'plan'
+          const run = action.view === 'plan' ? null : liveOf(action.view, feed)
+          const command = !run
             ? `node '${join(ROOT, 'bin/plan-viewer.ts')}' '${planFeed(home, ctx.cwd, action.files ?? [])}'`
-            : `node '${join(ROOT, 'bin/band.ts')}' ${flag}'${feed}'`
+            : ['node', join(ROOT, run.bin), ...run.args].map(p => (p === 'node' ? p : `'${p}'`)).join(' ')
           try {
             execFileSync('tmux', ['split-window', '-h', '-d', '-l', '64', command], { stdio: 'ignore', timeout: 5000 })
             return say(`Pace ${action.view === 'plan' ? 'plan timeline' : 'view'} opened in a tmux split; q there closes it`)
@@ -470,9 +471,12 @@ export default function pace(pi: Pi): void {
     const n = (x: unknown) => (Number.isFinite(Number(x)) ? Number(x) : 0)
     // The prompt's tokens, when the reply read or wrote the cache: what the cache holds now
     const touched = n(m.usage?.cacheRead) + n(m.usage?.cacheWrite)
+    // The reply's tokens as pi reports them; its output counts the reasoning, which pi does not say apart
+    const tokens = { input: n(m.usage?.input), output: n(m.usage?.output), cacheRead: n(m.usage?.cacheRead), cacheWrite: n(m.usage?.cacheWrite), reasoning: 0 }
     safely(ctx, {
       spent: Number.isFinite(usd) && usd > 0 ? usd : 0, limit: m.stopReason === 'error' && isLimit(m.errorMessage),
       ...(touched > 0 ? { cached: n(m.usage?.input) + touched } : {}),
+      ...(tokens.input || tokens.output || tokens.cacheRead || tokens.cacheWrite ? { tokens } : {}),
     })
   })
   pi.on('model_select', (_e, ctx) => safely(ctx))

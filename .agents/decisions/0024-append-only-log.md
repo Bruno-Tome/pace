@@ -32,7 +32,8 @@ summed them, so spend compounded across feeds at every merge, up to 1.8e308 doll
   were left, and a quota's history is its past, joined at most once an hour, with today's part on top, worked out only
   when one of its parts changed. The same feed objects come back while nothing changed, so a view can tell it has
   nothing to draw again. Feeds are parsed again only once their size or time changed.
-- **Retention by whole files.** A Node writer deletes the day folders older than the spend kept (eight days) and
+- **Retention by whole files.** (Changed by [25](0025-activity.md): checkpoints are kept for good, a day's raw lines
+  deleted once it is nine days old.) A Node writer deletes the day folders older than the spend kept (eight days) and
   feeds of sessions that ended before it, at most once a day. Nothing is compacted or rewritten.
 
 ## Consequences

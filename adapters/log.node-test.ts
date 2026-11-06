@@ -1,6 +1,7 @@
 // The log on disk (adapters/log.ts), in a scratch home: appended a line at a time, read on from where it was left,
 // pruned by whole day folders, and feeds read back hydrated from it. Run by Node: `node --test adapters/log.node-test.ts`.
 
+import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -40,6 +41,42 @@ describe('appending to a session\'s log', () => {
     const home = scratch()
     appendLog(home, 'codex', head, [], NOW)
     expect(existsSync(join(home, logFile('codex', 's1', NOW)))).toBe(false)
+  })
+})
+
+describe('a log\'s header names the repo', () => {
+  test('a worktree\'s is the repo it belongs to, resolved once by git', () => {
+    const home = scratch()
+    const repo = join(home, 'work', 'maestro')
+    mkdirSync(repo, { recursive: true })
+    const git = (...a: string[]) => execFileSync('git', a, { cwd: repo, stdio: 'ignore' })
+    git('init', '-q')
+    git('-c', 'user.email=a@b.c', '-c', 'user.name=a', 'commit', '-q', '--allow-empty', '-m', 'first')
+    const tree = join(home, 'trees', '31908816')
+    git('worktree', 'add', '-q', tree)
+    appendLog(home, 'codex', { ...head, cwd: tree }, [{ at: NOW, prompt: true }], NOW)
+    expect(JSON.parse(readFileSync(join(home, logFile('codex', 's1', NOW)), 'utf8').split('\n')[0]!).r).toBe('maestro')
+  })
+
+  test('a day folded later names the repo its older lines did not', () => {
+    const home = scratch()
+    const repo = join(home, 'work', 'ql')
+    mkdirSync(repo, { recursive: true })
+    execFileSync('git', ['init', '-q'], { cwd: repo, stdio: 'ignore' })
+    // A line from before headers named repos: the folder alone
+    const path = join(home, logFile('codex', 's1', NOW - 3 * DAY))
+    mkdirSync(join(path, '..'), { recursive: true })
+    writeFileSync(path, `{"q":"codex","s":"s1","c":"${join(repo, 'src')}"}\n{"at":${NOW - 3 * DAY},"p":1}\n`)
+    mkdirSync(join(repo, 'src'))
+    pruneLog(home, NOW)
+    const cp = JSON.parse(readFileSync(join(home, LOG_DIR, '2026-11-03', 'checkpoint.json'), 'utf8'))
+    expect(cp.activity[0].repo).toBe('ql')
+  })
+
+  test('a folder outside git names none', () => {
+    const home = scratch()
+    appendLog(home, 'codex', { ...head, cwd: home }, [{ at: NOW, prompt: true }], NOW)
+    expect(JSON.parse(readFileSync(join(home, logFile('codex', 's1', NOW)), 'utf8').split('\n')[0]!).r).toBe(undefined)
   })
 })
 
@@ -132,7 +169,7 @@ describe('a session\'s feeds', () => {
 })
 
 describe('pruning', () => {
-  test('deletes the day folders past keeping and the feeds of sessions long ended, once a day', () => {
+  test('keeps every day\'s checkpoint for good, deletes the raw lines past nine days and the feeds of sessions long ended, once a day', () => {
     const home = scratch()
     appendLog(home, 'codex', head, [{ at: NOW - 20 * DAY, usd: 1 }], NOW - 20 * DAY)
     appendLog(home, 'codex', head, [{ at: NOW, usd: 1 }], NOW)
@@ -141,7 +178,10 @@ describe('pruning', () => {
     const old = join(home, feedFile('codex', 'old'))
     utimesSync(old, (NOW - 20 * DAY) / 1000, (NOW - 20 * DAY) / 1000)
     pruneLog(home, NOW)
-    expect(existsSync(join(home, LOG_DIR, '2026-10-17'))).toBe(false)
+    // The old day folded into its checkpoint, its activity in it, and its raw lines gone
+    const cp = JSON.parse(readFileSync(join(home, LOG_DIR, '2026-10-17', 'checkpoint.json'), 'utf8'))
+    expect(cp.activity.map((r: { usd: number }) => r.usd)).toEqual([1])
+    expect(existsSync(join(home, logFile('codex', 's1', NOW - 20 * DAY)))).toBe(false)
     expect(existsSync(join(home, logFile('codex', 's1', NOW)))).toBe(true)
     expect(existsSync(old)).toBe(false)
     expect(existsSync(join(home, feedFile('codex', 'new')))).toBe(true)
@@ -150,5 +190,24 @@ describe('pruning', () => {
     pruneLog(home, NOW + MIN)
     expect(existsSync(join(home, LOG_DIR, '2026-10-01'))).toBe(true)
     expect(existsSync(join(home, FEEDS_DIR))).toBe(true)
+  })
+
+  test('a checkpoint from before activity is folded again while its raw lines are there', () => {
+    const home = scratch()
+    appendLog(home, 'codex', head, [{ at: NOW - 3 * DAY, tokens: { input: 5, output: 1, cacheRead: 0, cacheWrite: 0, reasoning: 0 } }], NOW - 3 * DAY)
+    writeFileSync(join(home, LOG_DIR, '2026-11-03', 'checkpoint.json'), '{"version":1,"day":"2026-11-03","parts":[]}')
+    pruneLog(home, NOW)
+    expect(JSON.parse(readFileSync(join(home, LOG_DIR, '2026-11-03', 'checkpoint.json'), 'utf8')).activity[0].input).toBe(5)
+  })
+})
+
+describe('activity read', () => {
+  test('every day there is, beyond the nine history reads: a finished day from its checkpoint, today from its lines', () => {
+    const home = scratch()
+    appendLog(home, 'codex', head, [{ at: NOW - 40 * DAY, usd: 3 }], NOW - 40 * DAY)
+    pruneLog(home, NOW)
+    appendLog(home, 'codex', head, [{ at: NOW, usd: 1 }], NOW)
+    const rows = new LogReader().activity(home, NOW).rows()
+    expect(rows.map(r => r.usd)).toEqual([3, 1])
   })
 })

@@ -9,6 +9,7 @@ import type { PaceCacheInfo, PaceCacheTtl, PaceSample } from '../types'
 import { learnsFrom } from './account.ts'
 import { estimateOf, type Capacities } from './estimate.ts'
 import type { PaceContext, PaceFeed, PaceHost, PaceProvider } from './host.ts'
+import type { Tokens } from './log.ts'
 import type { Snapshot } from './model.ts'
 import { mergeSamples } from './quota.ts'
 import { mergePrompts } from './rate.ts'
@@ -33,6 +34,9 @@ export type Metered = {
   samples?: readonly PaceSample[]
   /** What a reply cost, in dollars */
   spent?: number
+  /** A reply's tokens, and the model that answered, where the host reports them (core/log.ts) */
+  tokens?: Tokens
+  model?: string
   /** The tokens a reply held in the prompt cache, when it read or wrote it, and how long the cache keeps them */
   cached?: { tokens: number; ttl: PaceCacheTtl }
   /** The context as of the last reply; null tokens (right after a compaction) keep the last one known */

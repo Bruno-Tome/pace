@@ -10,6 +10,10 @@ describe('opening pace in Herdr beside a terminal', () => {
     ])
   })
 
+  test('activity opens as a split beside the session', () => {
+    expect(herdrOpen('t8', { view: 'activity' })[1]).toEqual(['herdr-app', 'do', 'pane.split', '{"direction":"right","mod":"pace","props":{"view":"activity"}}'])
+  })
+
   test('a band goes under its agent, the fleet beside it', () => {
     expect(herdrOpen('t8', { view: 'band', terminal: 't8' })[1]).toEqual(
       ['herdr-app', 'do', 'pane.split', '{"direction":"down","mod":"pace","props":{"view":"band","terminal":"t8"}}'])
@@ -23,6 +27,7 @@ describe('what /pace opens in Herdr', () => {
     expect(paceViewOf('', 'codex', 't4')).toEqual({ view: 'pane', provider: 'codex' })
     expect(paceViewOf('band', 'codex', 't4')).toEqual({ view: 'band', terminal: 't4' })
     expect(paceViewOf('fleet', 'claude', 't4')).toEqual({ view: 'panel' })
+    expect(paceViewOf('activity', 'claude', 't4')).toEqual({ view: 'activity' })
   })
 
   test('pane and window open the charts in Herdr too: in Herdr every view goes through it first', () => {
@@ -43,6 +48,7 @@ describe('a pace pane already open', () => {
     expect(paceViewOf('', 'codex', 't4', '1233abcd5678ef90')).toEqual({ view: 'pane', provider: 'codex', account: '1233abcd5678ef90' })
     expect(viewKey({ view: 'band', terminal: 't8' })).toBe('band:t8')
     expect(viewKey({ view: 'panel' })).toBe('panel')
+    expect(viewKey({ view: 'activity' })).toBe('activity')
   })
 
   test('is focused rather than opened again', () => {

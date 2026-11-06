@@ -52,9 +52,9 @@ describe('a Codex hook', () => {
   })
 
   test('a submitted prompt counts as a prompt; the other events only read the rollout', () => {
-    const prompt = nextFeed(null, hookInputOf(hookInput('UserPromptSubmit', null))!, { samples: [], context: null }, NOW)
+    const prompt = nextFeed(null, hookInputOf(hookInput('UserPromptSubmit', null))!, { samples: [], context: null, usage: [], last: { total: null } }, NOW)
     expect(prompt.snapshot.prompts).toEqual([NOW])
-    const stop = nextFeed(prompt, hookInputOf(hookInput('Stop', null))!, { samples: [], context: null }, NOW + MIN)
+    const stop = nextFeed(prompt, hookInputOf(hookInput('Stop', null))!, { samples: [], context: null, usage: [], last: { total: null } }, NOW + MIN)
     expect(stop.snapshot.prompts).toEqual([NOW])
     expect(stop.at).toBe(NOW + MIN)
   })
@@ -69,7 +69,7 @@ describe('a Codex hook', () => {
 
   test('a /pace prompt is pace\'s, so it does not count as a prompt', () => {
     const input = { ...hookInputOf(hookInput('UserPromptSubmit', null))!, prompt: '/pace band' }
-    expect(nextFeed(null, input, { samples: [], context: null }, NOW).snapshot.prompts).toEqual([])
+    expect(nextFeed(null, input, { samples: [], context: null, usage: [], last: { total: null } }, NOW).snapshot.prompts).toEqual([])
   })
 
   test('the feed is Codex\'s: its readings added to the last feed\'s, the context kept until a new one, the terminal named', () => {
@@ -81,5 +81,36 @@ describe('a Codex hook', () => {
     // Codex reports no prompt cache: the band leaves its row out
     expect(after.snapshot.cache).toBeNull()
     expect(after.snapshot.noCache).toBe(true)
+  })
+})
+
+describe('a Codex rollout\'s tokens', () => {
+  /** A token count whose running total has grown to these */
+  const count = (at: number, total: { input: number; cached: number; output: number; reasoning: number }) => JSON.stringify({
+    timestamp: new Date(at).toISOString(), type: 'event_msg',
+    payload: { type: 'token_count', info: {
+      total_token_usage: { input_tokens: total.input, cached_input_tokens: total.cached, cache_write_input_tokens: 0, output_tokens: total.output, reasoning_output_tokens: total.reasoning, total_tokens: total.input + total.output },
+      last_token_usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0, total_tokens: 2 },
+      model_context_window: 258_400 }, rate_limits: null },
+  })
+  const turn = (at: number, model: string) => JSON.stringify({ timestamp: new Date(at).toISOString(), type: 'turn_context', payload: { model } })
+
+  test('a reply\'s tokens are what its running total grew by: the cached input apart from the rest, reasoning counted in out', () => {
+    const r = rolloutOf(lines(turn(NOW, 'gpt-5.5'), count(NOW + MIN, { input: 10_000, cached: 8_000, output: 500, reasoning: 200 }), count(NOW + 2 * MIN, { input: 13_000, cached: 10_000, output: 700, reasoning: 200 })))
+    expect(r.usage).toEqual([
+      { at: NOW + MIN, tokens: { input: 2_000, output: 500, cacheRead: 8_000, cacheWrite: 0, reasoning: 200 }, model: 'gpt-5.5' },
+      { at: NOW + 2 * MIN, tokens: { input: 1_000, output: 200, cacheRead: 2_000, cacheWrite: 0, reasoning: 0 }, model: 'gpt-5.5' },
+    ])
+  })
+
+  test('a count that says the same total again (a rate-limits update) is no reply', () => {
+    const same = { input: 10_000, cached: 8_000, output: 500, reasoning: 0 }
+    expect(rolloutOf(lines(count(NOW, same), count(NOW + MIN, same))).usage.length).toBe(1)
+  })
+
+  test('reads on from the total and model the last read ended on', () => {
+    const first = rolloutOf(lines(turn(NOW, 'gpt-5.5'), count(NOW, { input: 10_000, cached: 8_000, output: 500, reasoning: 0 })))
+    const next = rolloutOf(lines(count(NOW + MIN, { input: 11_000, cached: 8_500, output: 600, reasoning: 0 })), first.last)
+    expect(next.usage).toEqual([{ at: NOW + MIN, tokens: { input: 500, output: 100, cacheRead: 500, cacheWrite: 0, reasoning: 0 }, model: 'gpt-5.5' }])
   })
 })

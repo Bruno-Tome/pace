@@ -89,7 +89,7 @@ function record(id: string, e: Partial<Metered> = {}): PaceFeed | null {
     ?? readFeeds(home, now).find(f => f.host === 'hermes' && f.session === id && f.provider === s.provider) ?? null
   const feed = meter(prev, metered, others, { cache: true, estimate: false })
   // The events after the feed is worked out from the log, so none is counted twice
-  appendLog(home, 'hermes', { provider: s.provider, ...(account ? { account } : {}), session: id }, eventsOf(metered), now)
+  appendLog(home, 'hermes', { provider: s.provider, ...(account ? { account } : {}), session: id, host: 'hermes', ...(s.cwd ? { cwd: s.cwd } : {}) }, eventsOf(metered), now)
   writeFeed(join(home, fileOf(id, s.provider)), feed)
   pruneLog(home, now)
   s.feed = feed
@@ -192,17 +192,21 @@ createInterface({ input: process.stdin }).on('line', line => {
         const s = sessionOf(id)
         // A background call (compression, titling, Mixture of Agents) or a subagent's: its quota's figures refreshed,
         // the session's own context and cache left as they are
+        const u = p.usage ?? {}
+        const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
+        // Every call's tokens spend the account, a background one's and a subagent's too (core/log.ts)
+        const tokens = { input: n(u.input_tokens), output: n(u.output_tokens), cacheRead: n(u.cache_read_tokens), cacheWrite: n(u.cache_write_tokens), reasoning: n(u.reasoning_tokens) }
+        const spent = tokens.input || tokens.output || tokens.cacheRead || tokens.cacheWrite ? { tokens, ...(p.model ? { model: String(p.model) } : {}) } : {}
         if (p.aux || p.sub) {
           if (!s.provider) s.provider = q
-          if (s.provider === q) record(id)
+          if (s.provider === q) record(id, spent)
           break
         }
         s.provider = q
-        const u = p.usage ?? {}
-        const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
         const held = n(u.input_tokens) + n(u.cache_read_tokens) + n(u.cache_write_tokens)
         const window = n(p.context_length)
         record(id, {
+          ...spent,
           ...(n(u.cache_read_tokens) + n(u.cache_write_tokens) > 0 ? { cached: { tokens: held, ttl: cacheTtlOf(q) } } : {}),
           ...(window > 0 ? { context: { tokens: held, window } } : {}),
         })

@@ -113,7 +113,22 @@ describe('the pi extension', () => {
     expect(disk.snapshot.prompts).toEqual([])
     expect(disk.snapshot.spend).toBe(undefined)
     const lines = readFileSync(join(dir, logFile('pi', 'p1', Date.now())), 'utf8').trim().split('\n').map(l => JSON.parse(l))
-    expect(lines.map(l => l.p ?? l.usd ?? (l.q ? 'q' : null))).toEqual(['q', 1, 3.2])
+    // The header, the prompt, the reply's cost and its tokens
+    expect(lines.map(l => l.p ?? l.usd ?? (l.q ? 'q' : l.tk ? 'tk' : null))).toEqual(['q', 1, 3.2, 'tk'])
+    await fire('session_shutdown', { reason: 'quit' })
+  })
+
+  test('a reply\'s tokens go to the log with the model that answered, under a header naming pi and its folder', async () => {
+    const dir = home()
+    const { pi, fire } = fakePi()
+    extension(pi)
+    await fire('input', { text: 'fix the tests', source: 'interactive' })
+    await fire('message_end', reply({ usd: 0.5, cacheRead: 9_000 }))
+    const lines = readFileSync(join(dir, logFile('pi', 'p1', Date.now())), 'utf8').trim().split('\n').map(l => JSON.parse(l))
+    expect(lines[0]).toMatchObject({ h: 'pi', c: '/work/pace' })
+    const tk = lines.find(l => l.tk)
+    expect(tk.tk).toEqual([500, 0, 9_000, 0, 0])
+    expect(typeof tk.m).toBe('string')
     await fire('session_shutdown', { reason: 'quit' })
   })
 

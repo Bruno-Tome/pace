@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Activity** ([ADR 0025](.agents/decisions/0025-activity.md)): `/pace activity` opens every metric over all of
+  history in a split (Herdr, tmux or a terminal window; `node bin/activity.ts` anywhere): tokens in, out, cache read
+  and write, reasoning, dollars, prompts and replies, by day, week, month, year or all of it, broken down by provider,
+  account, harness, repo or model, filtered by chips. A reply's tokens are a log event of their own, from Claude Code
+  (`turn.complete`), Codex (its rollout's running totals), pi and Hermes; a log header names its harness and folder
+  (`h`, `c`). Checkpoints carry each day's activity and are kept for good; a day's raw lines go at nine days.
+  Shared core: `core/dims.ts` (what views slice by, the fleet's repo names too), `core/chips.ts`, and `liveOf` in
+  `core/api.ts`, the one place a view's live command is worked out for every host.
 - **Nothing worked out twice.** A finished day is folded once into a checkpoint (`log/<day>/checkpoint.json`); readers
   keep a `History` that reads only what the log added and works out only the quotas it touched, giving back the same
   feeds when nothing changed. Feeds are parsed again only when they change. The Herdr mods read a burst of changes

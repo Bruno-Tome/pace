@@ -8,11 +8,15 @@
 
 import type { Capacities } from '../../core/estimate.ts'
 import type { PaceFeed, PaceProvider } from '../../core/host.ts'
+import type { Tokens } from '../../core/log.ts'
 import { meter, type Metered } from '../../core/meter.ts'
 
 /** What the extension tells the feed after an event: the session, the quota it spends, a prompt, the context */
 export type PiEvent = {
   session: string
+  /** A reply's tokens, and the model that answered (core/log.ts) */
+  tokens?: Tokens
+  model?: string
   provider: PaceProvider
   /** The account it spends (core/account.ts), when pi's sign-in names one */
   account?: string
@@ -52,6 +56,7 @@ export function piMetered(e: PiEvent): Metered {
     host: 'pi', provider: e.provider, ...(e.account ? { account: e.account } : {}), session: e.session, cwd: e.cwd, now: e.now,
     ...(e.terminal ? { terminal: e.terminal } : {}),
     prompted: e.prompted, spent: e.spent,
+    ...(e.tokens ? { tokens: e.tokens, ...(e.model ? { model: e.model } : {}) } : {}),
     ...(e.cached != null ? { cached: { tokens: e.cached, ttl: CACHE_TTL } } : {}),
     context: e.context ? { tokens: e.context.tokens, window: e.context.contextWindow } : null,
   }

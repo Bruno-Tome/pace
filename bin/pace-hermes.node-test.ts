@@ -63,6 +63,9 @@ describe('pace for Hermes', () => {
     const lines = readFileSync(join(dir, logFile('hermes', 'h1', Date.now())), 'utf8').trim().split('\n').map(l => JSON.parse(l))
     expect(lines.filter(l => l.p === 1).length).toBe(1)
     expect(lines.filter(l => l.r).at(-1).r.five_hour.percent).toBe(40)
+    // The call's tokens, with its model, under a header naming Hermes and the folder
+    expect(lines.find(l => l.q)).toMatchObject({ h: 'hermes', c: '/work/pace' })
+    expect(lines.filter(l => l.tk).map(l => [l.m, l.tk])).toEqual([['gpt-5.6-sol', [2000, 300, 8000, 0, 0]]])
   })
 
   test('answers /pace in a session, and in a bot\'s chat, where only the chat shows anything', async () => {
