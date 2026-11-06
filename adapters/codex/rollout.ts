@@ -7,7 +7,7 @@
 
 import type { PaceReading, PaceSample } from '../../types'
 import type { PaceContext, PaceFeed } from '../../core/host.ts'
-import { meter } from '../../core/meter.ts'
+import { meter, type Metered } from '../../core/meter.ts'
 import { readingOf } from '../../core/quota.ts'
 import { commandOf, paceArgsOf } from '../../core/command.ts'
 
@@ -96,12 +96,17 @@ export function hookInputOf(text: string): HookInput | null {
  * other live sessions on Codex's quota (`siblings`, any harness). Codex reports no cache and no dollars
  */
 export function nextFeed(prev: PaceFeed | null, input: HookInput, read: RolloutRead, now: number, terminal?: string, siblings: readonly PaceFeed[] = [], account?: string): PaceFeed {
-  return meter(prev, {
+  return meter(prev, codexMetered(input, read, now, terminal, account), siblings, { cache: false, estimate: false })
+}
+
+/** What a hook metered: a prompt submitted, and what the rollout added */
+export function codexMetered(input: HookInput, read: RolloutRead, now: number, terminal?: string, account?: string): Metered {
+  return {
     host: 'codex', provider: 'codex', ...(account ? { account } : {}), session: input.session, cwd: input.cwd, now,
     ...(terminal ? { terminal } : {}),
     prompted: input.event === 'UserPromptSubmit' && reachesModel(input.prompt ?? ''),
     samples: read.samples, context: read.context,
-  }, siblings, { cache: false, estimate: false })
+  }
 }
 
 /** Whether a prompt goes on to the model: any but a /pace that pace answers itself; auto mode's start and resume go on */

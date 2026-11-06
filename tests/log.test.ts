@@ -1,0 +1,151 @@
+import { describe, expect, test } from 'claude-code/testing'
+
+import type { PaceFeed } from '../core/host.ts'
+import { entriesOf, eventsOf, parseLog, expiredDays, hydrate, logDays, logFile, logText, slim, type LogHead } from '../core/log.ts'
+import type { Metered } from '../core/meter.ts'
+
+const NOW = Date.UTC(2026, 10, 6, 12)
+const MIN = 60_000
+const H = 60 * MIN
+const DAY = 24 * H
+
+const reading = (at: number, percent: number) => ({ at, quotas: { five_hour: { percent, resetsAt: NOW + 2 * H } } })
+const head = (session: string, account?: string): LogHead => ({ provider: 'codex', session, ...(account ? { account } : {}) })
+const feed = (session: string, over: Partial<PaceFeed> = {}): PaceFeed => ({
+  version: 1, host: 'codex', provider: 'codex', session, cwd: '/w', at: NOW - MIN,
+  snapshot: { samples: [], prompts: [], cache: null }, ...over,
+})
+/** A session's log as written: its header, then its events */
+const logOf = (h: LogHead, events: Parameters<typeof logText>[1]) => entriesOf(logText(h, events, null).text)
+const total = (f: PaceFeed) => (f.snapshot.spend ?? []).reduce((n, s) => n + s.usd, 0)
+
+describe('a session\'s log', () => {
+  test('is a file a day for each session, under the log folder', () => {
+    expect(logFile('codex', 'a/b c', NOW)).toBe('.local/state/pace/log/2026-11-06/codex-a_b_c.jsonl')
+  })
+
+  test('takes the events a host metered: the prompt, the readings it was told, what the reply cost', () => {
+    const e: Metered = { host: 'pi', provider: 'codex', session: 'p1', cwd: '/w', now: NOW, prompted: true, samples: [reading(NOW, 30)], spent: 0.25 }
+    expect(eventsOf(e)).toEqual([{ at: NOW, prompt: true }, { at: NOW, quotas: reading(NOW, 30).quotas }, { at: NOW, usd: 0.25 }])
+  })
+
+  test('never logs an estimate, nor a reply that cost nothing', () => {
+    const estimate = { at: NOW, quotas: { five_hour: { percent: 30, resetsAt: NOW + H, estimated: true as const } } }
+    expect(eventsOf({ host: 'pi', provider: 'codex', session: 'p1', cwd: '/w', now: NOW, samples: [estimate], spent: 0 })).toEqual([])
+  })
+
+  test('writes its header once, then a line an event, and again only when the quota changes', () => {
+    const first = logText(head('s1'), [{ at: NOW, prompt: true }], null)
+    expect(first.text.split('\n').filter(Boolean).length).toBe(2)
+    const again = logText(head('s1'), [{ at: NOW + MIN, prompt: true }], first.head)
+    expect(again.text.split('\n').filter(Boolean).length).toBe(1)
+    const moved = logText(head('s1', 'a2'), [{ at: NOW + 2 * MIN, prompt: true }], again.head)
+    expect(moved.text.split('\n').filter(Boolean).length).toBe(2)
+    expect(entriesOf(first.text + again.text + moved.text).map(e => e.account ?? null)).toEqual([null, null, 'a2'])
+  })
+
+  test('reads back what was written, and drops a line cut short mid-write or that is not an event', () => {
+    const { text } = logText(head('s1'), [{ at: NOW, usd: 0.5, model: 'gpt-5' }, { at: NOW, prompt: true, model: 'gpt-5' }], null)
+    expect(entriesOf(`${text}{"at":${NOW},"us`)).toEqual([
+      { provider: 'codex', session: 's1', event: { at: NOW, usd: 0.5, model: 'gpt-5' } },
+      { provider: 'codex', session: 's1', event: { at: NOW, prompt: true, model: 'gpt-5' } },
+    ])
+    expect(entriesOf(`{"at":1}\n${text}`).length).toBe(2)
+    expect(entriesOf('')).toEqual([])
+  })
+
+  test('read on from where it was read, under the header in force there', () => {
+    const first = logText(head('s1'), [{ at: NOW, prompt: true }], null)
+    const read = parseLog(first.text, null)
+    const more = logText(head('s1'), [{ at: NOW + MIN, usd: 1 }], first.head)
+    expect(parseLog(more.text, read.head).entries).toEqual([{ provider: 'codex', session: 's1', event: { at: NOW + MIN, usd: 1 } }])
+  })
+})
+
+describe('feeds hydrated from the log', () => {
+  test('every feed on a quota gets its whole history, each event counted once', () => {
+    const log = [
+      ...logOf(head('s1'), [{ at: NOW - 3 * MIN, quotas: reading(NOW - 3 * MIN, 20).quotas }, { at: NOW - 3 * MIN, prompt: true }, { at: NOW - 3 * MIN, usd: 1 }]),
+      ...logOf(head('s2'), [{ at: NOW - 2 * MIN, quotas: reading(NOW - 2 * MIN, 25).quotas }, { at: NOW - 2 * MIN, prompt: true }, { at: NOW - 2 * MIN, usd: 2 }]),
+    ]
+    const [a, b] = hydrate([feed('s1'), feed('s2')], log, NOW)
+    for (const f of [a!, b!]) {
+      expect(f.snapshot.samples.map(s => s.quotas.five_hour!.percent)).toEqual([20, 25])
+      expect(f.snapshot.prompts).toEqual([NOW - 3 * MIN, NOW - 2 * MIN])
+      expect(total(f)).toBe(3)
+    }
+  })
+
+  test('two costs in one minute of one session add up', () => {
+    const [f] = hydrate([feed('s1')], logOf(head('s1'), [{ at: NOW - MIN, usd: 1 }, { at: NOW - MIN + 1000, usd: 0.5 }]), NOW)
+    expect(total(f!)).toBe(1.5)
+  })
+
+  test('another provider\'s and another account\'s history stay their own', () => {
+    const log = [
+      ...logOf(head('s1', 'a1'), [{ at: NOW - MIN, quotas: reading(NOW - MIN, 20).quotas }]),
+      ...logOf(head('s2', 'a2'), [{ at: NOW - MIN, quotas: reading(NOW - MIN, 90).quotas }]),
+      ...logOf({ provider: 'claude', session: 'k1' }, [{ at: NOW - MIN, usd: 5 }]),
+    ]
+    const [f] = hydrate([feed('s1', { account: 'a1' })], log, NOW)
+    expect(f!.snapshot.samples.map(s => s.quotas.five_hour!.percent)).toEqual([20])
+    expect(total(f!)).toBe(0)
+  })
+
+  test('a feed that cannot tell its account borrows no account\'s readings while its provider has two here; prompts still pool', () => {
+    const log = [
+      ...logOf(head('s1', 'a1'), [{ at: NOW - MIN, quotas: reading(NOW - MIN, 20).quotas }, { at: NOW - MIN, prompt: true }]),
+      ...logOf(head('s2', 'a2'), [{ at: NOW - 2 * MIN, quotas: reading(NOW - 2 * MIN, 90).quotas }]),
+      ...logOf(head('s3'), [{ at: NOW - 3 * MIN, quotas: reading(NOW - 3 * MIN, 50).quotas }]),
+    ]
+    const feeds = [feed('s1', { account: 'a1' }), feed('s2', { account: 'a2' }), feed('s3')]
+    const [, , none] = hydrate(feeds, log, NOW)
+    expect(none!.snapshot.samples.map(s => s.quotas.five_hour!.percent)).toEqual([50])
+    expect(none!.snapshot.prompts).toEqual([NOW - MIN])
+    // With one account here, it is that account's
+    const [, sole] = hydrate([feed('s1', { account: 'a1' }), feed('s3')], log, NOW)
+    expect(sole!.snapshot.samples.map(s => s.quotas.five_hour!.percent)).toEqual([50, 20])
+  })
+
+  test('an older feed\'s own history still counts, for every feed on its quota', () => {
+    const old = feed('s0', { at: NOW - 2 * H, snapshot: { samples: [reading(NOW - 2 * H, 10)], prompts: [NOW - 2 * H], cache: null, spend: [{ t: NOW - 2 * H, id: 's0', usd: 4, h: true }] } })
+    const [, f] = hydrate([old, feed('s1')], logOf(head('s1'), [{ at: NOW - MIN, usd: 1 }]), NOW)
+    expect(f!.snapshot.samples.map(s => s.quotas.five_hour!.percent)).toEqual([10])
+    expect(f!.snapshot.prompts).toEqual([NOW - 2 * H])
+    expect(total(f!)).toBe(5)
+  })
+
+  test('prompts by model come back for the model they went to', () => {
+    const [f] = hydrate([feed('s1')], logOf(head('s1'), [{ at: NOW - MIN, prompt: true, model: 'opus' }]), NOW)
+    expect(f!.snapshot.modelPrompts).toEqual({ opus: [NOW - MIN] })
+  })
+
+  test('a feed keeps its live state: context, cache, auto mode', () => {
+    const live = feed('s1', { context: { tokens: 10, window: 100 }, snapshot: { samples: [], prompts: [], cache: { at: NOW, tokens: 5, window: 100, ttl: '5m' }, auto: null } })
+    const [f] = hydrate([live], [], NOW)
+    expect(f!.context).toEqual({ tokens: 10, window: 100 })
+    expect(f!.snapshot.cache).toEqual(live.snapshot.cache)
+  })
+})
+
+describe('a slim feed', () => {
+  test('is written with its history left to the log, and its live state kept', () => {
+    const fat = feed('s1', { context: { tokens: 1, window: 2 }, snapshot: { samples: [reading(NOW, 1)], prompts: [NOW], modelPrompts: { opus: [NOW] }, cache: null, spend: [{ t: NOW, id: 's1', usd: 1 }], onPace: true } })
+    const s = slim(fat)
+    expect(s.snapshot).toEqual({ samples: [], prompts: [], cache: null, onPace: true })
+    expect(s.context).toEqual({ tokens: 1, window: 2 })
+  })
+})
+
+describe('the days the log keeps', () => {
+  test('reads the last nine days, today\'s too', () => {
+    const days = logDays(NOW)
+    expect(days.length).toBe(9)
+    expect(days.at(-1)).toBe('2026-11-06')
+    expect(days[0]).toBe('2026-10-29')
+  })
+
+  test('deletes only the day folders older than that', () => {
+    expect(expiredDays(['2026-10-28', '2026-10-29', '2026-11-06', 'junk'], NOW + 0 * DAY)).toEqual(['2026-10-28'])
+  })
+})

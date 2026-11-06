@@ -8,6 +8,8 @@ import { join } from 'node:path'
 
 import { describe, expect, test } from '../testing/node.ts'
 import { feedOf } from '../core/host.ts'
+import { logFile } from '../core/log.ts'
+import { readFeeds } from '../adapters/log.ts'
 import { accountId } from '../core/account.ts'
 
 const KEY = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff'
@@ -38,7 +40,9 @@ const NOW = Date.now()
 const start = (mode = 'session') => ({ method: 'session/new', params: { session: 'h1', cwd: '/work/pace', mode, key: mode === 'bot' ? 'agent:main:telegram:dm:42' : undefined } })
 const usage = { method: '_pace/usage', params: { session: 'h1', provider: 'openai-codex', model: 'gpt-5.6-sol', usage: { input_tokens: 2000, cache_read_tokens: 8000, cache_write_tokens: 0, output_tokens: 300 }, context_length: 272000 } }
 /** The session's feed on a quota: one file per session and quota, so a move between providers keeps both */
-const feedIn = (dir: string, quota = 'codex') => feedOf(readFileSync(join(dir, `.local/state/pace/feeds/hermes-h1-${quota}.json`), 'utf8'))!
+/** The session's feed on a quota as a reader sees it: its history filled in from the log */
+const feedIn = (dir: string, quota = 'codex') => readFeeds(dir, Date.now()).find(f => f.host === 'hermes' && f.session === 'h1' && f.provider === quota)!
+const onDisk = (dir: string, quota = 'codex') => feedOf(readFileSync(join(dir, `.local/state/pace/feeds/hermes-h1-${quota}.json`), 'utf8'))!
 
 describe('pace for Hermes', () => {
   test('meters a session: its prompts, its cache and context, and the account windows Hermes reads', async () => {
@@ -54,6 +58,11 @@ describe('pace for Hermes', () => {
     expect(feed.snapshot.prompts.length).toBe(1)
     expect(feed.snapshot.cache).toMatchObject({ tokens: 10_000, ttl: '1h' })
     expect(feed.snapshot.samples.at(-1)!.quotas.five_hour!.percent).toBe(40)
+    // Written slim, the prompt and the reading in the session's log
+    expect(onDisk(dir).snapshot.samples).toEqual([])
+    const lines = readFileSync(join(dir, logFile('hermes', 'h1', Date.now())), 'utf8').trim().split('\n').map(l => JSON.parse(l))
+    expect(lines.filter(l => l.p === 1).length).toBe(1)
+    expect(lines.filter(l => l.r).at(-1).r.five_hour.percent).toBe(40)
   })
 
   test('answers /pace in a session, and in a bot\'s chat, where only the chat shows anything', async () => {

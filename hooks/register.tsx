@@ -22,6 +22,7 @@ import { AUTO_TURNS, commandOf, DEFAULT_PLAN, ULTRA_TURNS, USAGE, type PaceComma
 import { route, type Host, type PaceAction, type Surface } from '../core/api.ts'
 import { accountId, numbered, type Accounts } from '../core/account.ts'
 import { FEED_STALE, FEEDS_DIR, feedFile, feedOf as parseFeed, type PaceFeed } from '../core/host.ts'
+import { expiredDays, headLine, hydrate, LOG_DIR, logDays, logFile, logText, parseLog, slimSnapshot, type LogEntry, type LogEvent } from '../core/log.ts'
 import { pooled } from '../core/meter.ts'
 import { ALREADY_OPEN, herdrOpen, herdrReuse, paceViewOf, registryIn, sharedFile } from '../adapters/herdr/open.ts'
 import { ACCOUNTS_FILE, KEY_FILE, keysFile, planFeedFile, ROW_FILE, stateFile, viewFile } from './files.ts'
@@ -73,17 +74,87 @@ async function sharedFeeds($: Engine, now: number): Promise<PaceFeed[]> {
   const home = await homeOf($)
   if (!home) return []
   await accountOf($, home)
+  await prune($, home, now)
   const dir = `${home}/${FEEDS_DIR}`
   const own = feedFile('claude', spendId).split('/').pop()
   const names = await $.fs.list(dir).then(es => es.map(e => e.name)).catch(() => [] as string[])
-  const feeds: PaceFeed[] = []
+  const all: PaceFeed[] = []
   for (const name of names) {
     if (!name.endsWith('.json') || name === own) continue
     const f = parseFeed(String(await $.fs.read(`${dir}/${name}`).catch(() => '')))
-    if (f && f.at >= now - FEED_STALE) feeds.push(f)
+    if (f) all.push(f)
   }
+  // Every feed counts towards its quota's history (an older one may still carry some); the live ones pool
+  const feeds = hydrate(all, await logEntries($, home, now), now).filter(f => f.at >= now - FEED_STALE)
   shared = { at: now, feeds }
   return feeds
+}
+
+/** Each log file read, by path: its size and time as listed, and its events, so one not changed is not read again */
+const logCache = new Map<string, { size: number; mtimeMs: number; entries: LogEntry[] }>()
+
+/** The log of the days kept (core/log.ts): every session's events, every harness's */
+async function logEntries($: Engine, home: string, now: number): Promise<LogEntry[]> {
+  const seen = new Set<string>()
+  for (const day of logDays(now)) {
+    const dir = `${home}/${LOG_DIR}/${day}`
+    const files = await $.fs.list(dir).catch(() => [])
+    for (const e of files) {
+      if (!e.name.endsWith('.jsonl')) continue
+      const path = `${dir}/${e.name}`
+      seen.add(path)
+      const known = logCache.get(path)
+      // Size and time say a file has not changed; a host that lists neither has every file read again
+      if (known && e.size && known.size === e.size && known.mtimeMs === e.mtimeMs) continue
+      const text = String(await $.fs.read(path).catch(() => ''))
+      logCache.set(path, { size: e.size, mtimeMs: e.mtimeMs, entries: parseLog(text, null).entries })
+    }
+  }
+  for (const path of logCache.keys()) if (!seen.has(path)) logCache.delete(path)
+  return [...logCache.values()].flatMap(f => f.entries)
+}
+
+/** The day pruning last ran on, in this process */
+let prunedOn = ''
+
+/** Deletes the log's day folders past keeping and the feeds not written for eight days, once a day (core/log.ts) */
+async function prune($: Engine, home: string, now: number): Promise<void> {
+  const today = new Date(now).toISOString().slice(0, 10)
+  if (prunedOn === today) return
+  prunedOn = today
+  const root = `${home}/${LOG_DIR}`
+  const days = await $.fs.list(root).then(es => es.map(e => e.name)).catch(() => [] as string[])
+  const feeds = await $.fs.list(`${home}/${FEEDS_DIR}`).catch(() => [])
+  const gone = [
+    ...expiredDays(days, now).map(d => `${root}/${d}`),
+    ...feeds.filter(e => e.name.endsWith('.json') && e.mtimeMs && e.mtimeMs < now - STATE_SPAN).map(e => `${home}/${FEEDS_DIR}/${e.name}`),
+  ]
+  if (gone.length) await $.process.run(['/bin/rm', '-rf', ...gone]).catch(() => null)
+}
+
+/** This session's log as written so far today: its path, its text, the header in force at its end */
+let ownLog: { path: string; text: string; head: string | null } | null = null
+
+/**
+ * Appends this session's events to its log. Claude Code's files are written whole, so the day's text is kept and
+ * written again with the new lines after it: a reader never sees a line change
+ */
+async function logEvents($: Engine, events: readonly LogEvent[], now: number): Promise<void> {
+  if (!events.length) return
+  const home = await homeOf($)
+  if (!home) return
+  const account = await accountOf($, home)
+  const path = `${home}/${logFile('claude', spendId, now)}`
+  if (ownLog?.path !== path) {
+    const read = String(await $.fs.read(path).catch(() => ''))
+    // A line cut short when a write was stopped is left out, so the next one starts on its own line
+    const text = read.slice(0, read.lastIndexOf('\n') + 1)
+    const head = parseLog(text, null).head
+    ownLog = { path, text, head: head ? headLine(head) : null }
+  }
+  const { text, head } = logText({ provider: 'claude', ...(account ? { account } : {}), session: spendId }, events, ownLog.head)
+  ownLog = { path, text: ownLog.text + text, head }
+  await $.fs.write(path, ownLog.text)
 }
 
 async function snapshot($: Engine): Promise<Snapshot> {
@@ -347,7 +418,8 @@ async function writeFeed($: Engine, s: Snapshot, now: number): Promise<void> {
     version: 1, host: 'claude', provider: 'claude', ...(account ? { account } : {}), session: spendId,
     ...(terminal ? { terminal } : {}),
     cwd,
-    snapshot: { ...s, samples: s.samples.filter(x => x.at >= now - STATE_SPAN) },
+    // Its history is in its log (core/log.ts)
+    snapshot: slimSnapshot(s),
     ...(s.cache ? { context: { tokens: s.cache.tokens, window: s.cache.window } } : {}),
   }
   const text = JSON.stringify(feed)
@@ -492,6 +564,7 @@ async function addSample($: Engine, s: PaceSample): Promise<void> {
     return next
   })
   if (!changed) return
+  await logEvents($, [{ at: s.at, quotas: s.quotas }], s.at)
   await persistSamples($)
   await refreshLine($)
 }
@@ -546,8 +619,10 @@ async function sampleUsageApi($: Engine): Promise<boolean> {
 async function recordSpend($: Engine, usd: number): Promise<void> {
   const now = await $.clock.now()
   const stored = await $.store.get('spend')
-  const mine = addSpend((await read($, spendA)) ?? [], spendId, now, usd, now, spendModel(answered, await modelOf($)))
+  const model = spendModel(answered, await modelOf($))
+  const mine = addSpend((await read($, spendA)) ?? [], spendId, now, usd, now, model)
   answered = []
+  if (usd > 0) await logEvents($, [{ at: now, usd, ...(model ? { model } : {}) }], now)
   const merged = mergeSpend(Array.isArray(stored) ? (stored as PaceSpend[]) : [], mine, now)
   await $.store.set('spend', merged)
   await update($, spendA, () => merged)
@@ -555,13 +630,14 @@ async function recordSpend($: Engine, usd: number): Promise<void> {
 
 async function recordPrompt($: Engine): Promise<void> {
   const now = await $.clock.now()
+  const model = await modelOf($)
+  await logEvents($, [{ at: now, prompt: true, ...(model ? { model } : {}) }], now)
   await update($, promptsA, list => mergePrompts(list ?? [], [now], now))
   const stored = await $.store.get('prompts')
   const merged = mergePrompts(Array.isArray(stored) ? (stored as number[]) : [], (await read($, promptsA)) ?? [], now)
   await $.store.set('prompts', merged)
   await update($, promptsA, () => merged)
   // The model it went to, so a model's own week counts only its prompts
-  const model = await modelOf($)
   if (!model) return
   await update($, modelPromptsA, byModel => mergeModelPrompts(byModel ?? {}, { [model]: [now] }, now))
   const storedByModel = await $.store.get('modelPrompts')

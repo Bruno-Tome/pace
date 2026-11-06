@@ -327,9 +327,11 @@ The snapshot is as of `snap.at`: pace refreshes it after every reply, reading an
 ## Codex, pi and Herdr
 
 pace's core is host-agnostic. Each host session writes a **feed**,
-`~/.local/state/pace/feeds/<host>-<session>.json`: its readings, prompts, spend and context, where it runs, and
-under Herdr the terminal it runs in (`HC_TERMINAL_ID`). Every Claude Code session writes one. A feed not written for
-6 hours counts as a session gone.
+`~/.local/state/pace/feeds/<host>-<session>.json`: its context, cache and auto mode, where it runs, and under Herdr
+the terminal it runs in (`HC_TERMINAL_ID`). Every Claude Code session writes one. A feed not written for 6 hours counts
+as a session gone. The history (readings, prompts, spend) goes to an append-only **log**,
+`~/.local/state/pace/log/<day>/<host>-<session>.jsonl`, a line an event, each event in one file once; every reader
+puts a quota's history together from it. Eight days are kept, then deleted a day folder at a time.
 
 **Codex CLI.** Codex has no prompt area or pane for a plugin to draw in, so pace reads it from the outside: a hook
 reads the session's rollout as Codex writes it (`rate_limits.primary` is the 5-hour window, `secondary` the week;
@@ -477,8 +479,8 @@ pace has no telemetry. Its only requests are the usage-endpoint call (the one `/
 Files it writes in `~/.claude`: `pace-row.txt` (status-line row), and for each session `pace-state-<session>.json`
 and `pace-keys-<session>.json` (the window's feed and keys), `pace-view-<session>.command` (the window's launcher)
 and `pace-plan-<session>.json` (the plan sidebar's feed). Auto mode asks Claude to keep
-`.pace/handoff.md` in your project. In `~/.local/state/pace/`: `feeds/<host>-<session>.json` (each session's feed)
-and, for Codex, `codex/<session>.json` (how far into its rollout the hook has read); for pi, `pi/<provider>.json`
+`.pace/handoff.md` in your project. In `~/.local/state/pace/`: `feeds/<host>-<session>.json` (each session's feed),
+`log/<day>/<host>-<session>.jsonl` (each session's history, a line an event) and, for Codex, `codex/<session>.json` (how far into its rollout the hook has read); for pi, `pi/<provider>.json`
 (what a window holds, as learned).
 
 ## How it is built

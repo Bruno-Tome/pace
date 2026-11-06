@@ -21,6 +21,7 @@ import { h_flex, v_flex } from 'gpui-base'
 import { agents, exec, home, panes, props, readTextFile, run, setShared, settings, shared, terminals, theme, watchFolder } from 'herdr'
 
 import { ageOf, barOf, colsFor, colWidth, openAgents, PAD, PAD_Y, rowsFor, statusOf, styleOf, viewOf, type Bar } from './draw.ts'
+import { HerdrLog, todaysLog } from './log.ts'
 import { claimOf, PANES_KEY, viewKey, type HerdrView } from './open.ts'
 import { SEED } from './seed.ts'
 import { agentOf, FEED_STALE, FEEDS_DIR, feedFor, feedOf, fleetOf, PROVIDER_NAME, type FleetAgent, type FleetRow, type PaceFeed, type PaceProvider } from '../../core/host.ts'
@@ -91,6 +92,8 @@ export default class Pace extends View {
   drawnAt = 0
   /** The pane this copy claimed in the registry of pace panes; null until it could tell which is its own */
   pane: string | null = null
+  /** The log, read on as it grows */
+  log = new HerdrLog()
   /** What render shows: the view's lines, worked out by `draw` */
   lines: Line[] = []
   /** The panel's harnesses: each one's quotas as drawn, and the agents on it */
@@ -120,6 +123,20 @@ export default class Pace extends View {
         }
       }
     })
+    // Today's log too: a slim feed may not change when a prompt or a reading is logged. The folder is worked out again
+    // after each change, so a new day's is watched once it begins
+    cx.spawn(async (cx: any) => {
+      for (;;) {
+        const dir = todaysLog(home(), Date.now())
+        try {
+          await exec('mkdir', ['-p', dir]).catch(() => null)
+          await watchFolder(dir)
+          this.reload(cx)
+        } catch {
+          await cx.sleep(WATCH_RETRY_MS)
+        }
+      }
+    })
   }
 
   /** Reads every feed that parses, a file mid-write or malformed keeping the feed last read from it, and draws them */
@@ -130,7 +147,8 @@ export default class Pace extends View {
       const read = await Promise.all(names.map(async (name: string) => feedOf((await readTextFile(`${feedsDir()}/${name}`).catch(() => null)) ?? '')))
       const kept = new Map(this.feeds.map(f => [`${f.host}-${f.session}`, f]))
       for (const f of read) if (f) kept.set(`${f.host}-${f.session}`, f)
-      this.feeds = [...kept.values()]
+      // Feeds are written slim: their quotas' history is in the log (core/log.ts)
+      this.feeds = await this.log.hydrate([...kept.values()], home(), Date.now())
       // Claiming the pane is a nicety: it never stands between the feeds and their drawing
       try {
         this.claim()

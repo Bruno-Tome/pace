@@ -8,7 +8,7 @@
 
 import type { Capacities } from '../../core/estimate.ts'
 import type { PaceFeed, PaceProvider } from '../../core/host.ts'
-import { meter } from '../../core/meter.ts'
+import { meter, type Metered } from '../../core/meter.ts'
 
 /** What the extension tells the feed after an event: the session, the quota it spends, a prompt, the context */
 export type PiEvent = {
@@ -43,13 +43,18 @@ const CACHE_TTL = '1h'
 
 /** The session's feed after an event (core/meter.ts): pi reports its cache and estimates its quotas from its spend */
 export function nextFeed(prev: PaceFeed | null, e: PiEvent, others: readonly PaceFeed[], capacities: Capacities = {}): PaceFeed {
-  return meter(prev, {
+  return meter(prev, piMetered(e), others, { cache: true, estimate: true, capacities })
+}
+
+/** What pi's event metered */
+export function piMetered(e: PiEvent): Metered {
+  return {
     host: 'pi', provider: e.provider, ...(e.account ? { account: e.account } : {}), session: e.session, cwd: e.cwd, now: e.now,
     ...(e.terminal ? { terminal: e.terminal } : {}),
     prompted: e.prompted, spent: e.spent,
     ...(e.cached != null ? { cached: { tokens: e.cached, ttl: CACHE_TTL } } : {}),
     context: e.context ? { tokens: e.context.tokens, window: e.context.contextWindow } : null,
-  }, others, { cache: true, estimate: true, capacities })
+  }
 }
 
 /**

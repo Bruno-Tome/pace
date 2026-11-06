@@ -1,8 +1,9 @@
 // What a host meters, read into its session's feed: one rule for every host, so a session metered by hooks, by an
-// extension or over ACP comes out the same. The feed carries the history of its whole quota, the provider and the
-// account (.agents/decisions/0017-quota-is-provider-and-account.md): the readings, prompts and spend of every
-// harness's live sessions on it, real readings only. A host told no readings estimates them from its spend
-// (core/estimate.ts). Pure; times in ms.
+// extension or over ACP comes out the same. The feed it returns carries the history of its whole quota, the provider
+// and the account (.agents/decisions/0017-quota-is-provider-and-account.md): the readings, prompts and spend of every
+// harness on it, real readings only, from feeds hydrated from the log (core/log.ts). It is written slim; the event's
+// own history goes to the session's log. A host told no readings estimates them from its spend (core/estimate.ts).
+// Pure; times in ms.
 
 import type { PaceCacheInfo, PaceCacheTtl, PaceSample } from '../types'
 import { learnsFrom } from './account.ts'
@@ -11,7 +12,7 @@ import type { PaceContext, PaceFeed, PaceHost, PaceProvider } from './host.ts'
 import type { Snapshot } from './model.ts'
 import { mergeSamples } from './quota.ts'
 import { mergePrompts } from './rate.ts'
-import { addSpend, mergeSpend } from './spend.ts'
+import { addSpend, mergeCopies } from './spend.ts'
 
 /** A quota: a provider, and the account when known */
 export type QuotaOf = { provider: PaceProvider; account?: string }
@@ -71,7 +72,7 @@ export function meter(prev: PaceFeed | null, e: Metered, others: readonly PaceFe
   const read = [own?.snapshot, ...teachers.map(f => f.snapshot)].filter(s => s != null)
   const history = mergeSamples(real(read.flatMap(s => s.samples)), e.samples ?? [])
   const prompts = mergePrompts(all.flatMap(s => s.prompts), e.prompted ? [e.now] : [], e.now)
-  const before = mergeSpend([], all.flatMap(s => s.spend ?? []), e.now)
+  const before = mergeCopies(all.map(s => s.spend ?? []), e.now)
   const spend = e.spent && e.spent > 0 ? addSpend(before, e.session, e.now, e.spent, e.now) : before
   const fresh = (history.at(-1)?.at ?? -Infinity) >= e.now - FRESH
   const estimate = o.estimate && !fresh ? estimateOf(spend, prompts, o.capacities ?? {}, e.now) : null
@@ -104,6 +105,6 @@ export function pooled(s: Snapshot, others: readonly PaceFeed[], q: QuotaOf, sel
   return {
     ...s,
     prompts: mergePrompts(s.prompts, theirs.flatMap(f => f.snapshot.prompts), now),
-    spend: mergeSpend(s.spend ?? [], theirs.flatMap(f => f.snapshot.spend ?? []), now),
+    spend: mergeCopies([s.spend ?? [], ...theirs.map(f => f.snapshot.spend ?? [])], now),
   }
 }

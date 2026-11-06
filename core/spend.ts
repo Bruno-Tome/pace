@@ -17,6 +17,8 @@ const HOUR = 60 * MIN
 const DAY = 24 * HOUR
 /** Spend kept: a week's window and a day either side */
 const KEEP = 8 * DAY
+/** More than any session spends in a bucket: a bucket past it is a copy gone wrong, dropped before it wins a merge */
+const MAX_BUCKET_USD = 10_000
 /** Minute buckets kept before they fold into hours */
 const FOLD_AFTER = 2 * HOUR
 
@@ -28,6 +30,7 @@ function fold(list: readonly Spend[], now: number): Map<string, Spend> {
   const out = new Map<string, Spend>()
   for (const s of list) {
     if (typeof s?.t !== 'number' || typeof s.usd !== 'number' || typeof s.id !== 'string' || s.t < now - KEEP) continue
+    if (!(s.usd >= 0 && s.usd <= MAX_BUCKET_USD)) continue
     const h = s.h || folds(s.t, now)
     const t = Math.floor(s.t / (h ? HOUR : MIN)) * (h ? HOUR : MIN)
     const m = typeof s.m === 'string' ? s.m : undefined
@@ -42,6 +45,17 @@ export function mergeSpend(a: readonly Spend[], b: readonly Spend[], now: number
   const out = fold(a, now)
   for (const [key, s] of fold(b, now)) if (s.usd > (out.get(key)?.usd ?? -1)) out.set(key, s)
   return [...out.values()].sort((x, y) => x.t - y.t || (x.id < y.id ? -1 : 1))
+}
+
+/**
+ * Many copies of the shared spend (each feed carries one) as one: merged a pair at a time. Never flatten them into
+ * one list first: a copy's buckets are summed, so a dollar every feed carries would count once a feed, and again at
+ * every merge after
+ */
+export function mergeCopies(copies: readonly (readonly Spend[])[], now: number): Spend[] {
+  // An empty copy (a slim feed's) adds nothing: skipping it saves folding the whole merge again
+  const some = copies.filter(c => c.length)
+  return some.length === 1 ? mergeSpend(some[0]!, [], now) : some.reduce<Spend[]>((out, copy) => mergeSpend(out, copy, now), [])
 }
 
 /** `usd` this session (`id`) spent at `at` on `model`, added to its bucket for that minute */

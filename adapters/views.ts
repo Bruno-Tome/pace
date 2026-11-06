@@ -3,11 +3,12 @@
 // the core for a host (bin/pace-acp.ts, bin/pace-hermes.ts); the live feeds the fleet reads, too.
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 import { plainText, plansFor, viewLines, type PaceAction } from '../core/api.ts'
-import { FEED_STALE, FEEDS_DIR, feedOf, type PaceFeed } from '../core/host.ts'
+import { FEED_STALE, type PaceFeed } from '../core/host.ts'
+import { readFeeds } from './log.ts'
 import { openInHerdr } from './codex/open.ts'
 
 const TEXT_COLS = 90
@@ -18,18 +19,9 @@ export function writeAtomically(path: string, text: string): void {
   renameSync(`${path}.tmp`, path)
 }
 
-/** Every live feed but the one in `except` (a file name) */
-export function liveFeeds(home: string, except: string, now: number): PaceFeed[] {
-  const dir = join(home, FEEDS_DIR)
-  if (!existsSync(dir)) return []
-  return readdirSync(dir).filter(n => n.endsWith('.json') && n !== except).flatMap(n => {
-    try {
-      const f = feedOf(readFileSync(join(dir, n), 'utf8'))
-      return f && f.at >= now - FEED_STALE ? [f] : []
-    } catch {
-      return []
-    }
-  })
+/** Every live feed but those `except` picks out, each with its quota's history from the log */
+export function liveFeeds(home: string, now: number, except: (f: PaceFeed) => boolean = () => false): PaceFeed[] {
+  return readFeeds(home, now).filter(f => f.at >= now - FEED_STALE && !except(f))
 }
 
 /** Where a view is opened from: the home, the session's feed and its file, the name Herdr says it for */

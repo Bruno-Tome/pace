@@ -17,6 +17,7 @@ import { h_flex, Input, InputState, v_flex } from 'gpui-base'
 import { agents, closeOverlay, exec, home, openOverlay, panes, props, readTextFile, run, setShared, settings, shared, terminals, theme, watchFolder } from 'herdr'
 
 import { barOf, colsFor, colWidth, PAD, PAD_Y, styleOf, type Bar } from '../draw.ts'
+import { HerdrLog, todaysLog } from '../log.ts'
 import { claimOf } from '../open.ts'
 import { afterStart, openSendPane, SEND_PANES_KEY, sendForm, type SendHost } from '../send.ts'
 import { SEED } from './seed.ts'
@@ -27,6 +28,8 @@ import type { Line } from '../../../core/view.ts'
 const SIZE = 12
 const LINE = 15
 const REFRESH_MS = 30_000
+/** How long a failed watch of today's log waits before it watches again */
+const WATCH_RETRY_MS = 5_000
 
 type Tab = 'provider' | 'repo' | 'urgency'
 const TABS: { tab: Tab; label: string; groups: (m: FleetModel) => FleetGroup[] }[] = [
@@ -107,6 +110,8 @@ export default class Fleet extends View {
   seen = ''
   /** Send work's state, when this copy is Send work: the host and folder picked (none: the form's first), the task */
   send: { host: SendHost | null; folder: string | null; input: any; confirming: boolean; started: string } | null = null
+  /** The log, read on as it grows */
+  log = new HerdrLog()
   /** The pane this copy of Send work claimed in the registry; null in a popup, or until it could tell which */
   pane: string | null = null
 
@@ -141,6 +146,20 @@ export default class Fleet extends View {
         }
       })
     }
+    // Today's log too: a slim feed may not change when a prompt or a reading is logged. The folder is worked out again
+    // after each change, so a new day's is watched once it begins
+    cx.spawn(async (cx: any) => {
+      for (;;) {
+        const dir = todaysLog(home(), Date.now())
+        try {
+          await exec('mkdir', ['-p', dir]).catch(() => null)
+          await watchFolder(dir)
+          this.reload(cx)
+        } catch {
+          await cx.sleep(WATCH_RETRY_MS)
+        }
+      }
+    })
   }
 
   /** Rereads both feed folders, a file mid-write keeping what was last read from it, and works the model out again */
@@ -157,7 +176,8 @@ export default class Fleet extends View {
         const f = qlFeedOf(parsed(text))
         if (f) ql.set(`${f.host}-${f.session}`, f)
       }
-      this.pace = [...pace.values()]
+      // Feeds are written slim: their quotas' history is in the log (core/log.ts)
+      this.pace = await this.log.hydrate([...pace.values()], home(), Date.now())
       this.ql = [...ql.values()]
       this.work(Date.now(), herdrAgents())
       // Claiming the pane is a nicety: it never stands between the feeds and their drawing

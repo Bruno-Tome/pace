@@ -2,12 +2,15 @@
 // in a scratch home. Run by Node: `node --test adapters/hermes/plugin.node-test.ts`; needs python3.
 
 import { spawnSync } from 'node:child_process'
-import { cpSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { describe, expect, test } from '../../testing/node.ts'
-import { feedOf } from '../../core/host.ts'
+import { readFeeds } from '../log.ts'
+
+/** The session's feed as a reader sees it: its history filled in from the log */
+const feedIn = (home: string) => readFeeds(home, Date.now()).find(f => f.host === 'hermes' && f.session === 'h1' && f.provider === 'codex')!
 
 delete process.env.HC_TERMINAL_ID
 delete process.env.TMUX
@@ -55,7 +58,7 @@ ctx.hooks['post_api_request'](session_id='h1', provider='openai-codex', model='g
 out['answer'] = ctx.commands['pace']('hide')
 `)
     expect(out.answer).toBe('Hermes has no band of its own: /pace band opens one beside it')
-    const feed = feedOf(readFileSync(join(home, '.local/state/pace/feeds/hermes-h1-codex.json'), 'utf8'))!
+    const feed = feedIn(home)
     expect(feed).toMatchObject({ host: 'hermes', provider: 'codex', session: 'h1', context: { tokens: 10_000, window: 272_000 } })
     expect(feed.snapshot.prompts.length).toBe(1)
   })
@@ -83,7 +86,7 @@ ctx.hooks['post_auxiliary_call'](session_id='h1', provider='openai-codex', model
 out['answer'] = ctx.commands['pace']('pane')
 `)
     expect(existsSync(join(home, '.local/state/pace/feeds/hermes-c1-codex.json'))).toBe(false)
-    const feed = feedOf(readFileSync(join(home, '.local/state/pace/feeds/hermes-h1-codex.json'), 'utf8'))!
+    const feed = feedIn(home)
     expect(feed.snapshot.prompts.length).toBe(1)
     expect(feed.context).toEqual({ tokens: 10_000, window: 272_000 })
     expect(out.answer).toContain('hermes · pace')

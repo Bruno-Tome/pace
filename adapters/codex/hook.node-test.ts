@@ -8,6 +8,8 @@ import { join } from 'node:path'
 
 import { describe, expect, test } from '../../testing/node.ts'
 import { feedFile, feedOf } from '../../core/host.ts'
+import { logFile } from '../../core/log.ts'
+import { readFeeds } from '../log.ts'
 import { hookInput, tokenCount, tokenCountNoInfo } from './fixtures.ts'
 
 const SESSION = '01a1aa40-0781-75c2-a5ae-6367b424026e'
@@ -29,7 +31,10 @@ function fakeHerdr(home: string): string {
 
 const prompt = (text: string) => JSON.stringify({ ...JSON.parse(hookInput('UserPromptSubmit', null)), prompt: text })
 
-const feedIn = (home: string) => feedOf(readFileSync(join(home, feedFile('codex', SESSION)), 'utf8'))!
+/** The session's feed as a reader sees it: its quota's history filled in from the log */
+const feedIn = (home: string) => readFeeds(home, Date.now()).find(f => f.host === 'codex' && f.session === SESSION)!
+/** The feed as written on disk */
+const onDisk = (home: string) => feedOf(readFileSync(join(home, feedFile('codex', SESSION)), 'utf8'))!
 
 describe('the Codex hook', () => {
   test('writes the session\'s feed from the rollout and the prompt, and says nothing to Codex', () => {
@@ -44,6 +49,19 @@ describe('the Codex hook', () => {
     expect(feed.snapshot.prompts.length).toBe(1)
     expect(feed.snapshot.samples.map(s => s.quotas.five_hour!.percent)).toEqual([12])
     expect(feed.context).toEqual({ tokens: 19_011, window: 258_400 })
+  })
+
+  test('writes the history to the session\'s log, a line an event, and its feed slim', () => {
+    const home = mkdtempSync(join(tmpdir(), 'pace-codex-'))
+    const rollout = join(home, 'rollout.jsonl')
+    writeFileSync(rollout, `${tokenCount(Date.now() - 60_000, 12, 40)}\n`)
+    run(home, hookInput('UserPromptSubmit', rollout))
+    run(home, hookInput('Stop', rollout))
+    expect(onDisk(home).snapshot.prompts).toEqual([])
+    expect(onDisk(home).snapshot.samples).toEqual([])
+    const lines = readFileSync(join(home, logFile('codex', SESSION, Date.now())), 'utf8').trim().split('\n').map(l => JSON.parse(l))
+    // The header, the prompt, the reading: the reading read once, though the hook ran twice
+    expect(lines.map(l => Object.keys(l).find(k => ['q', 'p', 'r'].includes(k)))).toEqual(['q', 'p', 'r'])
   })
 
   test('names the account Codex is signed in with, as a keyed hash of its email, and none signed out', () => {

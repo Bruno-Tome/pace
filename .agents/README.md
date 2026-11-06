@@ -91,7 +91,9 @@ core/api.ts         the one surface hosts call (ADRs 0018, 0022): a host declare
                     to its agent; route() turns a /pace command into what it does there, stepOf() auto mode's
                     decision, warmStep() warm mode's, viewLines() any view for any surface
 core/meter.ts       what a host meters (prompts, readings, spend, cache, context), into its session's feed; the feed
-                    carries its whole quota's history, every harness on the provider and account
+                    carries its whole quota's history in memory, every harness on the provider and account
+core/log.ts         the history as an append-only log, a file a day per session (ADR 0024): its lines, read back,
+                    feeds hydrated from it and written slim, the days kept
 core/account.ts     an account as a keyed hash of its email (HMAC-SHA-256, plain TypeScript), numbered, labelled
 core/gears.ts       ultra pace's ladders: each provider's models and thinking levels, lightest first, and a notch on one
 core/command.ts     /pace's arguments as a command, read once for every host; its defaults and usage
@@ -107,12 +109,15 @@ adapters/antigravity/ status.ts: GetUserStatus read into readings, the server fo
                     and the shared history, pure; server.ts: the server asked on loopback; hook.ts: the hook
 adapters/hermes/    events.ts: Hermes's providers, windows and its two modes as hosts, pure; plugin/: the Hermes plugin
                     (Python) that hands its events to bin/pace-hermes.ts
+adapters/log.ts     the log on disk for the Node hosts: appended, read on from where it was left, feeds read hydrated
+                    and written slim, pruned by whole files
 adapters/views.ts   a view opened where the core routed it, for the Node bridges
 adapters/codex/     rollout.ts: Codex's rollout and hook input, pure; hook.ts: the hook that writes the feed;
                     open.ts: /pace's views opened in Herdr; pace.md and skill/: /prompts:pace and $pace
 adapters/herdr/     main.ts: the Herdr mod, three views; draw.ts: segments as the theme's colors, which view, pure;
                     open.ts: the herdr-app commands /pace runs to open a view beside a session, pure
-                    send.ts: the fleet's Send work as a popup or a pane that stays open, pure
+                    send.ts: the fleet's Send work as a popup or a pane that stays open, pure; log.ts: the log as
+                    the mods read it, a past day once
 adapters/pi/        feed.ts: the quota a pi session spends and its feed, pure; commands.ts: pi's thinking levels,
                     pure; extension.ts: the pi extension that writes the feed, draws the band and runs /pace
 bin/viewer.ts       the full-screen window, a Node process fed through a state file

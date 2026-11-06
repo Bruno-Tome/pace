@@ -8,6 +8,8 @@ import { join } from 'node:path'
 
 import { describe, expect, test } from '../testing/node.ts'
 import { feedOf } from '../core/host.ts'
+import { logFile } from '../core/log.ts'
+import { readFeeds } from '../adapters/log.ts'
 
 const BIN = join(import.meta.dirname, 'pace-acp.ts')
 
@@ -68,10 +70,15 @@ describe('pace between an ACP client and an agent', () => {
     const dir = mkdtempSync(join(tmpdir(), 'pace-acp-'))
     const got = await session(dir, ['--host', 'codex', '--provider', 'codex'], [...START, ask(3, 'fix the tests')])
     expect(got.find(m => m.id === 3)?.result).toEqual({ stopReason: 'end_turn' })
-    const feed = feedOf(readFileSync(join(dir, '.local/state/pace/feeds/codex-s1.json'), 'utf8'))!
+    const feed = readFeeds(dir, Date.now()).find(f => f.session === 's1')!
     expect(feed).toMatchObject({ host: 'codex', provider: 'codex', session: 's1', cwd: '/work/pace', context: { tokens: 1000, window: 10000 } })
     expect(feed.snapshot.prompts.length).toBe(1)
     expect(feed.snapshot.spend!.reduce((n, x) => n + x.usd, 0)).toBe(0.5)
+    // Written slim, the prompt and its cost in the session's log
+    expect(feedOf(readFileSync(join(dir, '.local/state/pace/feeds/codex-s1.json'), 'utf8'))!.snapshot.prompts).toEqual([])
+    const lines = readFileSync(join(dir, logFile('codex', 's1', Date.now())), 'utf8').trim().split('\n').map(l => JSON.parse(l))
+    expect(lines.filter(l => l.p === 1).length).toBe(1)
+    expect(lines.filter(l => l.usd != null).map(l => l.usd)).toEqual([0.5])
   })
 
   test('answers /pace itself: the agent never gets it', async () => {

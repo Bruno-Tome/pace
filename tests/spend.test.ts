@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { PaceSample } from '../types'
 import { rateOf, rowsOf } from '../core/model.ts'
-import { addSpend, mergeSpend, quotaPerDollar, sessionsOf, spendIn, spendModel, spendVerdict, usdPerPrompt } from '../core/spend.ts'
+import { addSpend, mergeCopies, mergeSpend, quotaPerDollar, sessionsOf, spendIn, spendModel, spendVerdict, usdPerPrompt } from '../core/spend.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const MIN = 60_000
@@ -36,6 +36,28 @@ describe('shared spend', () => {
     // Folding a half-copied hour and a full one keeps the full one
     const partial = mergeSpend(list.slice(0, 10), [], NOW)
     near(spendIn(mergeSpend(partial, merged, NOW), 0, NOW), 3)
+  })
+})
+
+describe('many copies of the shared spend', () => {
+  test('five feeds carrying the same dollar are one dollar, however often they are merged', () => {
+    let copies = Array.from({ length: 5 }, () => addSpend([], 's1', NOW - MIN, 1, NOW))
+    for (let round = 0; round < 3; round++) {
+      const merged = mergeCopies(copies, NOW)
+      near(spendIn(merged, NOW - H, NOW), 1)
+      copies = copies.map(() => merged)
+    }
+  })
+
+  test('copies that each know a different session add up', () => {
+    near(spendIn(mergeCopies([addSpend([], 'a', NOW - MIN, 0.4, NOW), addSpend([], 'b', NOW - MIN, 0.6, NOW)], NOW), NOW - H, NOW), 1)
+  })
+
+  test('a bucket no session could spend is dropped, so a copy gone wrong cannot win the merge', () => {
+    // A minute bucket of $1e105, as the compounding wrote: no session spends that, and the larger would win
+    const bad = [{ t: NOW - MIN, id: 's1', usd: 1.03e105 }]
+    near(spendIn(mergeSpend(bad, addSpend([], 's1', NOW - MIN, 1, NOW), NOW), NOW - H, NOW), 1)
+    expect(mergeSpend([{ t: NOW - MIN, id: 's1', usd: Infinity }], [], NOW)).toEqual([])
   })
 })
 

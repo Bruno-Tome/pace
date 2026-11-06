@@ -18,6 +18,22 @@ const feed = (over: Partial<PaceFeed>): PaceFeed => ({
 const ev = (over: Partial<Metered>): Metered => ({ host: 'pi', provider: 'codex', session: 'p1', cwd: '/w', now: NOW, ...over })
 const PLAIN = { cache: false, estimate: false }
 
+describe('the shared spend over many feeds', () => {
+  const spent = (usd: number) => ({ ...reading(NOW - MIN, 30), spend: [{ t: NOW - 2 * MIN, id: 'c1', usd }] })
+
+  test('a dollar every feed carries is metered as one dollar, not one a feed', () => {
+    const others = ['c2', 'c3', 'c4', 'c5'].map(session => feed({ session, snapshot: spent(1) }))
+    const f = meter(null, ev({}), others, PLAIN)
+    expect(f.snapshot.spend!.reduce((n, s) => n + s.usd, 0)).toBe(1)
+  })
+
+  test('pooled into a store of its own, likewise', () => {
+    const others = ['c2', 'c3', 'c4'].map(session => feed({ session, snapshot: spent(1) }))
+    const s = pooled({ ...reading(NOW - MIN, 30), spend: [] }, others, { provider: 'codex' }, { host: 'claude', session: 'k1' }, NOW)
+    expect(s.spend!.reduce((n, x) => n + x.usd, 0)).toBe(1)
+  })
+})
+
 describe('a quota is its provider and its account', () => {
   test('feeds on one provider share a quota when their accounts match, or when either names none', () => {
     expect(sameQuota(feed({ account: 'a1' }), { provider: 'codex', account: 'a1' })).toBe(true)

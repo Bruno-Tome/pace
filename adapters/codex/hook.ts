@@ -13,7 +13,7 @@
 // pauses the run. In Herdr every view opens there first (.agents/decisions/0001-herdr-first.md).
 
 import { execFileSync } from 'node:child_process'
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -21,14 +21,16 @@ import type { PaceAuto } from '../../types'
 import { alertsOf } from '../../core/alerts.ts'
 import { continuePrompt, decide, protocol, resumed, startPrompt } from '../../core/auto.ts'
 import { commandOf } from '../../core/command.ts'
-import { FEED_STALE, FEEDS_DIR, feedFile, feedOf, type PaceFeed } from '../../core/host.ts'
+import { feedFile, type PaceFeed } from '../../core/host.ts'
+import { eventsOf } from '../../core/log.ts'
 import { snapshotOf } from '../../core/model.ts'
 import { plainText, plansFor, route, stepOf, viewLines, type Host, type PaceAction, type PaceView } from '../../core/api.ts'
 import { paceArgsOf } from '../../core/command.ts'
 import { emailOfJwt } from '../../core/account.ts'
 import { accountFor } from '../account.ts'
+import { appendLog, pruneLog, sessionFeeds, writeFeed } from '../log.ts'
 import { openInHerdr } from './open.ts'
-import { hookInputOf, nextFeed, rolloutOf, type HookInput } from './rollout.ts'
+import { codexMetered, hookInputOf, nextFeed, rolloutOf, type HookInput } from './rollout.ts'
 
 /** Where the hook keeps how far into a session's rollout it has read, relative to the home directory */
 const cursorFile = (session: string) => `.local/state/pace/codex/${session.replace(/[^A-Za-z0-9_-]/g, '_')}.json`
@@ -108,22 +110,8 @@ function codexEmail(home: string): string | null {
   return typeof auth?.tokens?.id_token === 'string' ? emailOfJwt(auth.tokens.id_token) : null
 }
 
-/** The other live feeds, whose history on Codex's quota this session's feed carries too: Codex's, and pi's signed in with ChatGPT */
-function siblingsOf(home: string, session: string, now: number): PaceFeed[] {
-  const dir = join(home, FEEDS_DIR)
-  if (!existsSync(dir)) return []
-  const own = feedFile('codex', session).split('/').pop()
-  return readdirSync(dir)
-    .filter(name => name.endsWith('.json') && name !== own)
-    .flatMap(name => {
-      try {
-        const feed = feedOf(readFileSync(join(dir, name), 'utf8'))
-        return feed && feed.at >= now - FEED_STALE ? [feed] : []
-      } catch {
-        return []
-      }
-    })
-}
+/** The session's own feed and the other live ones, each with its quota's history (Codex's, and pi's signed in with ChatGPT) */
+const feedsOf = (home: string, session: string, now: number) => sessionFeeds(home, now, f => f.host === 'codex' && f.session === session)
 
 function readJson(path: string): unknown {
   try {
@@ -140,10 +128,16 @@ function update(home: string, input: HookInput): PaceFeed {
   const last = cursorOf(cursorPath)
   const start = last && last.path === input.transcript ? last.offset : 0
   const read = input.transcript && existsSync(input.transcript) ? readFrom(input.transcript, start) : { text: '', offset: start }
-  const prev = existsSync(feedPath) ? feedOf(readFileSync(feedPath, 'utf8')) : null
   const now = Date.now()
-  const feed = nextFeed(prev, input, rolloutOf(read.text), now, process.env.HC_TERMINAL_ID || undefined, siblingsOf(home, input.session, now), accountFor(home, 'codex', codexEmail(home)))
-  writeAtomically(feedPath, JSON.stringify(feed))
+  const { own, others } = feedsOf(home, input.session, now)
+  const rolled = rolloutOf(read.text)
+  const terminal = process.env.HC_TERMINAL_ID || undefined
+  const account = accountFor(home, 'codex', codexEmail(home))
+  const feed = nextFeed(own, input, rolled, now, terminal, others, account)
+  // The events after the feed is worked out from the log, so none is counted twice
+  appendLog(home, 'codex', { provider: 'codex', ...(account ? { account } : {}), session: input.session }, eventsOf(codexMetered(input, rolled, now, terminal, account)), now)
+  writeFeed(feedPath, feed)
+  pruneLog(home, now)
   if (input.transcript) writeAtomically(cursorPath, JSON.stringify({ path: input.transcript, offset: read.offset }))
   return feed
 }
@@ -152,7 +146,7 @@ function update(home: string, input: HookInput): PaceFeed {
 function withAuto(home: string, feed: PaceFeed, auto: PaceAuto | null): PaceFeed {
   const { auto: _, ...rest } = feed.snapshot
   const next = { ...feed, snapshot: auto ? { ...rest, auto } : rest }
-  writeAtomically(join(home, feedFile('codex', feed.session)), JSON.stringify(next))
+  writeFeed(join(home, feedFile('codex', feed.session)), next)
   return next
 }
 
@@ -169,7 +163,7 @@ function planText(cwd: string, plan: string): string {
 function viewText(home: string, feed: PaceFeed, view: PaceView, files: readonly string[] = []): string {
   const now = Date.now()
   const plans = view === 'plan' ? plansFor(feed, files).map(plan => ({ plan, text: planText(feed.cwd, plan) })) : []
-  return plainText(viewLines(view, { feed, others: view === 'fleet' ? siblingsOf(home, feed.session, now) : [], plans, now, cols: TEXT_COLS }))
+  return plainText(viewLines(view, { feed, others: view === 'fleet' ? feedsOf(home, feed.session, now).others : [], plans, now, cols: TEXT_COLS }))
 }
 
 const tmux = (command: string) => execFileSync('tmux', ['split-window', '-h', '-d', '-l', '64', command], { stdio: 'ignore', timeout: 5000 })

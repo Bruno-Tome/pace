@@ -16,7 +16,7 @@
 // `ANTIGRAVITY_CSRF_TOKEN` set, `agy` takes that one, and its hooks inherit it (.agents/decisions/0020-antigravity-cli.md).
 
 import { execFileSync } from 'node:child_process'
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -29,6 +29,7 @@ import { bandArgs } from './commands.ts'
 import { feedOfHistory, historyOf, hookInputOf, nextHistory, paceArgOf, type History } from './feed.ts'
 import { readingNow } from './server.ts'
 import { accountFor } from '../account.ts'
+import { readFeeds } from '../log.ts'
 
 /** Where Antigravity's conversations keep their history, its lock, and the script a terminal window runs, relative to the home directory */
 const STATE_DIR = '.local/state/pace/antigravity'
@@ -107,19 +108,8 @@ function openWindow(home: string, view: PaceView, feed: string): boolean {
   }
 }
 
-/** The live feeds, for the fleet */
-function feedsIn(home: string, now: number): PaceFeed[] {
-  const dir = join(home, FEEDS_DIR)
-  if (!existsSync(dir)) return []
-  return readdirSync(dir).filter(n => n.endsWith('.json')).flatMap(n => {
-    try {
-      const f = feedOf(readFileSync(join(dir, n), 'utf8'))
-      return f && f.at >= now - FEED_STALE ? [f] : []
-    } catch {
-      return []
-    }
-  })
-}
+/** The live feeds, each with its quota's history, for the fleet */
+const feedsIn = (home: string, now: number): PaceFeed[] => readFeeds(home, now).filter(f => f.at >= now - FEED_STALE)
 
 /** Carries out `/pace`'s action for the conversation whose feed is at `path`; what to say back */
 function carryOut(home: string, a: PaceAction, path: string): string {

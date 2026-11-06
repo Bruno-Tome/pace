@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **History moves to an append-only log** ([ADR 0024](.agents/decisions/0024-append-only-log.md)). Each session
+  appends the readings, prompts and costs it saw itself to `~/.local/state/pace/log/<day>/<host>-<session>.jsonl`, a
+  line an event; feeds are written slim (their `samples` and `prompts` empty, no `spend` or `modelPrompts`), and every
+  reader hydrates them from the log (`core/log.ts`). Measured on 2026-11-06: 6.4 MB of feeds held 572 KB of history,
+  each reading copied 24 times, each feed of about 200 KB written whole at every event. Feeds written before this still
+  count while they last. Eight days are kept; the day folders and feeds older than that are deleted, at most once a
+  day. Antigravity still writes its feeds from its own history file, which they carry; readers count it the same way.
+- **Spend no longer compounds across feeds.** Merging every feed's copy of the spend as one list summed the copies,
+  so each merge multiplied the spend by the number of feeds (seen at up to 1.8e308 dollars a bucket). Copies merge a
+  pair at a time (`mergeCopies`), and a bucket past $10,000 is dropped before it can win a merge.
 - The fleet's Send work opens as a pane too (**in a pane**, beside **Send work ⇥**): it stays open, follows the fleet
   live and clears for the next task once an agent starts. The pane is recorded under Herdr's shared `fleet.panes`, so
   a second click focuses it. The popup is as before.

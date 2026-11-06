@@ -46,13 +46,15 @@ never turns them on. Imports between core files keep their `.ts` extensions; the
   provider (`claude`, `codex`), so two hosts' `five_hour` never mix.
 - **Feeds.** Each host session writes one file, `~/.local/state/pace/feeds/<host>-<session>.json`, a `PaceFeed`:
   `{version, host, provider, session, terminal?, cwd, at, snapshot, context?}`. `terminal` is Herdr's
-  `HC_TERMINAL_ID` when the session runs in Herdr. Written atomically, read defensively, dropped once stale.
+  `HC_TERMINAL_ID` when the session runs in Herdr. Written atomically and slim (live state only), read defensively,
+  dropped once stale.
+- **The log** (`core/log.ts`, [ADR 0024](decisions/0024-append-only-log.md)): each session appends the events it saw
+  itself (readings, prompts, costs) to `~/.local/state/pace/log/<YYYY-MM-DD>/<host>-<session>.jsonl`, a line each.
+  Readers hydrate the feeds from it: every feed on a quota gets the quota's history, each event counted once.
 - **The fleet** (`core/host.ts`): feeds in, one row per provider out, with each provider's pace status and
   headroom, and the agents on it with their context use. A pure rule: `fleetOf(feeds, now)`.
-- **A feed carries its harness's whole history**, not just its session's: Claude's shared store makes it so, and
-  the Codex hook merges the other live Codex sessions' readings and prompts into its own. The harness's merging
-  happens in the writers, which run in fast runtimes; the fleet only picks, per provider, the session with the
-  newest reading. A reader never merges copies of one history.
+- **A feed read back carries its quota's whole history**, hydrated from the log, not just its session's; on disk it
+  carries none, so no history is copied. The fleet picks, per provider, the session with the newest reading.
 - **Readers have a budget.** Herdr interrupts any call into a mod past its budget (between half a second and a
   second) and keeps showing what it drew before. The mod draws in steps (the fleet, one agent's band, a harness's
   charts), each a call of its own; `node scripts/herdr.ts check` runs each step on feeds the size real use makes
