@@ -1,7 +1,8 @@
 # Working on pace
 
 Guidelines for anyone changing pace, human or agent: how the code is laid out, what polished code looks like
-here, and the guardrails every change goes through. Read this before writing code. The user-facing description is
+here, and the guardrails every change goes through. Read this before writing code; [the playbook](playbook.md) is
+the order of work that keeps to them. The user-facing description is
 in the [README](../README.md).
 
 ## Guardrails
@@ -158,6 +159,13 @@ types/index.d.ts    the public contract: stored shapes and `$.pace`
 - **Engine constraints.** A `$.state` atom must be read in the file that defines it, and `$` is followed across
   files only into `function` declarations. That is why the shell stays in `register.tsx`. Move logic out of it
   as pure functions; do not move `$` into the core.
+- **History is a log; readers hydrate.** Each session appends what it saw itself to its day's file in the log;
+  feeds carry live state only; a reader fills each feed's history in from the log with a `History` (core/log.ts,
+  [ADR 0024](decisions/0024-append-only-log.md)). Nothing is copied from feed to feed, and a merge never sees two
+  copies of one event as two.
+- **Nothing is worked out twice.** Read paths run in many copies and often: read only what changed, work out only
+  what changed, fold what is final once, draw only when what is shown changed. How, in
+  [the playbook](playbook.md#4-never-work-anything-out-twice).
 - **Units are fixed.** Timestamps are milliseconds. Window lengths, `emptyIn` and `resetIn` are seconds. Percents
   are 0–100. Say the unit in the name or the doc comment when it is not one of these.
 
