@@ -636,8 +636,17 @@ async function recordRateLimits($: Engine, list: readonly RateLimitLike[] | unde
     const r = rl.resetsAt ? Date.parse(rl.resetsAt) : NaN
     quotas[rl.kind] = { percent: Math.min(Math.max(rl.percentUsed, 0), 100), ...(Number.isFinite(r) ? { resetsAt: r } : {}) }
   }
-  if (Object.keys(quotas).length) await addSample($, { at: await $.clock.now(), quotas })
+  if (!Object.keys(quotas).length) return
+  // The same limits again are no new reading: an idle session still holds its last reply's, and stamped now they
+  // would read as the quota going back (core/quota.ts drops them; they never reach the log)
+  const said = JSON.stringify(quotas)
+  if (said === lastLimits) return
+  lastLimits = said
+  await addSample($, { at: await $.clock.now(), quotas })
 }
+
+/** The session's own limits as it last recorded them */
+let lastLimits = ''
 
 /** An account-wide reading: per-model quotas always; 5-hour / 7-day only when the session has none from the last 10 minutes */
 async function addFresh($: Engine, s: PaceSample): Promise<void> {
@@ -1445,6 +1454,8 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     cwd = e.cwd ?? ''
+    // A new session says its own limits afresh
+    lastLimits = ''
     surface = e.surface ?? 'terminal'
     spendId = await $.session.id().catch(() => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`)
     await $.command.register({ name: 'pace', description: 'Rate-limit pace, prompting rate and the prompt cache, charted', argumentHint: USAGE, immediate: true })

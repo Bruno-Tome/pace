@@ -96,15 +96,15 @@ describe('feeds hydrated from the log', () => {
     const log = [
       ...logOf(head('s1', 'a1'), [{ at: NOW - MIN, quotas: reading(NOW - MIN, 20).quotas }, { at: NOW - MIN, prompt: true }]),
       ...logOf(head('s2', 'a2'), [{ at: NOW - 2 * MIN, quotas: reading(NOW - 2 * MIN, 90).quotas }]),
-      ...logOf(head('s3'), [{ at: NOW - 3 * MIN, quotas: reading(NOW - 3 * MIN, 50).quotas }]),
+      ...logOf(head('s3'), [{ at: NOW - 3 * MIN, quotas: reading(NOW - 3 * MIN, 10).quotas }]),
     ]
     const feeds = [feed('s1', { account: 'a1' }), feed('s2', { account: 'a2' }), feed('s3')]
     const [, , none] = hydrate(feeds, log, NOW)
-    expect(none!.snapshot.samples.map(s => s.quotas.five_hour!.percent)).toEqual([50])
+    expect(none!.snapshot.samples.map(s => s.quotas.five_hour!.percent)).toEqual([10])
     expect(none!.snapshot.prompts).toEqual([NOW - MIN])
     // With one account here, it is that account's
     const [, sole] = hydrate([feed('s1', { account: 'a1' }), feed('s3')], log, NOW)
-    expect(sole!.snapshot.samples.map(s => s.quotas.five_hour!.percent)).toEqual([50, 20])
+    expect(sole!.snapshot.samples.map(s => s.quotas.five_hour!.percent)).toEqual([10, 20])
   })
 
   test('an older feed\'s own history still counts, for every feed on its quota', () => {

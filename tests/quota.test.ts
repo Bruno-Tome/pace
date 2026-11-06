@@ -142,3 +142,23 @@ test('a reading that is not a number, NaN or Infinity, is dropped rather than re
   const endless: PaceSample = { at: NOW - 2 * H, quotas: { seven_day: { percent: 20, resetsAt: Infinity } } }
   expect(mergeSamples([nan, endless], [good])).toEqual([good])
 })
+
+describe('a reading that went back', () => {
+  const T = Date.UTC(2026, 10, 6, 20)
+  const R = T + 2 * 3600_000
+  const at = (t: number, percent: number, resetsAt = R, estimated?: true) => ({ at: t, quotas: { five_hour: { percent, resetsAt, ...(estimated ? { estimated } : {}) } } })
+
+  test('within one window use never goes down: a lower reading after a higher one is stale, and dropped', () => {
+    // An idle session still holding what its last reply said: 7%, while the window is at 37%
+    const merged = mergeSamples([at(T, 30), at(T + 60_000, 37)], [at(T + 120_000, 7), at(T + 180_000, 38)])
+    expect(merged.map(s => s.quotas.five_hour!.percent)).toEqual([30, 37, 38])
+    expect(appendSample([at(T, 37)], at(T + 60_000, 7)).map(s => s.quotas.five_hour!.percent)).toEqual([37])
+  })
+
+  test('a new window starts again from nothing; an estimate may go back; a stale quota leaves the others of its reading', () => {
+    expect(mergeSamples([at(T, 90)], [at(T + 60_000, 3, R + 5 * 3600_000)]).map(s => s.quotas.five_hour!.percent)).toEqual([90, 3])
+    expect(mergeSamples([at(T, 40, R, true)], [at(T + 60_000, 30, R, true)]).length).toBe(2)
+    const both = { at: T + 60_000, quotas: { five_hour: { percent: 7, resetsAt: R }, seven_day: { percent: 20, resetsAt: R + 86_400_000 } } }
+    expect(mergeSamples([at(T, 37)], [both]).at(-1)!.quotas).toEqual({ seven_day: { percent: 20, resetsAt: R + 86_400_000 } })
+  })
+})

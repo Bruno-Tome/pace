@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **A reading that went back is stale, and dropped.** Within one window a quota's use never goes down, so a reading
+  below the highest seen (an idle Claude Code session still holding its last reply's limits, stamped anew) is left out
+  of the history (`mergeSamples`, `appendSample`), and a session records its own limits only when they changed. Those
+  readings made "% at reset" swing by up to 232 points a minute and showed an idle session's old use; on the same
+  three hours it now moves 1.7 points a minute at the median.
 - **Activity** ([ADR 0025](.agents/decisions/0025-activity.md)): `/pace activity` opens every metric over all of
   history in a split (Herdr, tmux or a terminal window; `node bin/activity.ts` anywhere): tokens in, out, cache read
   and write, reasoning, dollars, prompts and replies, by day, week, month, year or all of it, broken down by provider,

@@ -123,3 +123,14 @@ test('the log\'s header names the repo the session\'s folder belongs to, a workt
   await $.prompt.submit({ text: 'p' } as any)
   expect(JSON.parse((files[LOG] ?? '').split('\n')[0]!)).toMatchObject({ c: '/Users/me/.maestro/worktrees/31908816', r: 'maestro' })
 })
+
+test('a session\'s own limits, unchanged since it last said them, are not a new reading: an idle session repeats its last reply\'s', async ($, on) => {
+  const { files, clock } = world(on)
+  await $.session.start({ cwd: '/work/pace', surface: 'terminal', isInteractive: true } as any)
+  const limits = [{ kind: 'five_hour', percentUsed: 7, resetsAt: new Date(NOW + 2 * 3600_000).toISOString() }]
+  await $.session.measure({ context: { window: 1_000_000 }, rateLimits: limits, changed: ['rateLimits'] } as any)
+  await clock.advance(5 * 60_000)
+  await $.session.measure({ context: { window: 1_000_000 }, rateLimits: limits, changed: ['context'] } as any)
+  const sevens = (files[LOG] ?? '').trim().split('\n').map(l => JSON.parse(l)).filter(l => l.r?.five_hour?.percent === 7)
+  expect(sevens.length).toBe(1)
+})
