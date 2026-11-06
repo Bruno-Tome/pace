@@ -49,6 +49,8 @@ export function world(on: any, env: Record<string, string> = {}, usage: unknown 
   const runs: string[][] = []
   /** What a command run through `sh -c` (ultra pace's goal check) answers */
   const shell = { exitCode: 0, stdout: '', stderr: '' }
+  /** What `git rev-parse --git-common-dir` answers: none, outside git */
+  const git = { commonDir: '' }
   /** Programs that fail when run: herdr-app missing, say */
   const failing = new Set<string>()
   /** Milliseconds the clock moves while tmux opens a split: real time, in which timers fire */
@@ -58,6 +60,7 @@ export function world(on: any, env: Record<string, string> = {}, usage: unknown 
     if (failing.has(e.argv[0]!)) return { value: { exitCode: 1, stdout: '', stderr: 'not found' } }
     if (e.argv[1] === 'split-window' && slow.split) await clock.advance(slow.split)
     if (e.argv[0] === 'sh') return { value: { ...shell } }
+    if (e.argv[0] === 'git') return { value: git.commonDir ? { exitCode: 0, stdout: `${git.commonDir}\n`, stderr: '' } : { exitCode: 128, stdout: '', stderr: 'not a git repository' } }
     const stdout = e.argv[0] === '/usr/bin/which' ? '/opt/node/bin/node\n' : e.argv[1] === 'split-window' ? '%7\n' : ''
     return { value: { exitCode: 0, stdout, stderr: '' } }
   })
@@ -86,7 +89,7 @@ export function world(on: any, env: Record<string, string> = {}, usage: unknown 
   on('ui.open', (_$: unknown, e: unknown) => { opens.push(e); return { value: { isPlaced: true } } })
   on('ui.close', () => ({ value: undefined }))
   on('ui.render', { component: 'AbovePrompt' }, () => ({ type: 'Box', props: { key: 'native' }, children: [] }) as any)
-  return { stored, status, clock, files, opens, runs, failing, shell, slow, spawns, commands, forks, toasts, registered, notices, submitted, fetches: () => fetches }
+  return { stored, status, clock, files, opens, runs, failing, shell, git, slow, spawns, commands, forks, toasts, registered, notices, submitted, fetches: () => fetches }
 }
 
 /** Every string in a drawn tree, joined: what the terminal shows, without the styling */

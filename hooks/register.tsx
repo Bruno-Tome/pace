@@ -19,10 +19,12 @@ import type { ElementConstructor, EngineInterface as Engine, Register, RenderEle
 import type { Pace, PaceAuto, PaceCacheInfo, PaceCacheTtl, PaceGear, PaceSnapshot, PacePrefs, PaceReading, PaceSample, PaceSpend, PaceUltra, PaceWarmMode } from '../types'
 import { alertsOf } from '../core/alerts.ts'
 import { AUTO_TURNS, commandOf, DEFAULT_PLAN, ULTRA_TURNS, USAGE, type PaceCommand } from '../core/command.ts'
-import { route, type Host, type PaceAction, type Surface } from '../core/api.ts'
+import { route, type Host, type PaceAction, type Surface, ACTIVITY_WHERE } from '../core/api.ts'
 import { accountId, numbered, type Accounts } from '../core/account.ts'
 import { FEED_STALE, FEEDS_DIR, feedFile, feedOf as parseFeed, type PaceFeed } from '../core/host.ts'
+import { checkpointDays, checkpointFrom, checkpointOf, expiredDays, headLine, History, LOG_DIR, logDays, logFile, logText, parseLog, slimSnapshot, type LogEntry, type LogEvent, type LogHead } from '../core/log.ts'
 import { pooled } from '../core/meter.ts'
+import { repoOfGitDir } from '../core/dims.ts'
 import { ALREADY_OPEN, herdrOpen, herdrReuse, paceViewOf, registryIn, sharedFile } from '../adapters/herdr/open.ts'
 import { ACCOUNTS_FILE, KEY_FILE, keysFile, planFeedFile, ROW_FILE, stateFile, viewFile } from './files.ts'
 import { isSessionKey, isStale, prefsFrom, sessionKey, sessionOf, sharedOf } from '../core/prefs.ts'
@@ -73,17 +75,146 @@ async function sharedFeeds($: Engine, now: number): Promise<PaceFeed[]> {
   const home = await homeOf($)
   if (!home) return []
   await accountOf($, home)
+  await prune($, home, now)
   const dir = `${home}/${FEEDS_DIR}`
   const own = feedFile('claude', spendId).split('/').pop()
-  const names = await $.fs.list(dir).then(es => es.map(e => e.name)).catch(() => [] as string[])
-  const feeds: PaceFeed[] = []
-  for (const name of names) {
-    if (!name.endsWith('.json') || name === own) continue
-    const f = parseFeed(String(await $.fs.read(`${dir}/${name}`).catch(() => '')))
-    if (f && f.at >= now - FEED_STALE) feeds.push(f)
+  const entries = await $.fs.list(dir).catch(() => [])
+  const all: PaceFeed[] = []
+  for (const e of entries) {
+    if (!e.name.endsWith('.json') || e.name === own) continue
+    const f = await feedAt($, `${dir}/${e.name}`, e)
+    if (f) all.push(f)
   }
+  for (const path of feedCache.keys()) if (!entries.some(e => `${dir}/${e.name}` === path)) feedCache.delete(path)
+  await readLog($, home, now)
+  // Every feed counts towards its quota's history (an older one may still carry some); the live ones pool
+  const feeds = history.hydrate(all, now).filter(f => f.at >= now - FEED_STALE)
   shared = { at: now, feeds }
   return feeds
+}
+
+/** Each feed file as last parsed: parsed again only once its size or time changed (a host listing neither, always) */
+const feedCache = new Map<string, { size: number; mtimeMs: number; feed: PaceFeed | null }>()
+
+async function feedAt($: Engine, path: string, e: { size: number; mtimeMs: number }): Promise<PaceFeed | null> {
+  const known = feedCache.get(path)
+  if (known && e.size && known.size === e.size && known.mtimeMs === e.mtimeMs) return known.feed
+  const feed = parseFeed(String(await $.fs.read(path).catch(() => '')))
+  feedCache.set(path, { size: e.size, mtimeMs: e.mtimeMs, feed })
+  return feed
+}
+
+/** The history of every quota (core/log.ts), worked out only where it changed */
+const history = new History()
+/** Each open day's file: how much of it was read, up to its last whole line, and the header in force there */
+const logRead = new Map<string, { length: number; head: LogHead | null }>()
+/** The finished days read whole, from their checkpoint or their files */
+const logDone = new Set<string>()
+
+/** Reads what the log added since the last read into the history: a finished day from its checkpoint, once */
+async function readLog($: Engine, home: string, now: number): Promise<void> {
+  const yesterday = new Date(now - 24 * 3600_000).toISOString().slice(0, 10)
+  history.forget(now)
+  for (const day of logDays(now)) {
+    if (logDone.has(day)) continue
+    const dir = `${home}/${LOG_DIR}/${day}`
+    const files = await $.fs.list(dir).catch(() => [])
+    if (!files.length) continue
+    const cp = day < yesterday && files.some(e => e.name === CHECKPOINT) ? checkpointFrom(String(await $.fs.read(`${dir}/${CHECKPOINT}`).catch(() => ''))) : null
+    if (cp) {
+      history.setCheckpoint(cp)
+      logDone.add(day)
+      continue
+    }
+    for (const e of files) {
+      if (!e.name.endsWith('.jsonl')) continue
+      const path = `${dir}/${e.name}`
+      const f = logRead.get(path) ?? { length: 0, head: null }
+      // Size says a file has not grown; a host that lists none has every file read again, and read on
+      if (e.size && e.size <= f.length) continue
+      const text = String(await $.fs.read(path).catch(() => ''))
+      // A file only grows; one read shorter is being written over, and is read on next time
+      const whole = text.lastIndexOf('\n') + 1
+      if (whole <= f.length) continue
+      const got = parseLog(text.slice(f.length, whole), f.head)
+      logRead.set(path, { length: whole, head: got.head })
+      history.append(got.entries)
+    }
+    if (day < yesterday) logDone.add(day)
+  }
+}
+
+/** A finished day's checkpoint, in its folder (core/log.ts) */
+const CHECKPOINT = 'checkpoint.json'
+
+/** The day pruning last ran on, in this process */
+let prunedOn = ''
+
+/**
+ * Once a day (core/log.ts, ADR 0025): folds each finished day into a checkpoint kept for good (again where one has no
+ * activity yet), deletes a day's raw lines once it is past nine days, and the feeds not written for eight days
+ */
+async function prune($: Engine, home: string, now: number): Promise<void> {
+  const today = new Date(now).toISOString().slice(0, 10)
+  if (prunedOn === today) return
+  prunedOn = today
+  const root = `${home}/${LOG_DIR}`
+  const days = await $.fs.list(root).then(es => es.map(e => e.name)).catch(() => [] as string[])
+  const feeds = await $.fs.list(`${home}/${FEEDS_DIR}`).catch(() => [])
+  const gone = feeds.filter(e => e.name.endsWith('.json') && e.mtimeMs && e.mtimeMs < now - STATE_SPAN).map(e => `${home}/${FEEDS_DIR}/${e.name}`)
+  for (const day of checkpointDays(days, now)) {
+    const dir = `${root}/${day}`
+    const files = await $.fs.list(dir).catch(() => [])
+    const raw = files.filter(e => e.name.endsWith('.jsonl')).map(e => `${dir}/${e.name}`)
+    let folded = files.some(e => e.name === CHECKPOINT) && !!checkpointFrom(String(await $.fs.read(`${dir}/${CHECKPOINT}`).catch(() => '')))?.activity
+    if (raw.length && !folded) {
+      const entries: LogEntry[] = []
+      for (const path of raw) entries.push(...parseLog(String(await $.fs.read(path).catch(() => '')), null).entries)
+      await $.fs.write(`${dir}/${CHECKPOINT}.tmp`, JSON.stringify(checkpointOf(day, entries)))
+      folded = (await $.process.run(['/bin/mv', `${dir}/${CHECKPOINT}.tmp`, `${dir}/${CHECKPOINT}`]).catch(() => null))?.exitCode === 0
+    }
+    // Past nine days the checkpoint stands for the day: its raw lines go, the folder and checkpoint stay
+    if (folded && expiredDays([day], now).length) gone.push(...raw)
+  }
+  if (gone.length) await $.process.run(['/bin/rm', '-f', ...gone]).catch(() => null)
+}
+
+/** The session's folder's repo, as git says it, asked once (a worktree's is the repo it belongs to); null outside git */
+let repoAsked: { cwd: string; repo: string | null } | null = null
+
+async function repoOfCwd($: Engine): Promise<string | null> {
+  if (!cwd) return null
+  if (repoAsked?.cwd !== cwd) {
+    const r = await $.process.run(['git', '-C', cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir']).catch(() => null)
+    repoAsked = { cwd, repo: r?.exitCode === 0 ? repoOfGitDir(r.stdout) : null }
+  }
+  return repoAsked.repo
+}
+
+/** This session's log as written so far today: its path, its text, the header in force at its end */
+let ownLog: { path: string; text: string; head: string | null } | null = null
+
+/**
+ * Appends this session's events to its log. Claude Code's files are written whole, so the day's text is kept and
+ * written again with the new lines after it: a reader never sees a line change
+ */
+async function logEvents($: Engine, events: readonly LogEvent[], now: number): Promise<void> {
+  if (!events.length) return
+  const home = await homeOf($)
+  if (!home) return
+  const account = await accountOf($, home)
+  const path = `${home}/${logFile('claude', spendId, now)}`
+  if (ownLog?.path !== path) {
+    const read = String(await $.fs.read(path).catch(() => ''))
+    // A line cut short when a write was stopped is left out, so the next one starts on its own line
+    const text = read.slice(0, read.lastIndexOf('\n') + 1)
+    const head = parseLog(text, null).head
+    ownLog = { path, text, head: head ? headLine(head) : null }
+  }
+  const repo = await repoOfCwd($)
+  const { text, head } = logText({ provider: 'claude', ...(account ? { account } : {}), session: spendId, host: 'claude', ...(cwd ? { cwd } : {}), ...(repo ? { repo } : {}) }, events, ownLog.head)
+  ownLog = { path, text: ownLog.text + text, head }
+  await $.fs.write(path, ownLog.text)
 }
 
 async function snapshot($: Engine): Promise<Snapshot> {
@@ -347,7 +478,8 @@ async function writeFeed($: Engine, s: Snapshot, now: number): Promise<void> {
     version: 1, host: 'claude', provider: 'claude', ...(account ? { account } : {}), session: spendId,
     ...(terminal ? { terminal } : {}),
     cwd,
-    snapshot: { ...s, samples: s.samples.filter(x => x.at >= now - STATE_SPAN) },
+    // Its history is in its log (core/log.ts)
+    snapshot: slimSnapshot(s),
     ...(s.cache ? { context: { tokens: s.cache.tokens, window: s.cache.window } } : {}),
   }
   const text = JSON.stringify(feed)
@@ -424,7 +556,7 @@ async function openSplit($: Engine): Promise<'opened' | 'open' | false> {
  */
 async function openHerdr($: Engine, arg: string): Promise<string | null> {
   const terminal = await $.env.get('HC_TERMINAL_ID')
-  const herdrOnly = arg === 'band' || arg === 'fleet'
+  const herdrOnly = arg === 'band' || arg === 'fleet' || arg === 'activity'
   if (!terminal) return null
   const view = paceViewOf(arg, 'claude', terminal, accountCache?.id)
   if (!view) return null
@@ -492,6 +624,7 @@ async function addSample($: Engine, s: PaceSample): Promise<void> {
     return next
   })
   if (!changed) return
+  await logEvents($, [{ at: s.at, quotas: s.quotas }], s.at)
   await persistSamples($)
   await refreshLine($)
 }
@@ -503,8 +636,17 @@ async function recordRateLimits($: Engine, list: readonly RateLimitLike[] | unde
     const r = rl.resetsAt ? Date.parse(rl.resetsAt) : NaN
     quotas[rl.kind] = { percent: Math.min(Math.max(rl.percentUsed, 0), 100), ...(Number.isFinite(r) ? { resetsAt: r } : {}) }
   }
-  if (Object.keys(quotas).length) await addSample($, { at: await $.clock.now(), quotas })
+  if (!Object.keys(quotas).length) return
+  // The same limits again are no new reading: an idle session still holds its last reply's, and stamped now they
+  // would read as the quota going back (core/quota.ts drops them; they never reach the log)
+  const said = JSON.stringify(quotas)
+  if (said === lastLimits) return
+  lastLimits = said
+  await addSample($, { at: await $.clock.now(), quotas })
 }
+
+/** The session's own limits as it last recorded them */
+let lastLimits = ''
 
 /** An account-wide reading: per-model quotas always; 5-hour / 7-day only when the session has none from the last 10 minutes */
 async function addFresh($: Engine, s: PaceSample): Promise<void> {
@@ -546,22 +688,34 @@ async function sampleUsageApi($: Engine): Promise<boolean> {
 async function recordSpend($: Engine, usd: number): Promise<void> {
   const now = await $.clock.now()
   const stored = await $.store.get('spend')
-  const mine = addSpend((await read($, spendA)) ?? [], spendId, now, usd, now, spendModel(answered, await modelOf($)))
+  const model = spendModel(answered, await modelOf($))
+  const mine = addSpend((await read($, spendA)) ?? [], spendId, now, usd, now, model)
   answered = []
+  if (usd > 0) await logEvents($, [{ at: now, usd, ...(model ? { model } : {}) }], now)
   const merged = mergeSpend(Array.isArray(stored) ? (stored as PaceSpend[]) : [], mine, now)
   await $.store.set('spend', merged)
   await update($, spendA, () => merged)
 }
 
+/** A turn's tokens to the log, with the model that answered; Claude Code says no reasoning apart from the output */
+async function recordTokens($: Engine, u: { model: string; input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number } | undefined): Promise<void> {
+  if (!u) return
+  const tokens = { input: u.input_tokens ?? 0, output: u.output_tokens ?? 0, cacheRead: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0, reasoning: 0 }
+  if (!tokens.input && !tokens.output && !tokens.cacheRead && !tokens.cacheWrite) return
+  const now = await $.clock.now()
+  await logEvents($, [{ at: now, tokens, ...(u.model ? { model: u.model } : {}) }], now)
+}
+
 async function recordPrompt($: Engine): Promise<void> {
   const now = await $.clock.now()
+  const model = await modelOf($)
+  await logEvents($, [{ at: now, prompt: true, ...(model ? { model } : {}) }], now)
   await update($, promptsA, list => mergePrompts(list ?? [], [now], now))
   const stored = await $.store.get('prompts')
   const merged = mergePrompts(Array.isArray(stored) ? (stored as number[]) : [], (await read($, promptsA)) ?? [], now)
   await $.store.set('prompts', merged)
   await update($, promptsA, () => merged)
   // The model it went to, so a model's own week counts only its prompts
-  const model = await modelOf($)
   if (!model) return
   await update($, modelPromptsA, byModel => mergeModelPrompts(byModel ?? {}, { [model]: [now] }, now))
   const storedByModel = await $.store.get('modelPrompts')
@@ -1230,6 +1384,8 @@ async function timelineCommand($: Engine): Promise<string> {
 
 /** A view opened where core/api.ts routed it: Herdr, a tmux split or a window, each falling back to Claude's own pane */
 async function openAt($: Engine, a: Extract<PaceAction, { kind: 'open' }>, columns: number): Promise<string> {
+  // Activity runs bin/activity.ts in a split or a window (ADR 0025); in Herdr it is the pace mod's own split
+  if (a.view === 'activity' && a.surface !== 'herdr') return openActivity($, a.surface === 'split' ? 'split' : 'window')
   switch (a.surface) {
     case 'herdr': {
       const opened = await openHerdr($, a.view === 'pane' ? '' : a.view).catch(() => null)
@@ -1251,6 +1407,23 @@ async function openAt($: Engine, a: Extract<PaceAction, { kind: 'open' }>, colum
     }
     default: return openPane($, columns, a.note ? `${a.note}; ` : '')
   }
+}
+
+/** bin/activity.ts in a tmux split beside Claude, or a terminal window of its own; what to say */
+async function openActivity($: Engine, where: 'split' | 'window'): Promise<string> {
+  const node = await nodeOf($)
+  const home = await homeOf($)
+  if (!node || !home) return ACTIVITY_WHERE
+  const script = `${home}/.claude/pace-activity.command`
+  await $.fs.write(script, `#!/bin/sh\nprintf '\\033]0;Pace activity\\007'\nexec ${shellQuote(node)} ${shellQuote(`${$.plugin.root}/bin/activity.ts`)}\n`)
+  await $.process.run(['chmod', '755', script])
+  if (where === 'split' && (await inTmux($))) {
+    const beside = await $.env.get('TMUX_PANE')
+    const r = await $.process.run(['tmux', 'split-window', '-h', '-d', '-l', '55%', ...(beside ? ['-t', beside] : []), script])
+    if (r.exitCode === 0) return 'Activity opened in a tmux split; q there closes it'
+  }
+  const r = await $.process.run(['open', '-a', terminalApp, script])
+  return r.exitCode === 0 ? 'Activity opened in a terminal window; q closes it' : ACTIVITY_WHERE
 }
 
 /** Claude's own pace pane, saying `why` it opened there instead */
@@ -1281,6 +1454,8 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     cwd = e.cwd ?? ''
+    // A new session says its own limits afresh
+    lastLimits = ''
     surface = e.surface ?? 'terminal'
     spendId = await $.session.id().catch(() => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`)
     await $.command.register({ name: 'pace', description: 'Rate-limit pace, prompting rate and the prompt cache, charted', argumentHint: USAGE, immediate: true })
@@ -1351,6 +1526,8 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.complete', async ($, e, next) => {
+    // The turn's tokens, a subagent's too: what it spent on the account (core/log.ts)
+    try { await recordTokens($, e.usage) } catch {}
     if (e.agentId !== undefined) {
       active.delete(e.agentId)
       const r = await next(e)

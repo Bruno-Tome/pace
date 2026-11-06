@@ -4,25 +4,32 @@
 //
 //   the panel    tabs for the three views, the recommendation, and each group: a provider's quotas as pace draws
 //                them, or a repo, or an urgency, with its agents a line each; a click on an agent goes to it
-//   the dialog   `{ view: 'send' }`, opened by "Send work": the host (the recommended one first), the folder and the
-//                task; it asks once more before it starts the agent in a new tab, and never types into one running
+//   Send work    `{ view: 'send' }`: the host (the recommended one first), the folder and the task; it asks once
+//                more before it starts the agent in a new tab, and never types into one running. "Send work ⇥"
+//                opens it as a popup, which closes once the agent starts; "in a pane" as a pane that stays open,
+//                follows the fleet live and clears for the next task (adapters/herdr/send.ts)
 //
 // Reads ~/.local/state/pace/feeds/ and ~/.local/state/ql/feeds/ as they change, a timer as fallback, and Herdr's
 // agents live. The model is worked out when either changes, never in render: Herdr interrupts a call past its budget.
 
 import { View, div } from 'gpui-kit'
 import { h_flex, Input, InputState, v_flex } from 'gpui-base'
-import { agents, closeOverlay, exec, home, openOverlay, panes, props, readTextFile, run, settings, terminals, theme, watchFolder } from 'herdr'
+import { agents, closeOverlay, exec, home, openOverlay, panes, props, readTextFile, run, setShared, settings, shared, terminals, theme, watchFolder } from 'herdr'
 
 import { barOf, colsFor, colWidth, PAD, PAD_Y, styleOf, type Bar } from '../draw.ts'
+import { HerdrLog, todaysLog } from '../log.ts'
+import { claimOf } from '../open.ts'
+import { afterStart, openSendPane, SEND_PANES_KEY, sendForm, type SendHost } from '../send.ts'
 import { SEED } from './seed.ts'
 import { byProvider, byRepo, byUrgency, fleetModel, groupLines, memberLine, PROVIDER_NAME, QL_FEEDS_DIR, qlFeedOf, recommendLine, type FleetGroup, type FleetModel, type HerdrAgent, type QlSession } from '../../../core/fleet.ts'
-import { FEEDS_DIR, feedOf, type PaceFeed, type PaceProvider } from '../../../core/host.ts'
+import { FEEDS_DIR, type PaceFeed, type PaceProvider } from '../../../core/host.ts'
 import type { Line } from '../../../core/view.ts'
 
 const SIZE = 12
 const LINE = 15
 const REFRESH_MS = 30_000
+/** How long a failed watch of today's log waits before it watches again */
+const WATCH_RETRY_MS = 5_000
 
 type Tab = 'provider' | 'repo' | 'urgency'
 const TABS: { tab: Tab; label: string; groups: (m: FleetModel) => FleetGroup[] }[] = [
@@ -101,8 +108,27 @@ export default class Fleet extends View {
   drawn: Drawn[] = []
   cols = 60
   seen = ''
-  /** The dialog's state, when this copy is the "Send work" dialog */
-  send: { host: PaceProvider; folder: string; input: any; confirming: boolean } | null = null
+  /** Send work's state, when this copy is Send work: the host and folder picked (none: the form's first), the task */
+  send: { host: SendHost | null; folder: string | null; input: any; confirming: boolean; started: string } | null = null
+  /** The feeds and the log, read on as they grow */
+  log = new HerdrLog()
+  /** A reload running, and one asked for meanwhile */
+  loading = false
+  again = false
+  /** ql's feeds as last read, and what the model was last worked out from */
+  qlText = ''
+  qlVersion = 0
+  workedKey = ''
+  ids = new WeakMap<object, number>()
+  nextId = 1
+
+  idOf(o: object): number {
+    let n = this.ids.get(o)
+    if (n == null) this.ids.set(o, (n = this.nextId++))
+    return n
+  }
+  /** The pane this copy of Send work claimed in the registry; null in a popup, or until it could tell which */
+  pane: string | null = null
 
   init(_props: unknown, cx: any): void {
     if (SEED) {
@@ -113,11 +139,12 @@ export default class Fleet extends View {
     }
     const p = props() ?? {}
     if (p.view === 'send') {
-      this.send = { host: p.host === 'codex' ? 'codex' : 'claude', folder: String(p.folders?.[0] ?? home()), input: InputState.new({ value: '' }), confirming: false }
-      this.send.input.on('change', (_e: any, cx: any) => cx.notify())
+      this.send = { host: null, folder: null, input: InputState.new({ value: '' }), confirming: false, started: '' }
+      this.send.input.on('change', (_e: any, cx: any) => { if (this.send) this.send.started = ''; cx.notify() })
       this.send.input.focus()
       cx.timer.after(600, () => this.send?.input.focus())
-      return
+      // A popup keeps what it was opened with; a pane follows the fleet, as the panel does
+      if (p.overlay) return
     }
     this.reload(cx)
     cx.timer.every(REFRESH_MS, (cx: any) => this.reload(cx))
@@ -134,32 +161,87 @@ export default class Fleet extends View {
         }
       })
     }
+    // Today's log too: a slim feed may not change when a prompt or a reading is logged. The folder is worked out again
+    // after each change, so a new day's is watched once it begins
+    cx.spawn(async (cx: any) => {
+      for (;;) {
+        const dir = todaysLog(home(), Date.now())
+        try {
+          await exec('mkdir', ['-p', dir]).catch(() => null)
+          await watchFolder(dir)
+          this.reload(cx)
+        } catch {
+          await cx.sleep(WATCH_RETRY_MS)
+        }
+      }
+    })
   }
 
   /** Rereads both feed folders, a file mid-write keeping what was last read from it, and works the model out again */
   reload(cx: any): void {
+    // A burst of changes (a line logged, then the feed written) is read once: a reload asked for while one runs runs
+    // once after it
+    if (this.loading) {
+      this.again = true
+      return
+    }
+    this.loading = true
     cx.spawn(async (cx: any) => {
-      const [paceFiles, qlFiles] = await Promise.all([readAll(paceDir()), readAll(qlDir())])
-      const pace = new Map(this.pace.map(f => [`${f.host}-${f.session}`, f]))
-      for (const { text } of paceFiles) {
-        const f = feedOf(text)
-        if (f) pace.set(`${f.host}-${f.session}`, f)
+      try {
+        do {
+          this.again = false
+          const qlFiles = await readAll(qlDir())
+          const ql = new Map(this.ql.map(f => [`${f.host}-${f.session}`, f]))
+          const qlText = qlFiles.map(f => f.text).join('\n')
+          if (qlText !== this.qlText) {
+            this.qlText = qlText
+            this.qlVersion++
+            for (const { text } of qlFiles) {
+              const f = qlFeedOf(parsed(text))
+              if (f) ql.set(`${f.host}-${f.session}`, f)
+            }
+            this.ql = [...ql.values()]
+          }
+          // Feeds are written slim: their quotas' history is in the log, worked out only where it changed (core/log.ts)
+          this.pace = await this.log.feedsWithHistory(home(), Date.now())
+          this.work(Date.now(), herdrAgents())
+          // Claiming the pane is a nicety: it never stands between the feeds and their drawing
+          try {
+            this.claim()
+          } catch {}
+          cx.notify()
+        } while (this.again)
+      } finally {
+        this.loading = false
       }
-      const ql = new Map(this.ql.map(f => [`${f.host}-${f.session}`, f]))
-      for (const { text } of qlFiles) {
-        const f = qlFeedOf(parsed(text))
-        if (f) ql.set(`${f.host}-${f.session}`, f)
-      }
-      this.pace = [...pace.values()]
-      this.ql = [...ql.values()]
-      this.work(Date.now(), herdrAgents())
-      cx.notify()
     })
+  }
+
+  /** Records this Send work pane, once it can tell which fleet pane is its own, so "in a pane" focuses it */
+  claim(): void {
+    if (this.pane || !this.send) return
+    const fleetPanes = panes().filter((p: { mod?: string }) => p.mod === 'fleet').map((p: { pane: string }) => p.pane)
+    const known = (shared(SEND_PANES_KEY) ?? {}) as Record<string, string>
+    const registry = claimOf(known, fleetPanes, 'send')
+    if (!registry) return
+    this.pane = fleetPanes.find((p: string) => !(p in known)) ?? null
+    setShared(SEND_PANES_KEY, registry)
+  }
+
+  /** Its pane gone, this copy leaves the registry */
+  async close(_cx: any): Promise<void> {
+    if (!this.pane) return
+    const { [this.pane]: _gone, ...rest } = (shared(SEND_PANES_KEY) ?? {}) as Record<string, string>
+    setShared(SEND_PANES_KEY, rest)
   }
 
   /** The model and what each group draws, from the feeds read and Herdr's agents now */
   work(now: number, live: readonly HerdrAgent[]): void {
     this.seen = signature(live)
+    // Nothing the fleet shows changed (the same feeds, agents, tab, width and minute): nothing is worked out again
+    const key = `${this.tab}|${this.cols}|${Math.floor(now / 60_000)}|${this.seen}|q${this.qlVersion}|${this.pace.map(f => this.idOf(f)).join()}`
+    if (key === this.workedKey) return
+    this.workedKey = key
     this.model = fleetModel({ pace: this.pace, ql: this.ql, agents: live, now })
     const groups = TABS.find(t => t.tab === this.tab)!.groups(this.model)
     this.drawn = groups.map((g, i) => {
@@ -169,10 +251,16 @@ export default class Fleet extends View {
     })
   }
 
-  /** Opens the "Send work" dialog: the recommended host first, the folders the agents work in to pick from */
+  /** Opens Send work as a popup: the recommended host first, the folders the agents work in to pick from */
   openSend(): void {
-    const folders = [...new Set(this.model.agents.map(a => a.cwd).filter(Boolean))]
-    openOverlay({ mod: 'fleet', kind: 'dialog', width: 560, height: 380, props: { view: 'send', host: this.model.recommended?.provider ?? 'claude', folders } })
+    const { folders, recommended } = sendForm({}, this.model, home())
+    openOverlay({ mod: 'fleet', kind: 'dialog', width: 560, height: 380, props: { view: 'send', host: recommended, folders } })
+  }
+
+  /** Shows Send work as a pane that stays open: the one already open focused, else a new one beside */
+  openSendPane(): void {
+    const [command, args] = openSendPane(shared(SEND_PANES_KEY), panes().map((p: { pane: string }) => p.pane))
+    run(command, args)
   }
 
   panel(t: Record<string, string>): any[] {
@@ -181,6 +269,7 @@ export default class Fleet extends View {
         ...TABS.map(({ tab, label }) => button(`tab-${tab}`, label, t, () => { this.tab = tab; this.work(Date.now(), herdrAgents()) }, tab === this.tab)),
         div().flex_1(),
         button('send', 'Send work ⇥', t, () => this.openSend()),
+        button('send-pane', 'in a pane', t, () => this.openSendPane()),
       ]),
       lineOf(recommendLine(this.model), t, 'recommend'),
       ...this.drawn.flatMap(g => [
@@ -193,39 +282,49 @@ export default class Fleet extends View {
     ]
   }
 
-  /** The dialog: host, folder, task; Start asks once more, Confirm starts the agent in a new tab */
+  /**
+   * Send work: host, folder, task; Start asks once more, Confirm starts the agent in a new tab. A popup then closes;
+   * a pane clears for the next task, and until a host or folder is picked follows the fleet's
+   */
   dialog(t: Record<string, string>): any {
     const s = this.send!
     const p = props() ?? {}
-    const folders: string[] = p.folders?.length ? p.folders : [home()]
+    const form = sendForm(p, this.model, home())
+    const host = s.host ?? form.recommended
+    const folder = s.folder && form.folders.includes(s.folder) ? s.folder : form.folders[0]!
     const short = (f: string) => f.replace(home(), '~')
     const task = String(s.input.value() ?? '').trim()
     const label = (text: string) => div().pt(12).pb(5).text_size(11.5).text_color(t.dim).child(text)
     const pick = (key: string, text: string, on: boolean, act: () => void) => button(key, text, t, act, on)
     const start = () => {
-      closeOverlay(p.overlay)
-      run('tab.new', { name: task.slice(0, 32), folder: s.folder, argv: ARGV[s.host], task })
+      run('tab.new', { name: task.slice(0, 32), folder, argv: ARGV[host], task })
+      if (afterStart(form.where) === 'close') return closeOverlay(p.overlay)
+      Object.assign(s, { host: null, folder: null, confirming: false, started: `Started ${ARGV[host].join(' ')} in ${short(folder)}` })
+      s.input.set_value('')
+      s.input.focus()
     }
-    return v_flex().id('send').size_full().p(18).bg(t.popover).text_color(t.foreground).text_size(12.5)
-      .child(h_flex().items_center().child(div().flex_1().text_size(15).font_semibold().child('Send work')).child(div().text_size(11).text_color(t.dim).child('Esc')))
+    const clear = () => form.where === 'overlay' ? closeOverlay(p.overlay) : (s.input.set_value(''), Object.assign(s, { host: null, folder: null, confirming: false }))
+    const note = s.confirming ? `Start ${ARGV[host].join(' ')} in ${short(folder)} with this task?` : s.started
+    return v_flex().id('send').size_full().p(18).bg(form.where === 'overlay' ? t.popover : t.surface).text_color(t.foreground).text_size(12.5)
+      .child(h_flex().items_center().child(div().flex_1().text_size(15).font_semibold().child('Send work')).child(div().text_size(11).text_color(t.dim).child(form.where === 'overlay' ? 'Esc' : '')))
       .child(label('Host'))
       .child(h_flex().gap(4).children((['claude', 'codex'] as const).map(h =>
-        pick(`host-${h}`, `${PROVIDER_NAME[h]}${h === p.host ? ' · recommended' : ''}`, s.host === h, () => { s.host = h; s.confirming = false }))))
+        pick(`host-${h}`, `${PROVIDER_NAME[h]}${h === form.recommended ? ' · recommended' : ''}`, host === h, () => { s.host = h; s.confirming = false }))))
       .child(label('Folder'))
-      .child(h_flex().flex_wrap().gap(4).children(folders.map((f, i) => pick(`folder-${i}`, short(f), s.folder === f, () => { s.folder = f; s.confirming = false }))))
+      .child(h_flex().flex_wrap().gap(4).children(form.folders.map((f, i) => pick(`folder-${i}`, short(f), folder === f, () => { s.folder = f; s.confirming = false }))))
       .child(label('Task'))
       .child(Input.new(s.input).h(36).px(10).rounded(8).border_1().border_color(t.input).bg(t.background))
-      .child(div().pt(10).text_color(t.dim).child(s.confirming ? `Start ${ARGV[s.host].join(' ')} in ${short(s.folder)} with this task?` : ''))
+      .child(div().pt(10).text_color(t.dim).child(note))
       .child(h_flex().pt(10).gap(8).justify_end().children(s.confirming
         ? [pick('back', 'Back', false, () => { s.confirming = false }), pick('confirm', 'Confirm', true, start)]
-        : [pick('cancel', 'Cancel', false, () => closeOverlay(p.overlay)), pick('start', 'Start…', !!task, () => { if (task) s.confirming = true })]))
+        : [pick('cancel', form.where === 'overlay' ? 'Cancel' : 'Clear', false, clear), pick('start', 'Start…', !!task, () => { if (task) s.confirming = true })]))
   }
 
   render(cx: any): any {
     const t = theme()
-    if (this.send) return this.dialog(t)
     const live = herdrAgents()
     if (signature(live) !== this.seen) cx.spawn(async (cx: any) => { this.work(Date.now(), herdrAgents()); cx.notify() })
+    if (this.send) return this.dialog(t)
     return v_flex().id('root').size_full().bg(t.surface).px(PAD).py(PAD_Y).text_size(SIZE).line_height(`${LINE}px`).text_color(t.foreground)
       .font_family(String(settings().font_family ?? 'JetBrains Mono'))
       .overflow_y_scrollbar()

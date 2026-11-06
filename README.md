@@ -327,9 +327,12 @@ The snapshot is as of `snap.at`: pace refreshes it after every reply, reading an
 ## Codex, pi and Herdr
 
 pace's core is host-agnostic. Each host session writes a **feed**,
-`~/.local/state/pace/feeds/<host>-<session>.json`: its readings, prompts, spend and context, where it runs, and
-under Herdr the terminal it runs in (`HC_TERMINAL_ID`). Every Claude Code session writes one. A feed not written for
-6 hours counts as a session gone.
+`~/.local/state/pace/feeds/<host>-<session>.json`: its context, cache and auto mode, where it runs, and under Herdr
+the terminal it runs in (`HC_TERMINAL_ID`). Every Claude Code session writes one. A feed not written for 6 hours counts
+as a session gone. The history (readings, prompts, spend) goes to an append-only **log**,
+`~/.local/state/pace/log/<day>/<host>-<session>.jsonl`, a line an event, each event in one file once; every reader
+puts a quota's history together from it. Each finished day is folded once into a checkpoint
+(`log/<day>/checkpoint.json`), kept for good; a day's raw lines are deleted once it is nine days old.
 
 **Codex CLI.** Codex has no prompt area or pane for a plugin to draw in, so pace reads it from the outside: a hook
 reads the session's rollout as Codex writes it (`rate_limits.primary` is the 5-hour window, `secondary` the week;
@@ -440,6 +443,19 @@ to it. Two buttons open more of pace as Herdr panes:
 - `charts ⇥` beside a harness: its `/pace` pane, its charts, rates and suggestions, fed by every
   live session of that harness together. A harness has no one prompt cache, so its pane leaves the cache out.
 
+**Activity.** `/pace activity` opens what was spent over all of history, as `/pace split` opens the charts: in Herdr
+a split beside the session, else a tmux split, else a terminal window; `node bin/activity.ts` runs it in any
+terminal. Chips choose what it shows, a click each (in a terminal, the arrows and enter or space too, q quits):
+
+- **Metric:** tokens (in, out, cache read and cache write together), input, output, cache read, cache write,
+  reasoning, dollars, prompts or replies.
+- **Range:** the last day (an hour a bar), week or month (a day a bar), year (a month a bar), or all of history.
+- **By:** provider, account, harness, repo or model: each in its colour, stacked, the busiest first.
+- **Filters:** a row for each of those, with the values seen; pick any number, All clears them.
+
+Under the bars, each group's total and share, and every metric's total for what is shown. Claude Code, Codex, pi
+and Hermes report a reply's tokens; an ACP agent and Antigravity show their dollars and prompts only.
+
 **The fleet across hosts.** The same install builds a second mod, `fleet`, into `~/.config/herdr-app/mods/fleet/`
 (docked right; open it with `herdr-app do mod.open --name fleet`). It joins every agent Herdr runs, by its terminal,
 to pace's feeds (quotas and context) and ql's (`~/.local/state/ql/feeds/`: repo, how long it has held its state, files
@@ -454,7 +470,10 @@ Above them, the recommendation: the live provider with the most room, ties to th
 and why in a line (`Send work to Codex: 62% of the week left, 0 agents working`). A provider whose newest reading is
 older than the 5-hour window is marked stale and never recommended. **Send work ⇥** opens a dialog with the
 recommended host picked: choose the host and folder, write the task, and Start asks once more before it opens a new
-tab running `claude` or `codex --no-daemon` with the task. It never types into an agent already running.
+tab running `claude` or `codex --no-daemon` with the task. It never types into an agent already running. **in a pane**,
+beside it, opens Send work as a pane that stays open, ready for the next task: it follows the fleet live (the host
+recommended now, the folders the agents work in now), and once an agent starts it clears instead of closing. A
+second click focuses the one already open.
 
 ## Where the numbers come from
 
@@ -474,8 +493,8 @@ pace has no telemetry. Its only requests are the usage-endpoint call (the one `/
 Files it writes in `~/.claude`: `pace-row.txt` (status-line row), and for each session `pace-state-<session>.json`
 and `pace-keys-<session>.json` (the window's feed and keys), `pace-view-<session>.command` (the window's launcher)
 and `pace-plan-<session>.json` (the plan sidebar's feed). Auto mode asks Claude to keep
-`.pace/handoff.md` in your project. In `~/.local/state/pace/`: `feeds/<host>-<session>.json` (each session's feed)
-and, for Codex, `codex/<session>.json` (how far into its rollout the hook has read); for pi, `pi/<provider>.json`
+`.pace/handoff.md` in your project. In `~/.local/state/pace/`: `feeds/<host>-<session>.json` (each session's feed),
+`log/<day>/<host>-<session>.jsonl` (each session's history, a line an event) and, for Codex, `codex/<session>.json` (how far into its rollout the hook has read); for pi, `pi/<provider>.json`
 (what a window holds, as learned).
 
 ## How it is built
@@ -503,6 +522,10 @@ core/view.ts           every drawing as lines of styled segments: band, status l
    └─ bin/band.ts      the band or the fleet, live, in any terminal
 core/host.ts           the feed every host writes, and the fleet: providers side by side
 core/fleet.ts          the fleet across hosts: Herdr's agents joined to pace's and ql's feeds, three views, a pick
+core/log.ts            the history as an append-only log, a file a day a session, checkpoints kept for good
+core/activity.ts       activity: the log as hourly rows, a question asked of them, the chips that ask it
+core/dims.ts           what views slice by (provider, account, harness, repo, model) and how each is named
+core/chips.ts          chips: rows of choices to click, shared by the views that filter
 core/auto.ts           auto mode and on pace mode, as decisions
 core/plan.ts           the plan's checklist as steps: done, under way, next
 core/alerts.ts         the once-per-window warnings

@@ -7,7 +7,8 @@
 
 import type { PaceReading, PaceSample } from '../../types'
 import type { PaceContext, PaceFeed } from '../../core/host.ts'
-import { meter } from '../../core/meter.ts'
+import { meter, type Metered } from '../../core/meter.ts'
+import type { Tokens } from '../../core/log.ts'
 import { readingOf } from '../../core/quota.ts'
 import { commandOf, paceArgsOf } from '../../core/command.ts'
 
@@ -21,7 +22,31 @@ export type HookEvent = 'SessionStart' | 'UserPromptSubmit' | 'PostToolUse' | 'S
 export type HookInput = { event: HookEvent; session: string; transcript: string | null; cwd: string; prompt?: string; answer?: string }
 
 /** What a stretch of rollout says: its readings, and the context as of its last reply (null when it has none) */
-export type RolloutRead = { samples: PaceSample[]; context: PaceContext | null }
+export type RolloutRead = { samples: PaceSample[]; context: PaceContext | null; usage: { at: number; tokens: Tokens; model?: string }[]; last: RolloutLast }
+/** Where a read of the rollout ended: the running token totals and the model, for the next read to go on from */
+export type RolloutLast = { total: Totals | null; model?: string }
+type Totals = { input: number; cached: number; cacheWrite: number; output: number; reasoning: number }
+
+const n = (v: unknown) => (isNumber(v) && v >= 0 ? v : 0)
+
+function totalsOf(info: unknown): Totals | null {
+  if (!isObject(info) || !isObject(info.total_token_usage)) return null
+  const u = info.total_token_usage
+  return { input: n(u.input_tokens), cached: n(u.cached_input_tokens), cacheWrite: n(u.cache_write_input_tokens), output: n(u.output_tokens), reasoning: n(u.reasoning_output_tokens) }
+}
+
+/**
+ * A reply's tokens: what the running totals grew by. Codex counts the cached input in the input and the reasoning
+ * in the output; pace keeps the cache apart. Null when they did not grow (a count that only updates the limits)
+ */
+function grewBy(before: Totals | null, after: Totals): Tokens | null {
+  const b = before ?? { input: 0, cached: 0, cacheWrite: 0, output: 0, reasoning: 0 }
+  const d = { input: after.input - b.input, cached: after.cached - b.cached, cacheWrite: after.cacheWrite - b.cacheWrite, output: after.output - b.output, reasoning: after.reasoning - b.reasoning }
+  // A total that went down started over (a new session's rollout): count it from nothing
+  if (Object.values(d).some(x => x < 0)) return grewBy(null, after)
+  if (!d.input && !d.output && !d.cacheWrite) return null
+  return { input: Math.max(0, d.input - d.cached), output: d.output, cacheRead: d.cached, cacheWrite: d.cacheWrite, reasoning: d.reasoning }
+}
 
 const EVENTS: readonly HookEvent[] = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop', 'Interrupt']
 
@@ -62,20 +87,29 @@ function contextOf(info: unknown): PaceContext | null {
   return isNumber(tokens) && isNumber(window) && window > 0 ? { tokens, window } : null
 }
 
-/** The readings and the last context in a stretch of rollout lines */
-export function rolloutOf(text: string): RolloutRead {
+/** The readings, the last context and each reply's tokens in a stretch of rollout lines, read on from `last` */
+export function rolloutOf(text: string, last: RolloutLast = { total: null }): RolloutRead {
   const samples: PaceSample[] = []
+  const usage: RolloutRead['usage'] = []
   let context: PaceContext | null = null
+  let { total, model } = last
   for (const line of text.split('\n')) {
     const o = parse(line)
+    if (isObject(o) && o.type === 'turn_context' && isObject(o.payload) && typeof o.payload.model === 'string') model = o.payload.model
     if (!isObject(o) || o.type !== 'event_msg' || !isObject(o.payload) || o.payload.type !== 'token_count') continue
     const at = typeof o.timestamp === 'string' ? Date.parse(o.timestamp) : NaN
     if (!Number.isFinite(at)) continue
     const sample = sampleOf(at, o.payload.rate_limits)
     if (sample) samples.push(sample)
     context = contextOf(o.payload.info) ?? context
+    const now = totalsOf(o.payload.info)
+    if (now) {
+      const tokens = grewBy(total, now)
+      if (tokens) usage.push({ at, tokens, ...(model ? { model } : {}) })
+      total = now
+    }
   }
-  return { samples, context }
+  return { samples, context, usage, last: { total, ...(model ? { model } : {}) } }
 }
 
 /** A hook's stdin as Codex sends it; null when it is not a hook input pace runs on */
@@ -96,12 +130,17 @@ export function hookInputOf(text: string): HookInput | null {
  * other live sessions on Codex's quota (`siblings`, any harness). Codex reports no cache and no dollars
  */
 export function nextFeed(prev: PaceFeed | null, input: HookInput, read: RolloutRead, now: number, terminal?: string, siblings: readonly PaceFeed[] = [], account?: string): PaceFeed {
-  return meter(prev, {
+  return meter(prev, codexMetered(input, read, now, terminal, account), siblings, { cache: false, estimate: false })
+}
+
+/** What a hook metered: a prompt submitted, and what the rollout added */
+export function codexMetered(input: HookInput, read: RolloutRead, now: number, terminal?: string, account?: string): Metered {
+  return {
     host: 'codex', provider: 'codex', ...(account ? { account } : {}), session: input.session, cwd: input.cwd, now,
     ...(terminal ? { terminal } : {}),
     prompted: input.event === 'UserPromptSubmit' && reachesModel(input.prompt ?? ''),
     samples: read.samples, context: read.context,
-  }, siblings, { cache: false, estimate: false })
+  }
 }
 
 /** Whether a prompt goes on to the model: any but a /pace that pace answers itself; auto mode's start and resume go on */

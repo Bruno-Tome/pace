@@ -9,7 +9,7 @@
 // dropped, and the next event tries again.
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -18,18 +18,20 @@ import { alertsOf } from '../../core/alerts.ts'
 import { continuePrompt, decide, protocol, resumed, runsOut, startPrompt, upkeep } from '../../core/auto.ts'
 import { commandOf, DEFAULT_PLAN, USAGE } from '../../core/command.ts'
 import { learn, type Capacities } from '../../core/estimate.ts'
-import { FEED_STALE, FEEDS_DIR, feedFile, feedOf, fleetOf, type PaceFeed, type PaceProvider } from '../../core/host.ts'
+import { FEED_STALE, feedFile, fleetOf, type PaceFeed, type PaceProvider } from '../../core/host.ts'
+import { eventsOf, type Tokens } from '../../core/log.ts'
 import { snapshotOf } from '../../core/model.ts'
 import { stepsOf } from '../../core/plan.ts'
 import { bandLines, fleetLines, lineText, paneLayout, paneLines, planLines, toAnsi, type Line } from '../../core/view.ts'
 import { openInHerdr } from '../codex/open.ts'
-import { HOST_PREFS, route, stepOf, warmStep, type Host, type HostPrefs, type PaceAction } from '../../core/api.ts'
+import { HOST_PREFS, route, stepOf, warmStep, type Host, type HostPrefs, type PaceAction, liveOf } from '../../core/api.ts'
 import { PI_THINKING, thinkingFor } from './commands.ts'
 import { ladderFor, type Ladder } from '../../core/gears.ts'
 import { coldAt, headroomOf, shiftGears, startGears } from '../../core/throttle.ts'
 import { emailOfJwt, soleAccount } from '../../core/account.ts'
 import { accountFor } from '../account.ts'
-import { isLimit, nextFeed, providerOf } from './feed.ts'
+import { appendLog, pruneLog, readFeeds, sessionFeeds, writeFeed } from '../log.ts'
+import { isLimit, nextFeed, piMetered, providerOf } from './feed.ts'
 
 /** What the extension uses of pi's extension context */
 type Ctx = {
@@ -63,7 +65,7 @@ type Pi = {
 }
 
 /** What an event adds to the feed */
-type Happened = { prompted?: boolean; spent?: number; limit?: boolean; cached?: number }
+type Happened = { prompted?: boolean; spent?: number; limit?: boolean; cached?: number; tokens?: Tokens }
 
 const KEY = 'pace'
 /** How often the band is drawn again while pi is idle, for the clocks and the other sessions' feeds */
@@ -121,20 +123,8 @@ function prefsIn(path: string): HostPrefs {
   return { band: flag('band'), line: flag('line'), onPace: flag('onPace'), warm }
 }
 
-/** Every live feed but the session's own */
-function othersIn(dir: string, own: string, now: number): PaceFeed[] {
-  if (!existsSync(dir)) return []
-  return readdirSync(dir)
-    .filter(name => name.endsWith('.json') && name !== own)
-    .flatMap(name => {
-      try {
-        const feed = feedOf(readFileSync(join(dir, name), 'utf8'))
-        return feed && feed.at >= now - FEED_STALE ? [feed] : []
-      } catch {
-        return []
-      }
-    })
-}
+/** Every live feed, each with its quota's history */
+const liveIn = (home: string, now: number): PaceFeed[] => readFeeds(home, now).filter(f => f.at >= now - FEED_STALE)
 
 /** The account pi is signed in with on `provider`: its token's email, where the token carries one (ChatGPT's does not) */
 function piAccount(home: string, provider: PaceProvider, piProvider: string | undefined): string | undefined {
@@ -188,12 +178,14 @@ export default function pace(pi: Pi): void {
     const now = Date.now()
     const session = ctx.sessionManager.getSessionId()
     const path = join(home, feedFile('pi', session))
-    const before = prev?.session === session ? prev : existsSync(path) ? feedOf(readFileSync(path, 'utf8')) : null
-    const others = othersIn(join(home, FEEDS_DIR), path.split('/').pop()!, now)
+    const feeds = sessionFeeds(home, now, f => f.host === 'pi' && f.session === session)
+    const before = prev?.session === session ? prev : feeds.own
+    const others = feeds.others
     const account = piAccount(home, provider, ctx.model?.provider) ?? soleAccount(others, provider)
     const event = {
       session, provider, ...(account ? { account } : {}), cwd: ctx.cwd, now, prompted: happened.prompted ?? false, spent: happened.spent ?? 0,
       ...(happened.cached ? { cached: happened.cached } : {}),
+      ...(happened.tokens ? { tokens: happened.tokens, ...(ctx.model?.id ? { model: ctx.model.id } : {}) } : {}),
       context: ctx.getContextUsage() ?? null,
       ...(process.env.HC_TERMINAL_ID ? { terminal: process.env.HC_TERMINAL_ID } : {}),
     }
@@ -204,7 +196,10 @@ export default function pace(pi: Pi): void {
     const changed = JSON.stringify(learned) !== JSON.stringify(known)
     if (changed) writeAtomically(capPath, JSON.stringify(learned))
     const feed = changed ? nextFeed(before, event, others, learned) : seen
-    writeAtomically(path, JSON.stringify(feed))
+    // The events after the feed is worked out from the log, so none is counted twice
+    appendLog(home, 'pi', { provider, ...(account ? { account } : {}), session, host: 'pi', cwd: ctx.cwd }, eventsOf(piMetered(event)), now)
+    writeFeed(path, feed)
+    pruneLog(home, now)
     prev = feed
     draw(ctx, feed, now)
     announce(ctx, feed, now)
@@ -289,10 +284,10 @@ export default function pace(pi: Pi): void {
         if (action.note) say(action.note)
         if (action.surface === 'split') {
           const feed = prev ? join(home, feedFile('pi', prev.session)) : ''
-          const flag = action.view === 'pane' ? '--pane ' : action.view === 'fleet' ? '--fleet ' : ''
-          const command = action.view === 'plan'
+          const run = action.view === 'plan' ? null : liveOf(action.view, feed)
+          const command = !run
             ? `node '${join(ROOT, 'bin/plan-viewer.ts')}' '${planFeed(home, ctx.cwd, action.files ?? [])}'`
-            : `node '${join(ROOT, 'bin/band.ts')}' ${flag}'${feed}'`
+            : ['node', join(ROOT, run.bin), ...run.args].map(p => (p === 'node' ? p : `'${p}'`)).join(' ')
           try {
             execFileSync('tmux', ['split-window', '-h', '-d', '-l', '64', command], { stdio: 'ignore', timeout: 5000 })
             return say(`Pace ${action.view === 'plan' ? 'plan timeline' : 'view'} opened in a tmux split; q there closes it`)
@@ -302,7 +297,7 @@ export default function pace(pi: Pi): void {
         }
         safely(ctx)
         const now = Date.now()
-        if (action.view === 'fleet') overlay(ctx, width => fleetLines(fleetOf(othersIn(join(home, FEEDS_DIR), '', now), now), now, width))
+        if (action.view === 'fleet') overlay(ctx, width => fleetLines(fleetOf(liveIn(home, now), now), now, width))
         else if (action.view === 'plan') overlay(ctx, width => plansOf(action.files ?? []).flatMap((plan, i) => [
           ...(i ? [[] as Line] : []),
           ...planLines(stepsOf(planText(ctx.cwd, plan), false), { plan, auto: prev?.snapshot.auto?.plan === plan ? prev.snapshot.auto : null, cols: width, now: Date.now() }),
@@ -342,7 +337,7 @@ export default function pace(pi: Pi): void {
     if (!prev) return
     const { auto: _, ...rest } = prev.snapshot
     prev = { ...prev, snapshot: auto ? { ...rest, auto } : rest }
-    writeAtomically(join(homedir(), feedFile('pi', prev.session)), JSON.stringify(prev))
+    writeFeed(join(homedir(), feedFile('pi', prev.session)), prev)
     draw(ctx, prev, Date.now())
   }
 
@@ -476,9 +471,12 @@ export default function pace(pi: Pi): void {
     const n = (x: unknown) => (Number.isFinite(Number(x)) ? Number(x) : 0)
     // The prompt's tokens, when the reply read or wrote the cache: what the cache holds now
     const touched = n(m.usage?.cacheRead) + n(m.usage?.cacheWrite)
+    // The reply's tokens as pi reports them; its output counts the reasoning, which pi does not say apart
+    const tokens = { input: n(m.usage?.input), output: n(m.usage?.output), cacheRead: n(m.usage?.cacheRead), cacheWrite: n(m.usage?.cacheWrite), reasoning: 0 }
     safely(ctx, {
       spent: Number.isFinite(usd) && usd > 0 ? usd : 0, limit: m.stopReason === 'error' && isLimit(m.errorMessage),
       ...(touched > 0 ? { cached: n(m.usage?.input) + touched } : {}),
+      ...(tokens.input || tokens.output || tokens.cacheRead || tokens.cacheWrite ? { tokens } : {}),
     })
   })
   pi.on('model_select', (_e, ctx) => safely(ctx))

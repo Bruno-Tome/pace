@@ -21,10 +21,14 @@ import { h_flex, v_flex } from 'gpui-base'
 import { agents, exec, home, panes, props, readTextFile, run, setShared, settings, shared, terminals, theme, watchFolder } from 'herdr'
 
 import { ageOf, barOf, colsFor, colWidth, openAgents, PAD, PAD_Y, rowsFor, statusOf, styleOf, viewOf, type Bar } from './draw.ts'
+import { HerdrLog, todaysLog } from './log.ts'
 import { claimOf, PANES_KEY, viewKey, type HerdrView } from './open.ts'
 import { SEED } from './seed.ts'
-import { agentOf, FEED_STALE, FEEDS_DIR, feedFor, feedOf, fleetOf, PROVIDER_NAME, type FleetAgent, type FleetRow, type PaceFeed, type PaceProvider } from '../../core/host.ts'
-import { agentLine, bandLines, fittedLayout, NO_FLEET, paneLines, providerLines, type Line } from '../../core/view.ts'
+import { agentOf, FEED_STALE, FEEDS_DIR, feedFor, fleetOf, PROVIDER_NAME, type FleetAgent, type FleetRow, type PaceFeed, type PaceProvider } from '../../core/host.ts'
+import { activityLines, agentLine, bandLines, fittedLayout, NO_FLEET, paneLines, providerLines, type Line } from '../../core/view.ts'
+import { activityChips, activityQuery, DEFAULT_QUERY, pressed, type ActivityQuery, type ActivityRow } from '../../core/activity.ts'
+import type { Accounts } from '../../core/account.ts'
+import type { ChipRow } from '../../core/chips.ts'
 
 /** Text size, and a row's height: tight, as a terminal's, so a chart's braille rows meet; px */
 const SIZE = 12
@@ -79,6 +83,16 @@ function openPane(view: HerdrView, terminal?: string): void {
 }
 
 
+/** The accounts registry's text (adapters/account.ts) as accounts by provider; none when it does not parse */
+function accountsOf(text: string): Accounts {
+  try {
+    const v = JSON.parse(text) as unknown
+    return typeof v === 'object' && v != null && !Array.isArray(v) ? (v as Accounts) : {}
+  } catch {
+    return {}
+  }
+}
+
 /** A failure to draw, said where the drawing would be */
 const notDrawn = (error: unknown): Line[] => [[{ t: `not drawn: ${String(error)}`, color: 'error' }]]
 
@@ -91,6 +105,21 @@ export default class Pace extends View {
   drawnAt = 0
   /** The pane this copy claimed in the registry of pace panes; null until it could tell which is its own */
   pane: string | null = null
+  /** The feeds and the log, read on as they grow */
+  log = new HerdrLog()
+  /** Activity's rows, its question, its chips, and the accounts that name them (core/activity.ts) */
+  activity: ActivityRow[] = []
+  query: ActivityQuery = DEFAULT_QUERY
+  chips: ChipRow[] = []
+  accounts: Accounts = {}
+  accountsAt = 0
+  /** A reload running, and one asked for meanwhile */
+  loading = false
+  again = false
+  /** What the view was last drawn from (`inputsOf`) */
+  drawnKey = ''
+  ids = new WeakMap<object, number>()
+  nextId = 1
   /** What render shows: the view's lines, worked out by `draw` */
   lines: Line[] = []
   /** The panel's harnesses: each one's quotas as drawn, and the agents on it */
@@ -99,7 +128,7 @@ export default class Pace extends View {
   init(_props: unknown, cx: any): void {
     if (SEED) {
       // A check's build: one step on the seed's feeds, at once, and no files
-      Object.assign(this, { view: SEED.view, cols: SEED.cols, rows: SEED.rows, feeds: [...SEED.feeds] })
+      Object.assign(this, { view: SEED.view, cols: SEED.cols, rows: SEED.rows, feeds: [...SEED.feeds], activity: SEED.activity ?? [], query: SEED.query ?? DEFAULT_QUERY })
       const step = this.steps(Date.now())[SEED.step]
       if (!step) throw new Error(`pace load check: no step ${SEED.step} in this view`)
       step()
@@ -120,22 +149,53 @@ export default class Pace extends View {
         }
       }
     })
+    // Today's log too: a slim feed may not change when a prompt or a reading is logged. The folder is worked out again
+    // after each change, so a new day's is watched once it begins
+    cx.spawn(async (cx: any) => {
+      for (;;) {
+        const dir = todaysLog(home(), Date.now())
+        try {
+          await exec('mkdir', ['-p', dir]).catch(() => null)
+          await watchFolder(dir)
+          this.reload(cx)
+        } catch {
+          await cx.sleep(WATCH_RETRY_MS)
+        }
+      }
+    })
   }
 
   /** Reads every feed that parses, a file mid-write or malformed keeping the feed last read from it, and draws them */
   reload(cx: any): void {
+    // A burst of changes (a line logged, then the feed written) is read once: a reload asked for while one runs runs
+    // once after it
+    if (this.loading) {
+      this.again = true
+      return
+    }
+    this.loading = true
     cx.spawn(async (cx: any) => {
-      const listed = await exec('ls', [feedsDir()]).catch(() => null)
-      const names = (listed?.code === 0 ? listed.stdout.split('\n') : []).filter((n: string) => n.endsWith('.json'))
-      const read = await Promise.all(names.map(async (name: string) => feedOf((await readTextFile(`${feedsDir()}/${name}`).catch(() => null)) ?? '')))
-      const kept = new Map(this.feeds.map(f => [`${f.host}-${f.session}`, f]))
-      for (const f of read) if (f) kept.set(`${f.host}-${f.session}`, f)
-      this.feeds = [...kept.values()]
-      // Claiming the pane is a nicety: it never stands between the feeds and their drawing
       try {
-        this.claim()
-      } catch {}
-      await this.draw(cx)
+        do {
+          this.again = false
+          // Activity reads the whole log, the other views the feeds; each only what changed (core/log.ts, core/activity.ts)
+          if (this.view.view === 'activity') {
+            this.activity = (await this.log.activity(home(), Date.now())).rows()
+            // The accounts change when a sign-in is new: read again at most once a minute
+            if (Date.now() - this.accountsAt > 60_000) {
+              this.accounts = accountsOf(await readTextFile(`${home()}/.local/state/pace/accounts.json`).catch(() => ''))
+              this.accountsAt = Date.now()
+            }
+          } else this.feeds = await this.log.feedsWithHistory(home(), Date.now())
+          // Claiming the pane is a nicety: it never stands between the feeds and their drawing
+          try {
+            this.claim()
+          } catch {}
+          await this.draw(cx)
+        } while (this.again)
+      } finally {
+        this.loading = false
+      }
     })
   }
 
@@ -161,12 +221,31 @@ export default class Pace extends View {
   /** Works out what the view shows, a step a call, Herdr drawing what is done after each; a step that fails says so */
   async draw(cx: any): Promise<void> {
     const now = Date.now()
+    // Nothing the view shows changed (the same feeds, size and minute): nothing is worked out again
+    const key = this.inputsOf(now)
+    if (key === this.drawnKey) return
+    this.drawnKey = key
     for (const step of this.steps(now)) {
       step()
       cx.notify()
       await cx.sleep(0)
     }
     this.drawnAt = now
+  }
+
+  /** What the view is drawn from: its feeds (the same objects while they are the same), its size, the minute */
+  inputsOf(now: number): string {
+    const live = this.feeds.filter(f => f.at >= now - FEED_STALE)
+    const v = this.view
+    if (v.view === 'activity') return `${Math.floor(now / 60_000)}|${this.cols}x${this.rows}|${this.idOf(this.activity)}|${JSON.stringify(this.query)}`
+    const on = v.view === 'pane' ? live.filter(f => f.provider === v.provider) : v.view === 'band' ? live.filter(f => f.terminal === v.terminal) : live
+    return `${Math.floor(now / 60_000)}|${this.cols}x${this.rows}|${on.map(f => this.idOf(f)).join()}`
+  }
+
+  idOf(o: object): number {
+    let n = this.ids.get(o)
+    if (n == null) this.ids.set(o, (n = this.nextId++))
+    return n
   }
 
   /**
@@ -194,6 +273,15 @@ export default class Pace extends View {
       }, toLines)]
     }
     if (v.view === 'pane') return [guard(() => { this.lines = this.chartLines(fleetOf(live, now), v.provider, now, v.account) }, toLines)]
+    if (v.view === 'activity') {
+      return [guard(() => {
+        const accounts = this.accounts
+        this.chips = activityChips(this.activity, this.query, { accounts })
+        const result = activityQuery(this.activity, this.query, now, { zone: -new Date(now).getTimezoneOffset() * 60_000, accounts })
+        // The chips take a row each, roughly; the chart the rest
+        this.lines = activityLines(result, { cols: this.cols, rows: this.rows - this.chips.length - 1 })
+      }, toLines)]
+    }
     return [
       guard(() => {
         const fleet = fleetOf(live, now)
@@ -252,9 +340,27 @@ export default class Pace extends View {
     ]
   }
 
-  render(_cx: any): any {
+  /** Activity's chips, a row each: its title, then its chips to click; a click asks the next question */
+  chipRows(t: Record<string, string>): any[] {
+    return this.chips.map(r => h_flex().id(`chips-${r.group}`).flex_wrap().items_center().gap(2).pb(2).children([
+      div().w(colWidth(SIZE) * 9).text_color(t.muted).child(r.title),
+      ...r.chips.map(c => div().id(`chip-${r.group}-${c.value}`).px(6).rounded(4).cursor_pointer()
+        .text_color(c.on ? t.foreground : t.muted).when(c.on, (el: any) => el.bg(t.hover).font_semibold())
+        .hover((s: any) => s.bg(t.hover)).child(c.label)
+        // The click's own context: the chips light at once, the chart follows in a call of its own
+        .on_click((_e: any, cx: any) => {
+          this.query = pressed(this.query, c)
+          this.chips = activityChips(this.activity, this.query, { accounts: this.accounts })
+          cx.notify()
+          cx.spawn((cx: any) => this.draw(cx))
+        })),
+    ]))
+  }
+
+  render(cx: any): any {
     const t = theme()
-    const body = this.view.view === 'panel' ? this.panel(t) : this.lines.map((l, i) => lineOf(l, t, `line-${i}`))
+    const lines = this.lines.map((l, i) => lineOf(l, t, `line-${i}`))
+    const body = this.view.view === 'panel' ? this.panel(t) : this.view.view === 'activity' ? [...this.chipRows(t), div().h(LINE / 2), ...lines] : lines
     return v_flex().id('root').size_full().bg(t.surface).px(PAD).py(PAD_Y).text_size(SIZE).line_height(`${LINE}px`).text_color(t.foreground)
       .font_family(String(settings().font_family ?? 'JetBrains Mono'))
       .overflow_y_scrollbar()

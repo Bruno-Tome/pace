@@ -5,7 +5,7 @@ import type { PaceProvider } from '../../core/host.ts'
 
 /** A view of the pace mod, as the props of its pane: a harness's charts, one agent's band, or the fleet panel */
 /** A pace pane in Herdr: a quota's charts (its provider, and its account when known), an agent's band, the fleet */
-export type HerdrView = { view: 'pane'; provider: PaceProvider; account?: string } | { view: 'band'; terminal: string } | { view: 'panel' }
+export type HerdrView = { view: 'pane'; provider: PaceProvider; account?: string } | { view: 'band'; terminal: string } | { view: 'panel' } | { view: 'activity' }
 
 /**
  * What /pace opens in Herdr, by its argument: the harness's charts for `/pace`, `split`, `pane` and `window`, the band
@@ -16,6 +16,7 @@ export function paceViewOf(arg: string, provider: PaceProvider, terminal: string
   if (arg === '' || arg === 'split' || arg === 'pane' || arg === 'window') return { view: 'pane', provider, ...(account ? { account } : {}) }
   if (arg === 'band') return { view: 'band', terminal }
   if (arg === 'fleet') return { view: 'panel' }
+  if (arg === 'activity') return { view: 'activity' }
   return null
 }
 
@@ -43,7 +44,7 @@ export const PANES_KEY = 'pace.panes'
 export function viewKey(view: HerdrView): string {
   if (view.view === 'pane') return `pane:${view.provider}${view.account ? `:${view.account}` : ''}`
   if (view.view === 'band') return `band:${view.terminal}`
-  return 'panel'
+  return view.view
 }
 
 /** The registry as stored, what of it parses */

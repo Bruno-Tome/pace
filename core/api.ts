@@ -46,7 +46,7 @@ export type Host = {
 }
 
 /** A view pace draws: the charts, the band, the fleet, the plan's timeline */
-export type PaceView = 'pane' | 'band' | 'fleet' | 'plan'
+export type PaceView = 'pane' | 'band' | 'fleet' | 'plan' | 'activity'
 
 /** A host's preferences for pace, by surface and mode */
 export type HostPrefs = { band: boolean; line: boolean; onPace: boolean; warm: PaceWarmMode }
@@ -85,6 +85,19 @@ function open(view: PaceView, surface: Surface | null, h: Host, extra: { files?:
   return { kind: 'open', view, surface, ...extra }
 }
 
+/**
+ * What draws a view live in a terminal (a tmux split, a window), relative to pace's root: activity is
+ * bin/activity.ts, reading the log; the charts, the band and the fleet are bin/band.ts on the session's feed
+ */
+export function liveOf(view: Exclude<PaceView, 'plan'>, feed: string): { bin: string; args: string[] } {
+  if (view === 'activity') return { bin: 'bin/activity.ts', args: [] }
+  if (view === 'fleet') return { bin: 'bin/band.ts', args: ['--fleet'] }
+  return { bin: 'bin/band.ts', args: view === 'band' ? [feed] : ['--pane', feed] }
+}
+
+/** Where activity opens, for a host that cannot open it itself */
+export const ACTIVITY_WHERE = 'Activity opens in a split: in Herdr or tmux, or run `node bin/activity.ts` in a terminal'
+
 /** A view outside Herdr: on the surface the command asks for, else the host's own choice, saying why */
 function outside(w: ViewWhere, h: Host): PaceAction {
   switch (w) {
@@ -98,6 +111,11 @@ function outside(w: ViewWhere, h: Host): PaceAction {
       if (has(h, 'band')) return { kind: 'say', text: `The band is above the ${h.input}; /pace hide hides it, and in Herdr /pace band opens it under the session` }
       return open('band', pick(h, ['split', 'window', 'overlay', 'answer']), h)
     case 'fleet': return open('fleet', pick(h, ['pane', 'overlay', 'split', 'answer', 'window'], true), h)
+    // Activity's chart wants room: a split or a window, as /pace split, never a pane (ADR 0025)
+    case 'activity': {
+      const where = pick(h, ['split', 'window', 'answer'])
+      return where ? open('activity', where, h) : { kind: 'say', text: ACTIVITY_WHERE }
+    }
   }
 }
 
@@ -105,7 +123,7 @@ function outside(w: ViewWhere, h: Host): PaceAction {
 function viewAt(w: ViewWhere, h: Host): PaceAction {
   const own = outside(w, h)
   if (!has(h, 'herdr')) return own
-  const view: PaceView = w === 'band' || w === 'fleet' ? w : 'pane'
+  const view: PaceView = w === 'band' || w === 'fleet' || w === 'activity' ? w : 'pane'
   return { kind: 'open', view, surface: 'herdr', fallback: own }
 }
 
@@ -210,6 +228,8 @@ export type ViewInput = { feed: PaceFeed; others: readonly PaceFeed[]; plans: re
 /** A view's lines, for any surface: a host renders them as it can (core/view.ts's segments) */
 export function viewLines(view: PaceView, i: ViewInput): Line[] {
   const { feed, now, cols } = i
+  // Activity reads the whole log, not the feeds: an answer says where it opens
+  if (view === 'activity') return [[{ t: ACTIVITY_WHERE, dim: true }]]
   if (view === 'fleet') return fleetLines(fleetOf([feed, ...i.others], now), now, cols)
   if (view === 'band') return [agentLine(agentOf(feed), now), ...bandLines(feed.snapshot, now, cols)]
   if (view === 'plan') {

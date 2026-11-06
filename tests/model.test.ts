@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { PaceSample } from '../types'
-import { rateOf, rowsOf, type Snapshot } from '../core/model.ts'
+import { rateNow, rateOf, rowsOf, type Snapshot } from '../core/model.ts'
 import { addSpend } from '../core/spend.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
@@ -154,5 +154,52 @@ describe('a quota moved by what pace sees no prompt for', () => {
     const flat = [week(NOW - 3 * H, 73), week(NOW - H, 73), week(NOW - 5 * MIN, 73)]
     const fable: Snapshot = { samples: flat, prompts, cache: null, modelPrompts: { [FABLE]: prompts } }
     expect(rateOf(fable, rowsOf(flat, NOW).find(r => r.key === 'seven_day_fable')!, NOW).level).toBe('idle')
+  })
+})
+
+describe('the rate, smoothed over the last 30 seconds', () => {
+  const reset = NOW + 2 * H
+  const five = (at: number, percent: number) => ({ at, quotas: { five_hour: { percent, resetsAt: reset } } })
+  const row = (s: Snapshot, now: number) => rowsOf(s.samples, now).find(r => r.key === 'five_hour')!
+  // A steady climb, a point every 3 minutes, a prompt each minute: about 20 points an hour
+  const steady = Array.from({ length: 6 }, (_, i) => five(NOW - (15 - 3 * i) * MIN, 30 + i))
+  const prompts = Array.from({ length: 15 }, (_, i) => NOW - i * MIN)
+  const at = (s: Snapshot, now: number) => rateOf(s, row(s, now), now)
+
+  test('a reading that jumps the quota moves the projection toward it over 30 seconds, not all at once', () => {
+    // Five points at once, just now
+    const s: Snapshot = { samples: [...steady, five(NOW, 40)], prompts, cache: null }
+    const before = at({ ...s, samples: steady }, NOW).pctAtReset!
+    const now = at(s, NOW).pctAtReset!
+    // Right after it, the smoothed projection is on its way: past the old one, short of the moment's own
+    expect(now > before && now < rateNow(s, row(s, NOW), NOW).pctAtReset!).toBe(true)
+    // 30 seconds on, every moment it averages holds the jump: it has caught up, within what the moment's own rate
+    // moved over those 30 seconds (its slope slides on)
+    const later = NOW + 30_000
+    expect(Math.abs(at(s, later).pctAtReset! - rateNow(s, row(s, later), later).pctAtReset!) < 2).toBe(true)
+    expect(at(s, later).pctAtReset! > rateNow(s, row(s, NOW), NOW).pctAtReset!).toBe(true)
+  })
+
+  test('takes in only what was known at each moment of the 30 seconds', () => {
+    // The same history, asked before the jump: what came after it is not seen
+    const s: Snapshot = { samples: [...steady, five(NOW, 40)], prompts, cache: null }
+    expect(at(s, NOW - 1000).pctAtReset).toBe(at({ ...s, samples: steady }, NOW - 1000).pctAtReset)
+  })
+
+  test('with nothing new in the last 30 seconds, the smoothed rate is the moment\'s: there is nothing to smooth', () => {
+    const s: Snapshot = { samples: steady, prompts: prompts.filter(t => t < NOW - MIN), cache: null }
+    const quiet = NOW + 40_000
+    expect(at(s, quiet).pctAtReset).toBe(rateNow(s, row(s, quiet), quiet).pctAtReset)
+  })
+
+  test('a steady climb reads the same smoothed as not', () => {
+    const s: Snapshot = { samples: steady, prompts, cache: null }
+    const r = at(s, NOW)
+    expect(Math.abs(r.pctPerHour! - 20) < 1).toBe(true)
+  })
+
+  test("the level stays as reactive as it was: it is the moment's", () => {
+    const s: Snapshot = { samples: [...steady, five(NOW, 40)], prompts, cache: null }
+    expect(at(s, NOW).level).toBe(rateNow(s, row(s, NOW), NOW).level)
   })
 })

@@ -17,10 +17,12 @@ import { accountFor, accountForIdentity } from '../adapters/account.ts'
 import { continuePrompt, decide, protocol, resumed, startPrompt } from '../core/auto.ts'
 import { commandOf } from '../core/command.ts'
 import { feedFile, type PaceFeed, type PaceProvider } from '../core/host.ts'
+import { eventsOf } from '../core/log.ts'
 import { meter, type Metered } from '../core/meter.ts'
 import { snapshotOf } from '../core/model.ts'
 import { cacheTtlOf, hermesHost, quotaOf, readingsOf, type HermesWindow } from '../adapters/hermes/events.ts'
-import { liveFeeds, openView, writeAtomically } from '../adapters/views.ts'
+import { appendLog, pruneLog, readFeeds, writeFeed } from '../adapters/log.ts'
+import { liveFeeds, openView } from '../adapters/views.ts'
 
 type Mode = 'session' | 'bot'
 /** A Hermes session: where it runs, the quota it spends now, and its feed on each quota it has spent, so a move between Claude and ChatGPT keeps both */
@@ -57,7 +59,7 @@ const where = () => ({ herdr: !!process.env.HC_TERMINAL_ID, tmux: !!process.env.
 /** A session's feed on a quota: one file per session and quota, so a move between Claude and ChatGPT keeps both */
 const fileOf = (session: string, q: PaceProvider) => feedFile('hermes', `${session}-${q}`)
 /** The live feeds but this session's (core/meter.ts leaves its own out by host and session) */
-const othersOf = (session: string) => liveFeeds(home, '', Date.now()).filter(f => !(f.host === 'hermes' && f.session === session))
+const othersOf = (session: string) => liveFeeds(home, Date.now(), f => f.host === 'hermes' && f.session === session)
 
 const sessionOf = (id: string): Session => {
   const known = sessions.get(id)
@@ -77,12 +79,19 @@ function record(id: string, e: Partial<Metered> = {}): PaceFeed | null {
   const account = accounts.get(s.provider) ?? soleAccount(others, s.provider)
   const prompted = s.prompted > 0 || !!e.prompted
   s.prompted = 0
-  const feed = meter(s.feeds.get(s.provider) ?? (s.feed?.provider === s.provider ? s.feed : null), {
+  const metered: Metered = {
     host: 'hermes', provider: s.provider, ...(account ? { account } : {}), session: id, cwd: s.cwd, now,
     ...(process.env.HC_TERMINAL_ID ? { terminal: process.env.HC_TERMINAL_ID } : {}),
     ...e, prompted, samples: reading ? [reading] : [],
-  }, others, { cache: true, estimate: false })
-  writeAtomically(join(home, fileOf(id, s.provider)), JSON.stringify(feed))
+  }
+  // A bridge started again carries on from the session's own history on this quota
+  const prev = s.feeds.get(s.provider) ?? (s.feed?.provider === s.provider ? s.feed : null)
+    ?? readFeeds(home, now).find(f => f.host === 'hermes' && f.session === id && f.provider === s.provider) ?? null
+  const feed = meter(prev, metered, others, { cache: true, estimate: false })
+  // The events after the feed is worked out from the log, so none is counted twice
+  appendLog(home, 'hermes', { provider: s.provider, ...(account ? { account } : {}), session: id, host: 'hermes', ...(s.cwd ? { cwd: s.cwd } : {}) }, eventsOf(metered), now)
+  writeFeed(join(home, fileOf(id, s.provider)), feed)
+  pruneLog(home, now)
   s.feed = feed
   s.feeds.set(s.provider, feed)
   return feed
@@ -94,7 +103,7 @@ function setAuto(id: string, auto: PaceFeed['snapshot']['auto'] | null): void {
   const { auto: _, ...rest } = s.feed.snapshot
   s.feed = { ...s.feed, snapshot: auto ? { ...rest, auto } : rest }
   s.feeds.set(s.feed.provider, s.feed)
-  writeAtomically(join(home, fileOf(id, s.feed.provider)), JSON.stringify(s.feed))
+  writeFeed(join(home, fileOf(id, s.feed.provider)), s.feed)
 }
 
 /** A prompt for the plugin to send into the session, or the bot's chat */
@@ -183,17 +192,21 @@ createInterface({ input: process.stdin }).on('line', line => {
         const s = sessionOf(id)
         // A background call (compression, titling, Mixture of Agents) or a subagent's: its quota's figures refreshed,
         // the session's own context and cache left as they are
+        const u = p.usage ?? {}
+        const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
+        // Every call's tokens spend the account, a background one's and a subagent's too (core/log.ts)
+        const tokens = { input: n(u.input_tokens), output: n(u.output_tokens), cacheRead: n(u.cache_read_tokens), cacheWrite: n(u.cache_write_tokens), reasoning: n(u.reasoning_tokens) }
+        const spent = tokens.input || tokens.output || tokens.cacheRead || tokens.cacheWrite ? { tokens, ...(p.model ? { model: String(p.model) } : {}) } : {}
         if (p.aux || p.sub) {
           if (!s.provider) s.provider = q
-          if (s.provider === q) record(id)
+          if (s.provider === q) record(id, spent)
           break
         }
         s.provider = q
-        const u = p.usage ?? {}
-        const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
         const held = n(u.input_tokens) + n(u.cache_read_tokens) + n(u.cache_write_tokens)
         const window = n(p.context_length)
         record(id, {
+          ...spent,
           ...(n(u.cache_read_tokens) + n(u.cache_write_tokens) > 0 ? { cached: { tokens: held, ttl: cacheTtlOf(q) } } : {}),
           ...(window > 0 ? { context: { tokens: held, window } } : {}),
         })

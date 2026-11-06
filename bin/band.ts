@@ -10,11 +10,12 @@
 // Reads the feeds in ~/.local/state/pace/feeds/, redraws when they change, every second for the clocks, and on
 // resize. q or Ctrl-C quits.
 
-import { existsSync, readdirSync, readFileSync, watch } from 'node:fs'
+import { existsSync, readFileSync, watch } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import { agentOf, FEEDS_DIR, feedFor, feedOf, fleetOf, type PaceFeed } from '../core/host.ts'
+import { readFeeds, withHistory } from '../adapters/log.ts'
 import { agentLine, bandLines, fleetLines, paneLayout, paneLines, toAnsi, type Line } from '../core/view.ts'
 
 const args = process.argv.slice(2)
@@ -25,21 +26,19 @@ const terminal = args.includes('--terminal') ? args[args.indexOf('--terminal') +
 const file = args.find((a, i) => !a.startsWith('--') && args[i - 1] !== '--terminal')
 const dir = join(homedir(), FEEDS_DIR)
 
-/** Every feed that parses: one file's alone when given one */
-function feeds(): PaceFeed[] {
-  const paths = file ? [file] : existsSync(dir) ? readdirSync(dir).filter(n => n.endsWith('.json')).map(n => join(dir, n)) : []
-  return paths.flatMap(path => {
-    try {
-      const feed = feedOf(readFileSync(path, 'utf8'))
-      return feed ? [feed] : []
-    } catch {
-      return []
-    }
-  })
+/** Every feed that parses, each with its quota's history from the log: one file's alone when given one */
+function feeds(now: number): PaceFeed[] {
+  if (!file) return readFeeds(homedir(), now)
+  try {
+    const feed = feedOf(readFileSync(file, 'utf8'))
+    return feed ? [withHistory(homedir(), feed, now)] : []
+  } catch {
+    return []
+  }
 }
 
 function frame(now: number, cols: number): Line[] {
-  const all = feeds()
+  const all = feeds(now)
   if (fleet) return fleetLines(fleetOf(all, now), now, cols)
   // A file given is drawn however old it is: it was asked for by name
   const feed = file ? (all[0] ?? null) : feedFor(all, now, terminal)

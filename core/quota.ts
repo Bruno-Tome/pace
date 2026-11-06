@@ -282,9 +282,27 @@ function repeats(a: PaceSample, b: PaceSample): boolean {
 
 /** A reading added to the history, unless it repeats the last one of the same quotas */
 export function appendSample(list: readonly PaceSample[], s: PaceSample): PaceSample[] {
-  const last = [...list].reverse().find(x => sameQuotas(x, s))
-  if (last && repeats(last, s)) return [...list]
-  return [...list, s].sort((a, b) => a.at - b.at).slice(-KEEP)
+  const fresh = withoutStale([...list].sort((a, b) => a.at - b.at), s)
+  if (!fresh) return [...list]
+  const last = [...list].reverse().find(x => sameQuotas(x, fresh))
+  if (last && repeats(last, fresh)) return [...list]
+  return [...list, fresh].sort((a, b) => a.at - b.at).slice(-KEEP)
+}
+
+/**
+ * A reading with its stale quotas left out, against the readings before it: within one window (the same reset, to 90
+ * seconds) a quota's use never goes down, so one lower than the highest seen is old, a session still holding what its
+ * last reply said. An estimate may go back as a capacity is learned. Null when nothing of it is left
+ */
+function withoutStale(before: readonly PaceSample[], s: PaceSample): PaceSample | null {
+  const quotas = Object.fromEntries(Object.entries(s.quotas).filter(([k, r]) => {
+    if (r.estimated || r.resetsAt == null) return true
+    return !before.some(b => {
+      const x = b.quotas[k]
+      return b.at <= s.at && x && !x.estimated && x.resetsAt != null && Math.abs(x.resetsAt - r.resetsAt!) <= 90_000 && x.percent > r.percent
+    })
+  }))
+  return Object.keys(quotas).length ? { at: s.at, quotas } : null
 }
 
 /** A stored reading in the shape pace writes, its malformed quotas left out; null when nothing of it is */
@@ -308,7 +326,20 @@ export function mergeSamples(a: readonly PaceSample[], b: readonly PaceSample[])
   const out: PaceSample[] = []
   // The last reading kept of each set of quotas, by its keys: a repeat is judged against that one
   const lastOf = new Map<string, PaceSample>()
-  for (const s of [...byAt.values()].sort((x, y) => x.at - y.at)) {
+  // The highest use seen of each quota in its window: a reading below it is stale (see `withoutStale`)
+  const highest = new Map<string, { resetsAt: number; percent: number }>()
+  for (const read of [...byAt.values()].sort((x, y) => x.at - y.at)) {
+    const quotas = Object.fromEntries(Object.entries(read.quotas).filter(([k, r]) => {
+      if (r.estimated || r.resetsAt == null) return true
+      const h = highest.get(k)
+      if (h && Math.abs(h.resetsAt - r.resetsAt) <= 90_000) {
+        if (r.percent < h.percent) return false
+        h.percent = r.percent
+      } else highest.set(k, { resetsAt: r.resetsAt, percent: r.percent })
+      return true
+    }))
+    if (!Object.keys(quotas).length) continue
+    const s = { at: read.at, quotas }
     const set = Object.keys(s.quotas).sort().join()
     const last = lastOf.get(set)
     if (last && repeats(last, s)) continue

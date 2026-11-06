@@ -1,1 +1,1 @@
-Read [.agents/README.md](.agents/README.md) before changing anything: the guardrails (test first, red before green), the architecture rules and the definition of done.
+Read [.agents/README.md](.agents/README.md) before changing anything: the guardrails (test first, red before green), the architecture rules and the definition of done. [.agents/playbook.md](.agents/playbook.md) is the order of work; the `changing-pace` skill brings it in.

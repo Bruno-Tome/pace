@@ -9,10 +9,10 @@ export const DEFAULT_PLAN = 'ROADMAP.md'
 export const AUTO_TURNS = 40
 export const ULTRA_TURNS = 80
 
-export const USAGE = 'split | pane | window | band | fleet | refresh | timeline | close | on | off | auto [plan] [turns] | auto off | auto resume | auto burst [off] | ultra [plan] [turns] [floor..ceiling] | ultra off | ultra resume | ultra preview | plan [file] [file] | hide | show | line on | line off | warm compact | warm ping | warm off'
+export const USAGE = 'split | pane | window | band | fleet | activity | refresh | timeline | close | on | off | auto [plan] [turns] | auto off | auto resume | auto burst [off] | ultra [plan] [turns] [floor..ceiling] | ultra off | ultra resume | ultra preview | plan [file] [file] | hide | show | line on | line off | warm compact | warm ping | warm off'
 
 /** Where a view opens: '' for the host's own choice */
-export type ViewWhere = '' | 'split' | 'pane' | 'window' | 'band' | 'fleet'
+export type ViewWhere = '' | 'split' | 'pane' | 'window' | 'band' | 'fleet' | 'activity'
 
 /** What `/pace` asks for */
 export type PaceCommand =
@@ -29,7 +29,7 @@ export type PaceCommand =
   | { kind: 'burst'; on: boolean }
   | { kind: 'error'; text: string }
 
-const VIEWS: readonly ViewWhere[] = ['', 'split', 'pane', 'window', 'band', 'fleet']
+const VIEWS: readonly ViewWhere[] = ['', 'split', 'pane', 'window', 'band', 'fleet', 'activity']
 const WARM: readonly PaceWarmMode[] = ['off', 'ping', 'compact']
 
 /** The most turns a run may be given: a count past it is not one a person means, and Infinity would never stop */

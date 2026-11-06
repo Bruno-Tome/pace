@@ -16,19 +16,19 @@
 // `ANTIGRAVITY_CSRF_TOKEN` set, `agy` takes that one, and its hooks inherit it (.agents/decisions/0020-antigravity-cli.md).
 
 import { execFileSync } from 'node:child_process'
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
 import type { PaceSample } from '../../types'
-import { plainText, route, viewLines, type Host, type PaceAction, type PaceView } from '../../core/api.ts'
+import { plainText, route, viewLines, type Host, type PaceAction, type PaceView, liveOf } from '../../core/api.ts'
 import { commandOf } from '../../core/command.ts'
 import { FEED_STALE, FEEDS_DIR, feedOf, type PaceFeed } from '../../core/host.ts'
 import { openInHerdr } from '../codex/open.ts'
-import { bandArgs } from './commands.ts'
 import { feedOfHistory, historyOf, hookInputOf, nextHistory, paceArgOf, type History } from './feed.ts'
 import { readingNow } from './server.ts'
 import { accountFor } from '../account.ts'
+import { readFeeds } from '../log.ts'
 
 /** Where Antigravity's conversations keep their history, its lock, and the script a terminal window runs, relative to the home directory */
 const STATE_DIR = '.local/state/pace/antigravity'
@@ -93,11 +93,11 @@ function agyHost(): Host {
   return { name: 'Antigravity', input: 'prompt', surfaces, drives: [], cache: false }
 }
 
-/** Opens bin/band.ts in a Terminal window of its own: whether it did */
-function openWindow(home: string, view: PaceView, feed: string): boolean {
+/** Opens a view live (core/api.ts's liveOf) in a Terminal window of its own: whether it did */
+function openWindow(home: string, view: Exclude<PaceView, 'plan'>, feed: string): boolean {
   const script = join(home, VIEW_SCRIPT)
-  const band = join(import.meta.dirname, '../../bin/band.ts')
-  writeAtomically(script, ['#!/bin/sh', "printf '\\033]0;Pace\\007'", `exec ${[process.execPath, band, ...bandArgs(view, feed)].map(shellQuote).join(' ')}`, ''].join('\n'))
+  const run = liveOf(view, feed)
+  writeAtomically(script, ['#!/bin/sh', "printf '\\033]0;Pace\\007'", `exec ${[process.execPath, join(import.meta.dirname, '../..', run.bin), ...run.args].map(shellQuote).join(' ')}`, ''].join('\n'))
   chmodSync(script, 0o755)
   try {
     execFileSync('open', ['-a', 'Terminal', script], { stdio: 'ignore', timeout: 5000 })
@@ -107,19 +107,8 @@ function openWindow(home: string, view: PaceView, feed: string): boolean {
   }
 }
 
-/** The live feeds, for the fleet */
-function feedsIn(home: string, now: number): PaceFeed[] {
-  const dir = join(home, FEEDS_DIR)
-  if (!existsSync(dir)) return []
-  return readdirSync(dir).filter(n => n.endsWith('.json')).flatMap(n => {
-    try {
-      const f = feedOf(readFileSync(join(dir, n), 'utf8'))
-      return f && f.at >= now - FEED_STALE ? [f] : []
-    } catch {
-      return []
-    }
-  })
-}
+/** The live feeds, each with its quota's history, for the fleet */
+const feedsIn = (home: string, now: number): PaceFeed[] => readFeeds(home, now).filter(f => f.at >= now - FEED_STALE)
 
 /** Carries out `/pace`'s action for the conversation whose feed is at `path`; what to say back */
 function carryOut(home: string, a: PaceAction, path: string): string {
@@ -131,7 +120,7 @@ function carryOut(home: string, a: PaceAction, path: string): string {
     if (r.opened || !a.fallback) return r.text
     return `Could not open pace in Herdr: ${carryOut(home, a.fallback, path)}`
   }
-  if (a.surface === 'window' && openWindow(home, a.view, path)) return 'Pace opened in a terminal window; q closes it'
+  if (a.surface === 'window' && a.view !== 'plan' && openWindow(home, a.view, path)) return 'Pace opened in a terminal window; q closes it'
   const now = Date.now()
   const feed = feedOf(readFileSync(path, 'utf8'))
   if (!feed) return 'pace has nothing to show yet'

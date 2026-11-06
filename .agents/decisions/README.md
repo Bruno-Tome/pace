@@ -40,3 +40,5 @@ Number a new one after the last, and never rewrite an accepted one: supersede it
 - [19. An ACP adapter: pace between any ACP client and any ACP agent](0019-acp-adapter.md)
 - [21. Ultra pace's gears, per provider](0021-ultra-gears-per-provider.md)
 - [22. The core draws for surfaces, not for harnesses](0022-surfaces-not-harnesses.md)
+- [24. History in an append-only log, feeds back to live state](0024-append-only-log.md)
+- [25. Activity: every metric over all history, in a split with chips](0025-activity.md)

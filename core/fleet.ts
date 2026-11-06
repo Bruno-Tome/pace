@@ -5,6 +5,7 @@
 // context; ql's feeds say its repo, how long it has held its state and the files it touched. A feed from outside
 // Herdr (no terminal) is an agent too. ql's feed is read here by its shape, not imported: pace and ql share no code.
 
+import { repoOf } from './dims.ts'
 import { FEED_STALE, fleetOf, type FleetRow, type PaceFeed, type PaceProvider, PROVIDER_NAME } from './host.ts'
 import { FIVE_HOURS, formatDuration } from './quota.ts'
 import { providerLines, STATUS_LOOK, type AgentStatus, type Line, type Seg } from './view.ts'
@@ -108,7 +109,6 @@ const STATUSES: readonly AgentStatus[] = ['working', 'blocked', 'done', 'idle']
 /** The host an agent's report names: Herdr's `app` */
 const hostOf = (app: string | null): string => (app === 'claude-code' || app === 'claude' ? 'claude' : app ?? 'agent')
 const providerOf = (host: string): PaceProvider | null => (host === 'claude' || host === 'codex' || host === 'antigravity' ? host : null)
-const base = (path: string) => path.replace(/\/+$/, '').split('/').pop() || path
 const stateOf = (s: string): AgentStatus => (STATUSES.includes(s as AgentStatus) ? (s as AgentStatus) : 'idle')
 const newest = <T extends { at: number }>(list: readonly T[]): T | undefined => list.reduce<T | undefined>((a, b) => (a && a.at >= b.at ? a : b), undefined)
 
@@ -119,7 +119,7 @@ function memberOf(key: string, address: string | null, host: string, a: HerdrAge
     // A feed names the quota its session spends: pi's is Codex's or Claude's, by its sign-in
     key, address, host, provider: p?.provider ?? providerOf(host), ...(p ? { session: p.session } : {}), title: a?.title ?? host,
     state: stateOf(a?.status ?? q?.state ?? ''), since: q?.since ?? null,
-    cwd, repo: q?.repo || base(cwd), branch: a?.branch ?? null, context,
+    cwd, repo: q?.repo || repoOf(cwd), branch: a?.branch ?? null, context,
     edited: q?.edited ?? 0, read: q?.read ?? 0, stale: false,
   }
 }

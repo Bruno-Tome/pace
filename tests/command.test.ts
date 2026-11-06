@@ -5,7 +5,7 @@ import { AUTO_TURNS, commandOf, DEFAULT_PLAN, paceArgsOf, ULTRA_TURNS, USAGE } f
 describe('/pace and its arguments, as a command', () => {
   test('alone or with a place, opens a view', () => {
     expect(commandOf('')).toEqual({ kind: 'view', where: '' })
-    for (const where of ['split', 'pane', 'window', 'band', 'fleet'] as const) expect(commandOf(where)).toEqual({ kind: 'view', where })
+    for (const where of ['split', 'pane', 'window', 'band', 'fleet', 'activity'] as const) expect(commandOf(where)).toEqual({ kind: 'view', where })
   })
 
   test('the plain ones: refresh, timeline, close, on pace mode, the band and the status line', () => {

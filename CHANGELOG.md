@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+- **The rate is smoothed over the last 30 seconds.** A quota's points an hour (and so "% at reset" and "out in")
+  are the average of the moment's rate every 5 seconds over the last 30, each from what was known then
+  (`rateOf`; the moment's own is `rateNow`). A whole point arriving moves the projection over 30 seconds instead of at
+  once; the level, and the warnings on it, stay the moment's. With nothing new in the last 30 seconds there is nothing
+  to smooth, and a past moment is worked out once, so a drawing costs what it did. On real data the projection moves
+  at most 2.8 points in any 5 seconds.
+- **A reading that went back is stale, and dropped.** Within one window a quota's use never goes down, so a reading
+  below the highest seen (an idle Claude Code session still holding its last reply's limits, stamped anew) is left out
+  of the history (`mergeSamples`, `appendSample`), and a session records its own limits only when they changed. Those
+  readings made "% at reset" swing by up to 232 points a minute and showed an idle session's old use; on the same
+  three hours it now moves 1.7 points a minute at the median.
+- **Activity** ([ADR 0025](.agents/decisions/0025-activity.md)): `/pace activity` opens every metric over all of
+  history in a split (Herdr, tmux or a terminal window; `node bin/activity.ts` anywhere): tokens in, out, cache read
+  and write, reasoning, dollars, prompts and replies, by day, week, month, year or all of it, broken down by provider,
+  account, harness, repo or model, filtered by chips. A reply's tokens are a log event of their own, from Claude Code
+  (`turn.complete`), Codex (its rollout's running totals), pi and Hermes; a log header names its harness and folder
+  (`h`, `c`). Checkpoints carry each day's activity and are kept for good; a day's raw lines go at nine days.
+  Shared core: `core/dims.ts` (what views slice by, the fleet's repo names too), `core/chips.ts`, and `liveOf` in
+  `core/api.ts`, the one place a view's live command is worked out for every host.
+- **Nothing worked out twice.** A finished day is folded once into a checkpoint (`log/<day>/checkpoint.json`); readers
+  keep a `History` that reads only what the log added and works out only the quotas it touched, giving back the same
+  feeds when nothing changed. Feeds are parsed again only when they change. The Herdr mods read a burst of changes
+  once and draw a view again only when what it shows changed. Measured on 2026-11-06: a reader's pass over the feeds
+  and the log went from about 75 ms each time to 0.4 ms with nothing new, 0.4 ms for a prompt on another quota and
+  5 ms for one on a busy quota.
+- **History moves to an append-only log** ([ADR 0024](.agents/decisions/0024-append-only-log.md)). Each session
+  appends the readings, prompts and costs it saw itself to `~/.local/state/pace/log/<day>/<host>-<session>.jsonl`, a
+  line an event; feeds are written slim (their `samples` and `prompts` empty, no `spend` or `modelPrompts`), and every
+  reader hydrates them from the log (`core/log.ts`). Measured on 2026-11-06: 6.4 MB of feeds held 572 KB of history,
+  each reading copied 24 times, each feed of about 200 KB written whole at every event. Feeds written before this still
+  count while they last. Eight days are kept; the day folders and feeds older than that are deleted, at most once a
+  day. Antigravity still writes its feeds from its own history file, which they carry; readers count it the same way.
+- **Spend no longer compounds across feeds.** Merging every feed's copy of the spend as one list summed the copies,
+  so each merge multiplied the spend by the number of feeds (seen at up to 1.8e308 dollars a bucket). Copies merge a
+  pair at a time (`mergeCopies`), and a bucket past $10,000 is dropped before it can win a merge.
+- The fleet's Send work opens as a pane too (**in a pane**, beside **Send work ⇥**): it stays open, follows the fleet
+  live and clears for the next task once an agent starts. The pane is recorded under Herdr's shared `fleet.panes`, so
+  a second click focuses it. The popup is as before.
 - From the review by four agents on four accounts (`.agents/review-2026-11-05.md`):
   - Metering keeps each account's readings its own. `meter` takes readings only from feeds of the session's account,
     and from none while a session that cannot tell has two accounts on its provider. Prompts and spend still pool.

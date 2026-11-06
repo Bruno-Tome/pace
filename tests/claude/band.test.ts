@@ -530,7 +530,7 @@ test('without priced replies the cost stays in tokens', async ($, on) => {
 })
 
 test('parallel sessions pace together: the rate is every session\'s dollars an hour against what the quota has left', async ($, on) => {
-  const { stored } = world(on)
+  const { stored, clock } = world(on)
   // The 5-hour window moved 10 points per half hour while another session spent $20, then $30
   stored.samples = Array.from({ length: 5 }, (_, i) => ({ at: NOW - 150 * 60_000 + i * 30 * 60_000, quotas: { five_hour: { percent: 10 + 10 * i, resetsAt: NOW + 2 * H } } }))
   stored.spend = Array.from({ length: 5 }, (_, i) => ({ t: NOW - 120 * 60_000 + i * 30 * 60_000 - 60_000, id: 'other', usd: i === 4 ? 30 : 20 }))
@@ -539,6 +539,8 @@ test('parallel sessions pace together: the rate is every session\'s dollars an h
   // This session spends $1 too
   await pricedReply($, 100_000, 0.5)
   await pricedReply($, 110_000, 1.5)
+  // The rate is smoothed over 30 seconds (core/model.ts): once they pass, it holds this session's dollar too
+  await clock.advance(30_000)
   const ui = await $.ui.mount({ plugin: 'pace', surface: 'terminal', component: 'AbovePrompt', props: BAND as any })
   const tree: any = await ui.drawn({ in: 'pace-band' })
   // About $62/h at 0.5 points a dollar: the 40 points left last 1h18m

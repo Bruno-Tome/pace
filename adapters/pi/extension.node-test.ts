@@ -7,6 +7,8 @@ import { join } from 'node:path'
 
 import { describe, expect, test } from '../../testing/node.ts'
 import { feedFile, feedOf } from '../../core/host.ts'
+import { logFile } from '../../core/log.ts'
+import { readFeeds } from '../log.ts'
 import extension from './extension.ts'
 
 type Handler = (event: unknown, ctx: unknown) => unknown
@@ -82,7 +84,8 @@ const reply = (o: { usd?: number; error?: string; cacheRead?: number; text?: str
 /** ChatGPT's answer once a subscription's usage limit is reached, as pi reports it */
 const LIMIT = 'Codex error: {"type":"usage_limit_reached","code":"subscription_sharing_usage_limit_exceeded"}'
 
-const feedIn = (dir: string) => feedOf(readFileSync(join(dir, feedFile('pi', 'p1')), 'utf8'))!
+/** The session's feed as a reader sees it: its quota's history filled in from the log */
+const feedIn = (dir: string) => readFeeds(dir, Date.now()).find(f => f.host === 'pi' && f.session === 'p1')!
 
 describe('the pi extension', () => {
   test('stands alone: writes the session\'s feed with its prompts, its spend and its context', async () => {
@@ -97,6 +100,35 @@ describe('the pi extension', () => {
     expect(feed.snapshot.prompts.length).toBe(1)
     expect(feed.snapshot.spend!.reduce((n, x) => n + x.usd, 0)).toBe(3.2)
     expect(feed.snapshot.samples).toEqual([])
+    await fire('session_shutdown', { reason: 'quit' })
+  })
+
+  test('writes its prompts and spend to the session\'s log, a line an event, and its feed slim', async () => {
+    const dir = home()
+    const { pi, fire } = fakePi()
+    extension(pi)
+    await fire('input', { text: 'fix the tests', source: 'interactive' })
+    await fire('message_end', reply({ usd: 3.2 }))
+    const disk = feedOf(readFileSync(join(dir, feedFile('pi', 'p1')), 'utf8'))!
+    expect(disk.snapshot.prompts).toEqual([])
+    expect(disk.snapshot.spend).toBe(undefined)
+    const lines = readFileSync(join(dir, logFile('pi', 'p1', Date.now())), 'utf8').trim().split('\n').map(l => JSON.parse(l))
+    // The header, the prompt, the reply's cost and its tokens
+    expect(lines.map(l => l.p ?? l.usd ?? (l.q ? 'q' : l.tk ? 'tk' : null))).toEqual(['q', 1, 3.2, 'tk'])
+    await fire('session_shutdown', { reason: 'quit' })
+  })
+
+  test('a reply\'s tokens go to the log with the model that answered, under a header naming pi and its folder', async () => {
+    const dir = home()
+    const { pi, fire } = fakePi()
+    extension(pi)
+    await fire('input', { text: 'fix the tests', source: 'interactive' })
+    await fire('message_end', reply({ usd: 0.5, cacheRead: 9_000 }))
+    const lines = readFileSync(join(dir, logFile('pi', 'p1', Date.now())), 'utf8').trim().split('\n').map(l => JSON.parse(l))
+    expect(lines[0]).toMatchObject({ h: 'pi', c: '/work/pace' })
+    const tk = lines.find(l => l.tk)
+    expect(tk.tk).toEqual([500, 0, 9_000, 0, 0])
+    expect(typeof tk.m).toBe('string')
     await fire('session_shutdown', { reason: 'quit' })
   })
 

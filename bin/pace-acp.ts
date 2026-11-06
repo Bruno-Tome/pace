@@ -19,12 +19,14 @@ import { plainText, plansFor, route, stepOf, viewLines, type Host, type PaceActi
 import { continuePrompt, decide, protocol, resumed, startPrompt } from '../core/auto.ts'
 import { commandOf } from '../core/command.ts'
 import { feedFile, HOSTS, PROVIDERS, type PaceFeed, type PaceHost, type PaceProvider } from '../core/host.ts'
-import { meter } from '../core/meter.ts'
+import { eventsOf } from '../core/log.ts'
+import { meter, type Metered } from '../core/meter.ts'
 import { snapshotOf } from '../core/model.ts'
 import { accountFor } from '../adapters/account.ts'
 import { answerPrompt, fromAgent, fromClient, PROXY_START, sendPrompt, setOption, type Rpc } from '../adapters/acp/proxy.ts'
 import { readingNow } from '../adapters/antigravity/server.ts'
-import { liveFeeds, openView, writeAtomically } from '../adapters/views.ts'
+import { appendLog, pruneLog, sessionFeeds, writeFeed } from '../adapters/log.ts'
+import { liveFeeds, openView } from '../adapters/views.ts'
 
 const ASK_EVERY_MS = 60_000
 const TEXT_COLS = 90
@@ -60,7 +62,8 @@ const toClient = (m: Rpc) => process.stdout.write(`${JSON.stringify(m)}\n`)
 const toAgent = (m: Rpc) => agent.stdin.write(`${JSON.stringify(m)}\n`)
 
 /** Every live feed but this session's */
-const othersOf = (session: string, now: number): PaceFeed[] => liveFeeds(home, feedFile(host, session).split('/').pop()!, now)
+const own = (session: string) => (f: PaceFeed) => f.host === host && f.session === session
+const othersOf = (session: string, now: number): PaceFeed[] => liveFeeds(home, now, own(session))
 
 /** Antigravity's readings, at most once a minute, from the agy pace started */
 async function readNow(now: number): Promise<PaceSample[]> {
@@ -87,12 +90,18 @@ async function recordNow(session: string, e: { prompted?: boolean; spent?: numbe
   if (!s) return null
   const now = Date.now()
   const samples = await readNow(now)
-  const feed = meter(s.feed, {
+  const metered: Metered = {
     host, provider, ...(account ? { account } : {}), session, cwd: s.cwd, now,
     ...(process.env.HC_TERMINAL_ID ? { terminal: process.env.HC_TERMINAL_ID } : {}),
     samples, ...e,
-  }, othersOf(session, now), { cache: false, estimate: !token })
-  writeAtomically(join(home, feedFile(host, session)), JSON.stringify(feed))
+  }
+  // A proxy started again carries on from the session's own history
+  const feeds = sessionFeeds(home, now, own(session))
+  const feed = meter(s.feed ?? feeds.own, metered, feeds.others, { cache: false, estimate: !token })
+  // The events after the feed is worked out from the log, so none is counted twice
+  appendLog(home, host, { provider, ...(account ? { account } : {}), session, host, ...(s.cwd ? { cwd: s.cwd } : {}) }, eventsOf(metered), now)
+  writeFeed(join(home, feedFile(host, session)), feed)
+  pruneLog(home, now)
   s.feed = feed
   return feed
 }
@@ -139,7 +148,7 @@ function setAuto(session: string, auto: PaceFeed['snapshot']['auto'] | null): vo
   if (!s?.feed) return
   const { auto: _, ...rest } = s.feed.snapshot
   s.feed = { ...s.feed, snapshot: auto ? { ...rest, auto } : rest }
-  writeAtomically(join(home, feedFile(host, session)), JSON.stringify(s.feed))
+  writeFeed(join(home, feedFile(host, session)), s.feed)
 }
 
 /** Sends a prompt of pace's own to the agent */

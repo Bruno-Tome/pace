@@ -78,7 +78,118 @@ function baselineOf(samples: readonly PaceSample[], row: Row, now: number): { at
  * has not moved. Otherwise, with no per-prompt cost yet, a quota over pace is `fast` at any rate, and with no
  * prompt in the last 15 minutes it is `idle`.
  */
+/** How far back the rate is smoothed, and how often within it: readings come a whole point at a time */
+const SMOOTH_MS = 30_000
+const SMOOTH_STEP_MS = 5_000
+
+/** What was known at `t`: the readings, prompts and spend from then or before; the same snapshot when nothing is later */
+function knownAt(s: Snapshot, t: number): Snapshot {
+  const later = s.samples.some(x => x.at > t) || s.prompts.some(x => x > t) || (s.spend ?? []).some(x => x.t > t)
+  if (!later) return s
+  return {
+    ...s,
+    samples: s.samples.filter(x => x.at <= t),
+    prompts: s.prompts.filter(x => x <= t),
+    ...(s.spend ? { spend: s.spend.filter(x => x.t <= t) } : {}),
+    ...(s.modelPrompts ? { modelPrompts: Object.fromEntries(Object.entries(s.modelPrompts).map(([m, l]) => [m, l.filter(x => x <= t)])) } : {}),
+  }
+}
+
+/**
+ * The rate against a quota, its points an hour smoothed over the last 30 seconds: the moment's rate every 5 seconds,
+ * each from what was known then, averaged. The projections (at the reset, the run-out) follow the smoothed rate, so a
+ * whole point arriving moves them over 30 seconds instead of at once; the level is the moment's, as reactive as it was
+ */
 export function rateOf(s: Snapshot, row: Row, now: number): RateVerdict {
+  // A drawing asks a quota's rate several times (the band, the advice, the alerts): worked out once a snapshot
+  const id = `${row.key}|${now}|${row.reading?.percent}|${row.reading?.resetsAt}`
+  let byRow = rated.get(s)
+  if (!byRow) rated.set(s, (byRow = new Map()))
+  const known = byRow.get(id)
+  if (known) return known
+  const r = smoothed(s, row, now)
+  byRow.set(id, r)
+  return r
+}
+
+/** Each snapshot's rates, by quota and moment */
+const rated = new WeakMap<Snapshot, Map<string, RateVerdict>>()
+
+function smoothed(s: Snapshot, row: Row, now: number): RateVerdict {
+  const known = knownAt(s, now)
+  const at = known === s ? row : rowsOf(known.samples, now).find(r => r.key === row.key) ?? row
+  const r = rateNow(known, at, now)
+  if (at.view.kind !== 'pace' || !at.reading || r.pctPerHour == null) return r
+  // Nothing new in the last 30 seconds: every moment of them knew what this one knows, so there is nothing to smooth
+  const since = now - SMOOTH_MS
+  const fresh = known.samples.some(x => x.at > since) || known.prompts.some(x => x > since) || (known.spend ?? []).some(x => x.t > since)
+  if (!fresh) return r
+  const rates = [r.pctPerHour]
+  // The moments before this one on a 5-second grid, each worked out once for what was known then (see `pastRate`)
+  for (let t = Math.floor((now - 1) / SMOOTH_STEP_MS) * SMOOTH_STEP_MS; t > now - SMOOTH_MS; t -= SMOOTH_STEP_MS) {
+    const p = pastRate(s, row.key, t)
+    if (p != null) rates.push(p)
+  }
+  const smoothed = rates.reduce((n, x) => n + x, 0) / rates.length
+  return { ...judgedOnMovement(r, at.reading, smoothed), level: r.level }
+}
+
+/** Past moments' rates, by what was known then: a moment is worked out once, however often the rate is drawn */
+const past = new Map<string, number | null>()
+const PAST_KEPT = 512
+
+/** A number folded into a running 32-bit hash, both halves of it: two snapshots alike up to a moment hash alike */
+const fold = (h: number, x: number): number => {
+  const lo = Math.imul(h ^ (x | 0), 16777619)
+  return Math.imul(lo ^ Math.floor(x / 4294967296), 16777619)
+}
+
+/** Each text's hash, worked out once: quota keys, models and sessions repeat */
+const texts = new Map<string, number>()
+const textHash = (t: string): number => {
+  let h = texts.get(t)
+  if (h == null) {
+    h = 2166136261
+    for (let i = 0; i < t.length; i++) h = Math.imul(h ^ t.charCodeAt(i), 16777619)
+    if (texts.size > 4096) texts.clear()
+    texts.set(t, h)
+  }
+  return h
+}
+
+/**
+ * A past moment's points an hour, from what was known then, worked out once: what was known is told by a hash of
+ * everything the rate reads from then or before (readings, prompts and their models, spend and its models)
+ */
+function pastRate(s: Snapshot, key: string, t: number): number | null {
+  // The quota's own readings, and the quotas there are (which models pace it); the prompts and the spend
+  let h = fold(textHash(key), t)
+  let kinds = 0
+  for (const x of s.samples) {
+    if (x.at > t) continue
+    const r = x.quotas[key]
+    h = r ? fold(fold(fold(fold(h, x.at), r.percent * 1000), r.resetsAt ?? -1), r.estimated ? 1 : 0) : fold(h, x.at)
+    kinds = Math.max(kinds, Object.keys(x.quotas).length)
+  }
+  h = fold(h, kinds)
+  for (const x of s.prompts) if (x <= t) h = fold(h, x)
+  for (const m in s.modelPrompts ?? {}) {
+    h = fold(h, textHash(m))
+    for (const x of s.modelPrompts![m]!) if (x <= t) h = fold(h, x)
+  }
+  for (const x of s.spend ?? []) if (x.t <= t) h = fold(fold(fold(h, x.t), Math.round(x.usd * 1e6)), x.m ? textHash(x.m) : x.h ? 1 : 0)
+  const id = `${key}|${t}|${h >>> 0}`
+  if (past.has(id)) return past.get(id)!
+  const then = knownAt(s, t)
+  const row = rowsOf(then.samples, t).find(x => x.key === key)
+  const rate = row ? rateNow(then, row, t).pctPerHour : null
+  if (past.size >= PAST_KEPT) past.clear()
+  past.set(id, rate)
+  return rate
+}
+
+/** The rate against a quota at this moment, from what is known: its own movement first, else its dollars or prompts */
+export function rateNow(s: Snapshot, row: Row, now: number): RateVerdict {
   const { samples } = s
   const prompts = promptsFor(s, row.key)
   if (row.view.kind !== 'pace') return rateSince(prompts, undefined, null, now)

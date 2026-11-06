@@ -8,6 +8,7 @@ import { dirname, join } from 'node:path'
 
 import { describe, expect, test } from '../testing/node.ts'
 import { feedFile, type PaceFeed } from '../core/host.ts'
+import { logFile, logText } from '../core/log.ts'
 
 const H = 3600_000
 const band = join(import.meta.dirname, 'band.ts')
@@ -33,6 +34,17 @@ const run = (dir: string, args: string[]) =>
   spawnSync(process.execPath, [band, '--once', ...args], { encoding: 'utf8', env: { PATH: process.env.PATH ?? '', HOME: dir, COLUMNS: '100' } })
 
 describe('bin/band.ts', () => {
+  test('draws a slim feed\'s history from the log, by name too', () => {
+    const now = Date.now()
+    const slim = { ...codex(now), snapshot: { ...codex(now).snapshot, samples: [] } }
+    const dir = home([slim])
+    const path = join(dir, logFile('codex', 'c1', now))
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, logText({ provider: 'codex', session: 'c1' }, [{ at: now, quotas: { five_hour: { percent: 64, resetsAt: now + 2.5 * H } } }], null).text)
+    expect(plain(run(dir, []).stdout)).toContain('64%')
+    expect(plain(run(dir, [join(dir, feedFile('codex', 'c1'))]).stdout)).toContain('64%')
+  })
+
   test('draws the newest feed\'s band under its agent\'s line', () => {
     const r = run(home([codex(Date.now())]), [])
     const out = plain(r.stdout)
