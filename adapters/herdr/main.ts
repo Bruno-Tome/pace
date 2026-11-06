@@ -18,13 +18,13 @@
 
 import { View, div } from 'gpui-kit'
 import { h_flex, v_flex } from 'gpui-base'
-import { agents, exec, home, panes, props, readTextFile, run, setShared, settings, shared, terminals, theme, watchFolder } from 'herdr'
+import { agents, exec, home, panes, props, run, setShared, settings, shared, terminals, theme, watchFolder } from 'herdr'
 
 import { ageOf, barOf, colsFor, colWidth, openAgents, PAD, PAD_Y, rowsFor, statusOf, styleOf, viewOf, type Bar } from './draw.ts'
 import { HerdrLog, todaysLog } from './log.ts'
 import { claimOf, PANES_KEY, viewKey, type HerdrView } from './open.ts'
 import { SEED } from './seed.ts'
-import { agentOf, FEED_STALE, FEEDS_DIR, feedFor, feedOf, fleetOf, PROVIDER_NAME, type FleetAgent, type FleetRow, type PaceFeed, type PaceProvider } from '../../core/host.ts'
+import { agentOf, FEED_STALE, FEEDS_DIR, feedFor, fleetOf, PROVIDER_NAME, type FleetAgent, type FleetRow, type PaceFeed, type PaceProvider } from '../../core/host.ts'
 import { agentLine, bandLines, fittedLayout, NO_FLEET, paneLines, providerLines, type Line } from '../../core/view.ts'
 
 /** Text size, and a row's height: tight, as a terminal's, so a chart's braille rows meet; px */
@@ -92,8 +92,15 @@ export default class Pace extends View {
   drawnAt = 0
   /** The pane this copy claimed in the registry of pace panes; null until it could tell which is its own */
   pane: string | null = null
-  /** The log, read on as it grows */
+  /** The feeds and the log, read on as they grow */
   log = new HerdrLog()
+  /** A reload running, and one asked for meanwhile */
+  loading = false
+  again = false
+  /** What the view was last drawn from (`inputsOf`) */
+  drawnKey = ''
+  ids = new WeakMap<object, number>()
+  nextId = 1
   /** What render shows: the view's lines, worked out by `draw` */
   lines: Line[] = []
   /** The panel's harnesses: each one's quotas as drawn, and the agents on it */
@@ -141,19 +148,28 @@ export default class Pace extends View {
 
   /** Reads every feed that parses, a file mid-write or malformed keeping the feed last read from it, and draws them */
   reload(cx: any): void {
+    // A burst of changes (a line logged, then the feed written) is read once: a reload asked for while one runs runs
+    // once after it
+    if (this.loading) {
+      this.again = true
+      return
+    }
+    this.loading = true
     cx.spawn(async (cx: any) => {
-      const listed = await exec('ls', [feedsDir()]).catch(() => null)
-      const names = (listed?.code === 0 ? listed.stdout.split('\n') : []).filter((n: string) => n.endsWith('.json'))
-      const read = await Promise.all(names.map(async (name: string) => feedOf((await readTextFile(`${feedsDir()}/${name}`).catch(() => null)) ?? '')))
-      const kept = new Map(this.feeds.map(f => [`${f.host}-${f.session}`, f]))
-      for (const f of read) if (f) kept.set(`${f.host}-${f.session}`, f)
-      // Feeds are written slim: their quotas' history is in the log (core/log.ts)
-      this.feeds = await this.log.hydrate([...kept.values()], home(), Date.now())
-      // Claiming the pane is a nicety: it never stands between the feeds and their drawing
       try {
-        this.claim()
-      } catch {}
-      await this.draw(cx)
+        do {
+          this.again = false
+          // Feeds are written slim: their quotas' history is in the log, worked out only where it changed (core/log.ts)
+          this.feeds = await this.log.feedsWithHistory(home(), Date.now())
+          // Claiming the pane is a nicety: it never stands between the feeds and their drawing
+          try {
+            this.claim()
+          } catch {}
+          await this.draw(cx)
+        } while (this.again)
+      } finally {
+        this.loading = false
+      }
     })
   }
 
@@ -179,12 +195,30 @@ export default class Pace extends View {
   /** Works out what the view shows, a step a call, Herdr drawing what is done after each; a step that fails says so */
   async draw(cx: any): Promise<void> {
     const now = Date.now()
+    // Nothing the view shows changed (the same feeds, size and minute): nothing is worked out again
+    const key = this.inputsOf(now)
+    if (key === this.drawnKey) return
+    this.drawnKey = key
     for (const step of this.steps(now)) {
       step()
       cx.notify()
       await cx.sleep(0)
     }
     this.drawnAt = now
+  }
+
+  /** What the view is drawn from: its feeds (the same objects while they are the same), its size, the minute */
+  inputsOf(now: number): string {
+    const live = this.feeds.filter(f => f.at >= now - FEED_STALE)
+    const v = this.view
+    const on = v.view === 'pane' ? live.filter(f => f.provider === v.provider) : v.view === 'band' ? live.filter(f => f.terminal === v.terminal) : live
+    return `${Math.floor(now / 60_000)}|${this.cols}x${this.rows}|${on.map(f => this.idOf(f)).join()}`
+  }
+
+  idOf(o: object): number {
+    let n = this.ids.get(o)
+    if (n == null) this.ids.set(o, (n = this.nextId++))
+    return n
   }
 
   /**

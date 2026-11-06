@@ -25,6 +25,9 @@ const FOLD_AFTER = 2 * HOUR
 /** Whether a bucket from `t` is folded into its hour by `now` */
 const folds = (t: number, now: number) => t < now - FOLD_AFTER
 
+/** A bucket's session and slot: what two copies of one bucket share */
+const keyOf = (id: string, t: number, h: boolean | undefined, m: string | undefined) => `${id}@${t}${h ? 'h' : ''}${m ? `:${m}` : ''}`
+
 /** One copy's buckets by session and slot, each slot's minutes summed */
 function fold(list: readonly Spend[], now: number): Map<string, Spend> {
   const out = new Map<string, Spend>()
@@ -34,7 +37,7 @@ function fold(list: readonly Spend[], now: number): Map<string, Spend> {
     const h = s.h || folds(s.t, now)
     const t = Math.floor(s.t / (h ? HOUR : MIN)) * (h ? HOUR : MIN)
     const m = typeof s.m === 'string' ? s.m : undefined
-    const key = `${s.id}@${t}${h ? 'h' : ''}${m ? `:${m}` : ''}`
+    const key = keyOf(s.id, t, h, m)
     out.set(key, { t, id: s.id, usd: (out.get(key)?.usd ?? 0) + s.usd, ...(h ? { h: true as const } : {}), ...(m ? { m } : {}) })
   }
   return out
@@ -56,6 +59,22 @@ export function mergeCopies(copies: readonly (readonly Spend[])[], now: number):
   // An empty copy (a slim feed's) adds nothing: skipping it saves folding the whole merge again
   const some = copies.filter(c => c.length)
   return some.length === 1 ? mergeSpend(some[0]!, [], now) : some.reduce<Spend[]>((out, copy) => mergeSpend(out, copy, now), [])
+}
+
+/**
+ * Two copies already folded (mergeSpend's output) as one, without folding them again: per session and slot the
+ * larger, every other bucket as it is
+ */
+export function unionMax(a: readonly Spend[], b: readonly Spend[]): Spend[] {
+  if (!b.length) return [...a]
+  if (!a.length) return [...b]
+  const out = new Map<string, Spend>()
+  for (const s of a) out.set(keyOf(s.id, s.t, s.h, s.m), s)
+  for (const s of b) {
+    const key = keyOf(s.id, s.t, s.h, s.m)
+    if (s.usd > (out.get(key)?.usd ?? -1)) out.set(key, s)
+  }
+  return [...out.values()].sort((x, y) => x.t - y.t || (x.id < y.id ? -1 : 1))
 }
 
 /** `usd` this session (`id`) spent at `at` on `model`, added to its bucket for that minute */

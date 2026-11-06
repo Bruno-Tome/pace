@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Nothing worked out twice.** A finished day is folded once into a checkpoint (`log/<day>/checkpoint.json`); readers
+  keep a `History` that reads only what the log added and works out only the quotas it touched, giving back the same
+  feeds when nothing changed. Feeds are parsed again only when they change. The Herdr mods read a burst of changes
+  once and draw a view again only when what it shows changed. Measured on 2026-11-06: a reader's pass over the feeds
+  and the log went from about 75 ms each time to 0.4 ms with nothing new, 0.4 ms for a prompt on another quota and
+  5 ms for one on a busy quota.
 - **History moves to an append-only log** ([ADR 0024](.agents/decisions/0024-append-only-log.md)). Each session
   appends the readings, prompts and costs it saw itself to `~/.local/state/pace/log/<day>/<host>-<session>.jsonl`, a
   line an event; feeds are written slim (their `samples` and `prompts` empty, no `spend` or `modelPrompts`), and every

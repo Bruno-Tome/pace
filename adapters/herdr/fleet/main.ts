@@ -22,7 +22,7 @@ import { claimOf } from '../open.ts'
 import { afterStart, openSendPane, SEND_PANES_KEY, sendForm, type SendHost } from '../send.ts'
 import { SEED } from './seed.ts'
 import { byProvider, byRepo, byUrgency, fleetModel, groupLines, memberLine, PROVIDER_NAME, QL_FEEDS_DIR, qlFeedOf, recommendLine, type FleetGroup, type FleetModel, type HerdrAgent, type QlSession } from '../../../core/fleet.ts'
-import { FEEDS_DIR, feedOf, type PaceFeed, type PaceProvider } from '../../../core/host.ts'
+import { FEEDS_DIR, type PaceFeed, type PaceProvider } from '../../../core/host.ts'
 import type { Line } from '../../../core/view.ts'
 
 const SIZE = 12
@@ -110,8 +110,23 @@ export default class Fleet extends View {
   seen = ''
   /** Send work's state, when this copy is Send work: the host and folder picked (none: the form's first), the task */
   send: { host: SendHost | null; folder: string | null; input: any; confirming: boolean; started: string } | null = null
-  /** The log, read on as it grows */
+  /** The feeds and the log, read on as they grow */
   log = new HerdrLog()
+  /** A reload running, and one asked for meanwhile */
+  loading = false
+  again = false
+  /** ql's feeds as last read, and what the model was last worked out from */
+  qlText = ''
+  qlVersion = 0
+  workedKey = ''
+  ids = new WeakMap<object, number>()
+  nextId = 1
+
+  idOf(o: object): number {
+    let n = this.ids.get(o)
+    if (n == null) this.ids.set(o, (n = this.nextId++))
+    return n
+  }
   /** The pane this copy of Send work claimed in the registry; null in a popup, or until it could tell which */
   pane: string | null = null
 
@@ -164,27 +179,41 @@ export default class Fleet extends View {
 
   /** Rereads both feed folders, a file mid-write keeping what was last read from it, and works the model out again */
   reload(cx: any): void {
+    // A burst of changes (a line logged, then the feed written) is read once: a reload asked for while one runs runs
+    // once after it
+    if (this.loading) {
+      this.again = true
+      return
+    }
+    this.loading = true
     cx.spawn(async (cx: any) => {
-      const [paceFiles, qlFiles] = await Promise.all([readAll(paceDir()), readAll(qlDir())])
-      const pace = new Map(this.pace.map(f => [`${f.host}-${f.session}`, f]))
-      for (const { text } of paceFiles) {
-        const f = feedOf(text)
-        if (f) pace.set(`${f.host}-${f.session}`, f)
-      }
-      const ql = new Map(this.ql.map(f => [`${f.host}-${f.session}`, f]))
-      for (const { text } of qlFiles) {
-        const f = qlFeedOf(parsed(text))
-        if (f) ql.set(`${f.host}-${f.session}`, f)
-      }
-      // Feeds are written slim: their quotas' history is in the log (core/log.ts)
-      this.pace = await this.log.hydrate([...pace.values()], home(), Date.now())
-      this.ql = [...ql.values()]
-      this.work(Date.now(), herdrAgents())
-      // Claiming the pane is a nicety: it never stands between the feeds and their drawing
       try {
-        this.claim()
-      } catch {}
-      cx.notify()
+        do {
+          this.again = false
+          const qlFiles = await readAll(qlDir())
+          const ql = new Map(this.ql.map(f => [`${f.host}-${f.session}`, f]))
+          const qlText = qlFiles.map(f => f.text).join('\n')
+          if (qlText !== this.qlText) {
+            this.qlText = qlText
+            this.qlVersion++
+            for (const { text } of qlFiles) {
+              const f = qlFeedOf(parsed(text))
+              if (f) ql.set(`${f.host}-${f.session}`, f)
+            }
+            this.ql = [...ql.values()]
+          }
+          // Feeds are written slim: their quotas' history is in the log, worked out only where it changed (core/log.ts)
+          this.pace = await this.log.feedsWithHistory(home(), Date.now())
+          this.work(Date.now(), herdrAgents())
+          // Claiming the pane is a nicety: it never stands between the feeds and their drawing
+          try {
+            this.claim()
+          } catch {}
+          cx.notify()
+        } while (this.again)
+      } finally {
+        this.loading = false
+      }
     })
   }
 
@@ -209,6 +238,10 @@ export default class Fleet extends View {
   /** The model and what each group draws, from the feeds read and Herdr's agents now */
   work(now: number, live: readonly HerdrAgent[]): void {
     this.seen = signature(live)
+    // Nothing the fleet shows changed (the same feeds, agents, tab, width and minute): nothing is worked out again
+    const key = `${this.tab}|${this.cols}|${Math.floor(now / 60_000)}|${this.seen}|q${this.qlVersion}|${this.pace.map(f => this.idOf(f)).join()}`
+    if (key === this.workedKey) return
+    this.workedKey = key
     this.model = fleetModel({ pace: this.pace, ql: this.ql, agents: live, now })
     const groups = TABS.find(t => t.tab === this.tab)!.groups(this.model)
     this.drawn = groups.map((g, i) => {

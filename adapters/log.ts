@@ -6,7 +6,10 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync
 import { dirname, join } from 'node:path'
 
 import { FEED_STALE, FEEDS_DIR, feedOf, type PaceFeed, type PaceHost } from '../core/host.ts'
-import { expiredDays, headLine, hydrate, LOG_DIR, logDay, logDays, logFile, logText, parseLog, slim, type LogEntry, type LogEvent, type LogHead } from '../core/log.ts'
+import { checkpointDays, checkpointFrom, checkpointOf, expiredDays, headLine, History, LOG_DIR, logDay, logDays, logFile, logText, parseLog, slim, type Checkpoint, type LogEntry, type LogEvent, type LogHead } from '../core/log.ts'
+
+/** A finished day's checkpoint, in its folder (core/log.ts) */
+const CHECKPOINT = 'checkpoint.json'
 
 const DAY = 24 * 3600_000
 /** A feed not written for this long is of a session long ended: its history is in the log, or past keeping */
@@ -32,78 +35,107 @@ export function appendLog(home: string, host: PaceHost, head: LogHead, events: r
   memo.set(path, after)
 }
 
-/** The log of the days kept, read on from where this reader left each file: a long-lived reader reads only what was added */
+/**
+ * The log of the days kept, read into a History (core/log.ts) doing no work twice: a finished day from its checkpoint,
+ * the open days' files read on from where this reader left each one. A long-lived reader reads only what was added,
+ * and the history works out only the quotas it touched
+ */
 export class LogReader {
-  private files = new Map<string, { offset: number; head: LogHead | null; entries: LogEntry[] }>()
+  readonly history = new History()
+  private files = new Map<string, { offset: number; head: LogHead | null }>()
+  /** The finished days read whole, from their checkpoint or their files */
+  private done = new Set<string>()
 
-  read(home: string, now: number): LogEntry[] {
-    const days = logDays(now)
-    const seen = new Set<string>()
-    for (const day of days) {
+  read(home: string, now: number): History {
+    const yesterday = logDay(now - DAY)
+    this.history.forget(now)
+    for (const day of logDays(now)) {
+      if (this.done.has(day)) continue
       const dir = join(home, LOG_DIR, day)
       if (!existsSync(dir)) continue
-      for (const name of readdirSync(dir).filter(n => n.endsWith('.jsonl'))) {
-        const path = join(dir, name)
-        seen.add(path)
-        this.readOn(path)
+      const cp = day < yesterday ? checkpointIn(dir) : null
+      if (cp) {
+        this.history.setCheckpoint(cp)
+        this.done.add(day)
+        continue
       }
+      for (const name of readdirSync(dir).filter(n => n.endsWith('.jsonl'))) this.history.append(this.readOn(join(dir, name)))
+      // A day before yesterday is not written again: read once
+      if (day < yesterday) this.done.add(day)
     }
-    for (const path of this.files.keys()) if (!seen.has(path)) this.files.delete(path)
-    return [...this.files.values()].flatMap(f => f.entries)
+    return this.history
   }
 
-  /** What was added to a file since it was last read, up to its last whole line */
-  private readOn(path: string): void {
-    let f = this.files.get(path) ?? { offset: 0, head: null, entries: [] }
+  /** The lines added to a file since it was last read, up to its last whole line */
+  private readOn(path: string): LogEntry[] {
+    const f = this.files.get(path) ?? { offset: 0, head: null }
     const size = statSync(path).size
-    // A file only grows; one that shrank was replaced, and is read again from its start
-    if (size < f.offset) f = { offset: 0, head: null, entries: [] }
-    if (size > f.offset) {
-      const buf = Buffer.alloc(size - f.offset)
-      const fd = openSync(path, 'r')
-      try {
-        readSync(fd, buf, 0, buf.length, f.offset)
-      } finally {
-        closeSync(fd)
-      }
-      const whole = buf.lastIndexOf(0x0a) + 1
-      if (whole > 0) {
-        const read = parseLog(buf.subarray(0, whole).toString('utf8'), f.head)
-        f = { offset: f.offset + whole, head: read.head, entries: [...f.entries, ...read.entries] }
-      }
+    // A file only grows; one read shorter is being written over, and is read on next time
+    if (size <= f.offset) return []
+    const buf = Buffer.alloc(size - f.offset)
+    const fd = openSync(path, 'r')
+    try {
+      readSync(fd, buf, 0, buf.length, f.offset)
+    } finally {
+      closeSync(fd)
     }
-    this.files.set(path, f)
+    const whole = buf.lastIndexOf(0x0a) + 1
+    if (whole === 0) return []
+    const read = parseLog(buf.subarray(0, whole).toString('utf8'), f.head)
+    this.files.set(path, { offset: f.offset + whole, head: read.head })
+    return read.entries
   }
 }
 
-/** One reader for the process: a host that reads again reads only what was added */
-const reader = new LogReader()
+/** A day folder's checkpoint; null when there is none, or it does not read */
+function checkpointIn(dir: string): Checkpoint | null {
+  const path = join(dir, CHECKPOINT)
+  return existsSync(path) ? checkpointFrom(readFileSync(path, 'utf8')) : null
+}
+
+/** One reader for each home in the process: a host that reads again reads only what was added */
+const readers = new Map<string, LogReader>()
+const readerOf = (home: string) => readers.get(home) ?? readers.set(home, new LogReader()).get(home)!
+
+/** Each feed file as last parsed, by path: parsed again only once its size or time changed */
+const parsed = new Map<string, { size: number; mtimeMs: number; feed: PaceFeed | null }>()
+
+/** A feed file, parsed again only when it changed; the same object while it is the same */
+function feedAt(path: string): PaceFeed | null {
+  try {
+    const { size, mtimeMs } = statSync(path)
+    const known = parsed.get(path)
+    if (known && known.size === size && known.mtimeMs === mtimeMs) return known.feed
+    const feed = feedOf(readFileSync(path, 'utf8'))
+    parsed.set(path, { size, mtimeMs, feed })
+    return feed
+  } catch {
+    return null
+  }
+}
 
 /** One feed, read from anywhere, with its quota's history filled in from the log and the feeds beside it */
-export function withHistory(home: string, feed: PaceFeed, now: number, from: LogReader = reader): PaceFeed {
-  return hydrate([feed, ...readFeeds(home, now, from)], from.read(home, now), now)[0]!
+export function withHistory(home: string, feed: PaceFeed, now: number, from: LogReader = readerOf(home)): PaceFeed {
+  return from.read(home, now).hydrate([feed, ...rawFeeds(home)], now)[0]!
+}
+
+/** Every feed in the feeds folder that parses, as written */
+function rawFeeds(home: string): PaceFeed[] {
+  const dir = join(home, FEEDS_DIR)
+  if (!existsSync(dir)) return []
+  return readdirSync(dir).filter(n => n.endsWith('.json')).flatMap(n => feedAt(join(dir, n)) ?? [])
 }
 
 /** Every feed in the feeds folder that parses, its quota's history filled in from the log */
-export function readFeeds(home: string, now: number, from: LogReader = reader): PaceFeed[] {
-  const dir = join(home, FEEDS_DIR)
-  if (!existsSync(dir)) return []
-  const feeds = readdirSync(dir).filter(n => n.endsWith('.json')).flatMap(n => {
-    try {
-      const f = feedOf(readFileSync(join(dir, n), 'utf8'))
-      return f ? [f] : []
-    } catch {
-      return []
-    }
-  })
-  return hydrate(feeds, from.read(home, now), now)
+export function readFeeds(home: string, now: number, from: LogReader = readerOf(home)): PaceFeed[] {
+  return from.read(home, now).hydrate(rawFeeds(home), now)
 }
 
 /**
  * A session's own feed and the other live ones, each with its quota's history: `own` picks the session's feed out (a
  * host that restarts carries on from it), the others are those written within FEED_STALE
  */
-export function sessionFeeds(home: string, now: number, own: (f: PaceFeed) => boolean, from: LogReader = reader): { own: PaceFeed | null; others: PaceFeed[] } {
+export function sessionFeeds(home: string, now: number, own: (f: PaceFeed) => boolean, from: LogReader = readerOf(home)): { own: PaceFeed | null; others: PaceFeed[] } {
   const all = readFeeds(home, now, from)
   return { own: all.find(own) ?? null, others: all.filter(f => !own(f) && f.at >= now - FEED_STALE) }
 }
@@ -120,7 +152,18 @@ export function pruneLog(home: string, now: number): void {
   const root = join(home, LOG_DIR)
   const marker = join(root, '.pruned')
   if (existsSync(marker) && readFileSync(marker, 'utf8') === logDay(now)) return
-  if (existsSync(root)) for (const day of expiredDays(readdirSync(root), now)) rmSync(join(root, day), { recursive: true, force: true })
+  if (existsSync(root)) {
+    const days = readdirSync(root)
+    for (const day of expiredDays(days, now)) rmSync(join(root, day), { recursive: true, force: true })
+    // A finished day folded once, so no reader folds it again
+    for (const day of checkpointDays(days, now)) {
+      const dir = join(root, day)
+      if (expiredDays([day], now).length || existsSync(join(dir, CHECKPOINT))) continue
+      const entries = readdirSync(dir).filter(n => n.endsWith('.jsonl')).flatMap(n => parseLog(readFileSync(join(dir, n), 'utf8'), null).entries)
+      writeFileSync(join(dir, `${CHECKPOINT}.tmp`), JSON.stringify(checkpointOf(day, entries)))
+      renameSync(join(dir, `${CHECKPOINT}.tmp`), join(dir, CHECKPOINT))
+    }
+  }
   const feeds = join(home, FEEDS_DIR)
   if (existsSync(feeds)) {
     for (const name of readdirSync(feeds).filter(n => n.endsWith('.json'))) {

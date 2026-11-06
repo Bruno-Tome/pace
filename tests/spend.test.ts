@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { PaceSample } from '../types'
 import { rateOf, rowsOf } from '../core/model.ts'
-import { addSpend, mergeCopies, mergeSpend, quotaPerDollar, sessionsOf, spendIn, spendModel, spendVerdict, usdPerPrompt } from '../core/spend.ts'
+import { addSpend, mergeCopies, mergeSpend, unionMax, quotaPerDollar, sessionsOf, spendIn, spendModel, spendVerdict, usdPerPrompt } from '../core/spend.ts'
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
 const MIN = 60_000
@@ -58,6 +58,14 @@ describe('many copies of the shared spend', () => {
     const bad = [{ t: NOW - MIN, id: 's1', usd: 1.03e105 }]
     near(spendIn(mergeSpend(bad, addSpend([], 's1', NOW - MIN, 1, NOW), NOW), NOW - H, NOW), 1)
     expect(mergeSpend([{ t: NOW - MIN, id: 's1', usd: Infinity }], [], NOW)).toEqual([])
+  })
+})
+
+describe('two copies already folded', () => {
+  test('join without folding again: per session and slot the larger, the rest as they are', () => {
+    const a = [{ t: NOW - 3 * H, id: 's1', usd: 2, h: true as const }, { t: NOW - MIN, id: 's1', usd: 1 }]
+    const b = [{ t: NOW - 3 * H, id: 's1', usd: 5, h: true as const }, { t: NOW - MIN, id: 's2', usd: 0.5 }]
+    expect(unionMax(a, b)).toEqual([{ t: NOW - 3 * H, id: 's1', usd: 5, h: true }, { t: NOW - MIN, id: 's1', usd: 1 }, { t: NOW - MIN, id: 's2', usd: 0.5 }])
   })
 })
 

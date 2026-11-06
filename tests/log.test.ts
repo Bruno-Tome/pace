@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { PaceFeed } from '../core/host.ts'
-import { entriesOf, eventsOf, parseLog, expiredDays, hydrate, logDays, logFile, logText, slim, type LogHead } from '../core/log.ts'
+import { checkpointDays, checkpointFrom, checkpointOf, entriesOf, eventsOf, expiredDays, History, hydrate, logDays, logFile, logText, parseLog, slim, type LogHead } from '../core/log.ts'
 import type { Metered } from '../core/meter.ts'
 
 const NOW = Date.UTC(2026, 10, 6, 12)
@@ -147,5 +147,65 @@ describe('the days the log keeps', () => {
 
   test('deletes only the day folders older than that', () => {
     expect(expiredDays(['2026-10-28', '2026-10-29', '2026-11-06', 'junk'], NOW + 0 * DAY)).toEqual(['2026-10-28'])
+  })
+})
+
+describe('checkpoints: a finished day folded once', () => {
+  const D = Date.UTC(2026, 10, 3, 12)
+  const day = [
+    ...logOf(head('s1'), [{ at: D, quotas: reading(D, 20).quotas }, { at: D, prompt: true, model: 'gpt-5' }, { at: D, usd: 1 }, { at: D + MIN, usd: 2 }]),
+    ...logOf(head('s2', 'a1'), [{ at: D + H, quotas: reading(D + H, 30).quotas }, { at: D + H, usd: 4 }]),
+  ]
+
+  test('a feed hydrated from a day\'s checkpoint is hydrated as from the day\'s events', () => {
+    const fromCheckpoint = new History()
+    fromCheckpoint.setCheckpoint(checkpointOf('2026-11-03', day))
+    const [a] = fromCheckpoint.hydrate([feed('s9', { account: 'a1' })], NOW)
+    const [b] = hydrate([feed('s9', { account: 'a1' })], day, NOW)
+    expect(a!.snapshot.samples).toEqual(b!.snapshot.samples)
+    expect(a!.snapshot.prompts).toEqual(b!.snapshot.prompts)
+    expect(total(a!)).toBe(7)
+    expect(total(b!)).toBe(7)
+  })
+
+  test('is written as JSON and read back; anything else reads as none', () => {
+    const cp = checkpointOf('2026-11-03', day)
+    expect(checkpointFrom(JSON.stringify(cp))).toEqual(cp)
+    expect(checkpointFrom('{"version":1')).toBe(null)
+    expect(checkpointFrom('{"version":1,"day":"2026-11-03","parts":7}')).toBe(null)
+  })
+
+  test('only days before yesterday get one: a late line can still land in yesterday\'s file', () => {
+    expect(checkpointDays(['2026-11-03', '2026-11-04', '2026-11-05', '2026-11-06'], NOW)).toEqual(['2026-11-03', '2026-11-04'])
+  })
+})
+
+describe('history worked out once', () => {
+  test('hydrating again with nothing new gives back the same feeds: no work, nothing to draw again', () => {
+    const h = new History()
+    h.append(logOf(head('s1'), [{ at: NOW - MIN, prompt: true }]))
+    const feeds = [feed('s1'), feed('k1', { host: 'claude', provider: 'claude' })]
+    const first = h.hydrate(feeds, NOW)
+    const again = h.hydrate(feeds, NOW + 1000)
+    expect(again[0]).toBe(first[0])
+    expect(again[1]).toBe(first[1])
+  })
+
+  test('an event on one quota leaves every other quota\'s feeds as they were', () => {
+    const h = new History()
+    const feeds = [feed('s1'), feed('k1', { host: 'claude', provider: 'claude' })]
+    const first = h.hydrate(feeds, NOW)
+    h.append(logOf(head('s1'), [{ at: NOW, prompt: true }]))
+    const after = h.hydrate(feeds, NOW)
+    expect(after[0]!.snapshot.prompts).toEqual([NOW])
+    expect(after[1]).toBe(first[1])
+  })
+
+  test('forgets the days past keeping', () => {
+    const h = new History()
+    h.append(logOf(head('s1'), [{ at: NOW - 20 * DAY, usd: 1 }, { at: NOW - MIN, usd: 2 }]))
+    h.forget(NOW)
+    const [f] = h.hydrate([feed('s1')], NOW)
+    expect(total(f!)).toBe(2)
   })
 })

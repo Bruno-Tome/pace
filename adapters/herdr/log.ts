@@ -1,44 +1,78 @@
-// The log as the Herdr mods read it (.agents/decisions/0024-append-only-log.md), through Herdr's own calls: a day
-// before today is read once, since no session writes it again; today's is read again at each reload.
+// The feeds and the log as the Herdr mods read them (.agents/decisions/0024-append-only-log.md), through Herdr's own
+// calls, doing no work twice: a feed is parsed again only when its text changed; a finished day is read from its
+// checkpoint, or from its files once; today's files are read on from where they were left; and the history is a
+// History, which works out only what changed and gives back the same feeds when nothing did.
 
 import { exec, readTextFile } from 'herdr'
 
-import type { PaceFeed } from '../../core/host.ts'
-import { hydrate, LOG_DIR, logDay, logDays, parseLog, type LogEntry } from '../../core/log.ts'
+import { FEEDS_DIR, feedOf, type PaceFeed } from '../../core/host.ts'
+import { checkpointFrom, History, LOG_DIR, logDay, logDays, parseLog, type LogHead } from '../../core/log.ts'
 
-/** The text of every .jsonl file in a folder; none when the folder is not there */
-async function readDay(dir: string): Promise<string[]> {
+/** The .json or .jsonl names in a folder; none when it is not there */
+async function namesIn(dir: string, ext: string): Promise<string[]> {
   const listed = await exec('ls', [dir]).catch(() => null)
-  const names = (listed?.code === 0 ? listed.stdout.split('\n') : []).filter((n: string) => n.endsWith('.jsonl'))
-  return Promise.all(names.map(async (n: string) => (await readTextFile(`${dir}/${n}`).catch(() => null)) ?? ''))
+  return (listed?.code === 0 ? listed.stdout.split('\n') : []).filter((n: string) => n.endsWith(ext))
 }
 
-export class HerdrLog {
-  /** The events of each day before today, by its folder name */
-  private past = new Map<string, LogEntry[]>()
+const read = async (path: string) => (await readTextFile(path).catch(() => null)) ?? ''
 
-  /** The log of the days kept */
-  async entries(home: string, now: number): Promise<LogEntry[]> {
+export class HerdrLog {
+  readonly history = new History()
+  /** Each file of an open day: how much of it was read, up to its last whole line, and the header in force there */
+  private files = new Map<string, { length: number; head: LogHead | null }>()
+  /** Each feed file's text as last read, and the feed it parsed to: the same feed while the text is the same */
+  private feeds = new Map<string, { text: string; feed: PaceFeed | null }>()
+  /** The finished days read whole, from their checkpoint or their files */
+  private done = new Set<string>()
+
+  /** Reads what the log added since the last call into the history */
+  async readOn(home: string, now: number): Promise<void> {
     const today = logDay(now)
-    const days = logDays(now)
-    for (const day of this.past.keys()) if (!days.includes(day)) this.past.delete(day)
-    const out: LogEntry[] = []
-    for (const day of days) {
-      const known = this.past.get(day)
-      if (known) {
-        out.push(...known)
+    const yesterday = logDay(now - 24 * 3600_000)
+    this.history.forget(now)
+    for (const day of logDays(now)) {
+      if (this.done.has(day)) continue
+      const dir = `${home}/${LOG_DIR}/${day}`
+      const cp = day < yesterday ? checkpointFrom(await read(`${dir}/checkpoint.json`)) : null
+      if (cp) {
+        this.history.setCheckpoint(cp)
+        this.done.add(day)
         continue
       }
-      const entries = (await readDay(`${home}/${LOG_DIR}/${day}`)).flatMap(text => parseLog(text, null).entries)
-      if (day !== today) this.past.set(day, entries)
-      out.push(...entries)
+      for (const name of await namesIn(dir, '.jsonl')) {
+        const path = `${dir}/${name}`
+        const text = await read(path)
+        const f = this.files.get(path) ?? { length: 0, head: null }
+        // A file only grows; one read shorter is being written over, and is read on next time
+        const whole = text.lastIndexOf('\n') + 1
+        if (whole <= f.length) continue
+        const got = parseLog(text.slice(f.length, whole), f.head)
+        this.files.set(path, { length: whole, head: got.head })
+        this.history.append(got.entries)
+      }
+      // A day before yesterday is not written again: read once
+      if (day < yesterday && day !== today) this.done.add(day)
     }
-    return out
   }
 
-  /** Feeds with their quotas' history filled in from the log */
-  async hydrate(feeds: readonly PaceFeed[], home: string, now: number): Promise<PaceFeed[]> {
-    return hydrate(feeds, await this.entries(home, now), now)
+  /**
+   * Every feed in the feeds folder with its quota's history; a feed being written keeps the one last read. The same
+   * objects as last time for every feed whose text and history did not change
+   */
+  async feedsWithHistory(home: string, now: number): Promise<PaceFeed[]> {
+    const dir = `${home}/${FEEDS_DIR}`
+    const names = await namesIn(dir, '.json')
+    for (const name of names) {
+      const text = await read(`${dir}/${name}`)
+      const known = this.feeds.get(name)
+      if (known?.text === text) continue
+      const feed = feedOf(text)
+      // One that does not parse (written as it was read) keeps the feed last read from it
+      if (feed || !known) this.feeds.set(name, { text, feed })
+    }
+    for (const name of [...this.feeds.keys()]) if (!names.includes(name)) this.feeds.delete(name)
+    await this.readOn(home, now)
+    return this.history.hydrate([...this.feeds.values()].flatMap(f => (f.feed ? [f.feed] : [])), now)
   }
 }
 

@@ -22,7 +22,7 @@ import { AUTO_TURNS, commandOf, DEFAULT_PLAN, ULTRA_TURNS, USAGE, type PaceComma
 import { route, type Host, type PaceAction, type Surface } from '../core/api.ts'
 import { accountId, numbered, type Accounts } from '../core/account.ts'
 import { FEED_STALE, FEEDS_DIR, feedFile, feedOf as parseFeed, type PaceFeed } from '../core/host.ts'
-import { expiredDays, headLine, hydrate, LOG_DIR, logDays, logFile, logText, parseLog, slimSnapshot, type LogEntry, type LogEvent } from '../core/log.ts'
+import { checkpointDays, checkpointFrom, checkpointOf, expiredDays, headLine, History, LOG_DIR, logDays, logFile, logText, parseLog, slimSnapshot, type LogEntry, type LogEvent, type LogHead } from '../core/log.ts'
 import { pooled } from '../core/meter.ts'
 import { ALREADY_OPEN, herdrOpen, herdrReuse, paceViewOf, registryIn, sharedFile } from '../adapters/herdr/open.ts'
 import { ACCOUNTS_FILE, KEY_FILE, keysFile, planFeedFile, ROW_FILE, stateFile, viewFile } from './files.ts'
@@ -77,47 +77,82 @@ async function sharedFeeds($: Engine, now: number): Promise<PaceFeed[]> {
   await prune($, home, now)
   const dir = `${home}/${FEEDS_DIR}`
   const own = feedFile('claude', spendId).split('/').pop()
-  const names = await $.fs.list(dir).then(es => es.map(e => e.name)).catch(() => [] as string[])
+  const entries = await $.fs.list(dir).catch(() => [])
   const all: PaceFeed[] = []
-  for (const name of names) {
-    if (!name.endsWith('.json') || name === own) continue
-    const f = parseFeed(String(await $.fs.read(`${dir}/${name}`).catch(() => '')))
+  for (const e of entries) {
+    if (!e.name.endsWith('.json') || e.name === own) continue
+    const f = await feedAt($, `${dir}/${e.name}`, e)
     if (f) all.push(f)
   }
+  for (const path of feedCache.keys()) if (!entries.some(e => `${dir}/${e.name}` === path)) feedCache.delete(path)
+  await readLog($, home, now)
   // Every feed counts towards its quota's history (an older one may still carry some); the live ones pool
-  const feeds = hydrate(all, await logEntries($, home, now), now).filter(f => f.at >= now - FEED_STALE)
+  const feeds = history.hydrate(all, now).filter(f => f.at >= now - FEED_STALE)
   shared = { at: now, feeds }
   return feeds
 }
 
-/** Each log file read, by path: its size and time as listed, and its events, so one not changed is not read again */
-const logCache = new Map<string, { size: number; mtimeMs: number; entries: LogEntry[] }>()
+/** Each feed file as last parsed: parsed again only once its size or time changed (a host listing neither, always) */
+const feedCache = new Map<string, { size: number; mtimeMs: number; feed: PaceFeed | null }>()
 
-/** The log of the days kept (core/log.ts): every session's events, every harness's */
-async function logEntries($: Engine, home: string, now: number): Promise<LogEntry[]> {
-  const seen = new Set<string>()
+async function feedAt($: Engine, path: string, e: { size: number; mtimeMs: number }): Promise<PaceFeed | null> {
+  const known = feedCache.get(path)
+  if (known && e.size && known.size === e.size && known.mtimeMs === e.mtimeMs) return known.feed
+  const feed = parseFeed(String(await $.fs.read(path).catch(() => '')))
+  feedCache.set(path, { size: e.size, mtimeMs: e.mtimeMs, feed })
+  return feed
+}
+
+/** The history of every quota (core/log.ts), worked out only where it changed */
+const history = new History()
+/** Each open day's file: how much of it was read, up to its last whole line, and the header in force there */
+const logRead = new Map<string, { length: number; head: LogHead | null }>()
+/** The finished days read whole, from their checkpoint or their files */
+const logDone = new Set<string>()
+
+/** Reads what the log added since the last read into the history: a finished day from its checkpoint, once */
+async function readLog($: Engine, home: string, now: number): Promise<void> {
+  const yesterday = new Date(now - 24 * 3600_000).toISOString().slice(0, 10)
+  history.forget(now)
   for (const day of logDays(now)) {
+    if (logDone.has(day)) continue
     const dir = `${home}/${LOG_DIR}/${day}`
     const files = await $.fs.list(dir).catch(() => [])
+    if (!files.length) continue
+    const cp = day < yesterday && files.some(e => e.name === CHECKPOINT) ? checkpointFrom(String(await $.fs.read(`${dir}/${CHECKPOINT}`).catch(() => ''))) : null
+    if (cp) {
+      history.setCheckpoint(cp)
+      logDone.add(day)
+      continue
+    }
     for (const e of files) {
       if (!e.name.endsWith('.jsonl')) continue
       const path = `${dir}/${e.name}`
-      seen.add(path)
-      const known = logCache.get(path)
-      // Size and time say a file has not changed; a host that lists neither has every file read again
-      if (known && e.size && known.size === e.size && known.mtimeMs === e.mtimeMs) continue
+      const f = logRead.get(path) ?? { length: 0, head: null }
+      // Size says a file has not grown; a host that lists none has every file read again, and read on
+      if (e.size && e.size <= f.length) continue
       const text = String(await $.fs.read(path).catch(() => ''))
-      logCache.set(path, { size: e.size, mtimeMs: e.mtimeMs, entries: parseLog(text, null).entries })
+      // A file only grows; one read shorter is being written over, and is read on next time
+      const whole = text.lastIndexOf('\n') + 1
+      if (whole <= f.length) continue
+      const got = parseLog(text.slice(f.length, whole), f.head)
+      logRead.set(path, { length: whole, head: got.head })
+      history.append(got.entries)
     }
+    if (day < yesterday) logDone.add(day)
   }
-  for (const path of logCache.keys()) if (!seen.has(path)) logCache.delete(path)
-  return [...logCache.values()].flatMap(f => f.entries)
 }
+
+/** A finished day's checkpoint, in its folder (core/log.ts) */
+const CHECKPOINT = 'checkpoint.json'
 
 /** The day pruning last ran on, in this process */
 let prunedOn = ''
 
-/** Deletes the log's day folders past keeping and the feeds not written for eight days, once a day (core/log.ts) */
+/**
+ * Once a day (core/log.ts): deletes the log's day folders past keeping and the feeds not written for eight days, and
+ * folds each finished day without a checkpoint into one
+ */
 async function prune($: Engine, home: string, now: number): Promise<void> {
   const today = new Date(now).toISOString().slice(0, 10)
   if (prunedOn === today) return
@@ -130,6 +165,16 @@ async function prune($: Engine, home: string, now: number): Promise<void> {
     ...feeds.filter(e => e.name.endsWith('.json') && e.mtimeMs && e.mtimeMs < now - STATE_SPAN).map(e => `${home}/${FEEDS_DIR}/${e.name}`),
   ]
   if (gone.length) await $.process.run(['/bin/rm', '-rf', ...gone]).catch(() => null)
+  for (const day of checkpointDays(days, now)) {
+    if (expiredDays([day], now).length) continue
+    const dir = `${root}/${day}`
+    const files = await $.fs.list(dir).catch(() => [])
+    if (files.some(e => e.name === CHECKPOINT)) continue
+    const entries: LogEntry[] = []
+    for (const e of files) if (e.name.endsWith('.jsonl')) entries.push(...parseLog(String(await $.fs.read(`${dir}/${e.name}`).catch(() => '')), null).entries)
+    await $.fs.write(`${dir}/${CHECKPOINT}.tmp`, JSON.stringify(checkpointOf(day, entries)))
+    await $.process.run(['/bin/mv', `${dir}/${CHECKPOINT}.tmp`, `${dir}/${CHECKPOINT}`]).catch(() => null)
+  }
 }
 
 /** This session's log as written so far today: its path, its text, the header in force at its end */

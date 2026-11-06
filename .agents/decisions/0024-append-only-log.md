@@ -26,6 +26,12 @@ summed them, so spend compounded across feeds at every merge, up to 1.8e308 doll
 - **Readers hydrate.** Wherever feeds are read, `hydrate` (core/log.ts, pure) fills each feed's history from the log
   of the last eight days and from what older feeds still carry, by quota. Everything after it (`meter`, the fleet, the
   views) sees the snapshots it saw before.
+- **Checkpoints, and nothing worked out twice.** A finished day (before yesterday, which may still get a late line) is
+  folded once into `checkpoint.json` in its folder, each quota's part of it, by the first host to prune that day.
+  Readers keep a `History` (core/log.ts): a checkpoint is read once, the open days' files are read on from where they
+  were left, and a quota's history is its past, joined at most once an hour, with today's part on top, worked out only
+  when one of its parts changed. The same feed objects come back while nothing changed, so a view can tell it has
+  nothing to draw again. Feeds are parsed again only once their size or time changed.
 - **Retention by whole files.** A Node writer deletes the day folders older than the spend kept (eight days) and
   feeds of sessions that ended before it, at most once a day. Nothing is compacted or rewritten.
 
