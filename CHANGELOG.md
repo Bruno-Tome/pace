@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **The rate is smoothed over the last 30 seconds.** A quota's points an hour (and so "% at reset" and "out in")
+  are the average of the moment's rate every 5 seconds over the last 30, each from what was known then
+  (`rateOf`; the moment's own is `rateNow`). A whole point arriving moves the projection over 30 seconds instead of at
+  once; the level, and the warnings on it, stay the moment's. With nothing new in the last 30 seconds there is nothing
+  to smooth, and a past moment is worked out once, so a drawing costs what it did. On real data the projection moves
+  at most 2.8 points in any 5 seconds.
 - **A reading that went back is stale, and dropped.** Within one window a quota's use never goes down, so a reading
   below the highest seen (an idle Claude Code session still holding its last reply's limits, stamped anew) is left out
   of the history (`mergeSamples`, `appendSample`), and a session records its own limits only when they changed. Those
